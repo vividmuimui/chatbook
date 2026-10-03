@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
-import { useWebSearchAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
+import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail } from "../../../shared/schemas/book";
 import type { PositionData } from "../../../shared/schemas/selection";
 import { PdfOutline } from "../PdfViewer/PdfOutline";
@@ -109,6 +110,8 @@ export function EpubViewer({
   const setCitedPassage = useSetAtom(citedPassageAtom);
   const activeSelection = useAtomValue(activeSelectionAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
+  const typography = useAtomValue(epubTypographyAtom);
+  const typographyStyle = useMemo(() => epubTypographyStyle(typography), [typography]);
   const isNarrow = useIsNarrow();
 
   const { epub, error: documentError } = useEpubDocument(pdfId);
@@ -207,7 +210,10 @@ export function EpubViewer({
           };
         }),
     );
-  }, [highlights, chapterElement, currentPage, drawnSize]);
+    // `typography` is here for what the observer cannot see: justifying the
+    // text, or a face of the same metrics, moves the words without changing the
+    // size of the box they are in.
+  }, [highlights, chapterElement, currentPage, drawnSize, typography]);
 
   // The passage a citation quoted, marked and brought into view. A chapter is
   // far longer than a page, so turning to it is not enough to show it.
@@ -224,7 +230,27 @@ export function EpubViewer({
     }
     const range = rangeOfQuote(chapterElement, citedPassage.text);
     setCitedSelection(range ? selectionOnPage(range, page) : null);
-  }, [citedPassage, chapterElement, currentPage, drawnSize, setCitedPassage]);
+  }, [citedPassage, chapterElement, currentPage, drawnSize, typography, setCitedPassage]);
+
+  // Larger type makes the chapter taller, and the same scrollTop then lands
+  // earlier in it: kept as the share of the chapter read so far, the reader
+  // stays about where they were rather than being carried back a few screens.
+  const readShareRef = useRef(0);
+  const typographyRef = useRef(typography);
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (typographyRef.current === typography || !container) return;
+    typographyRef.current = typography;
+    container.scrollTop =
+      readShareRef.current * Math.max(0, container.scrollHeight - container.clientHeight);
+  }, [typography]);
+
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const scrollable = container.scrollHeight - container.clientHeight;
+    readShareRef.current = scrollable > 0 ? container.scrollTop / scrollable : 0;
+  }, []);
 
   const citedRef = useRef(citedPassage);
   useEffect(() => {
@@ -425,8 +451,18 @@ export function EpubViewer({
               outlinePanel
             ))}
 
-          <div ref={containerRef} className="flex-1 overflow-auto px-3 py-4 md:px-6">
-            <article className="mx-auto max-w-2xl rounded-sm bg-white px-5 py-8 shadow-sm md:px-10">
+          <div
+            ref={containerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-auto px-3 py-4 md:px-6"
+          >
+            {/* The reader's type is set here as custom properties, which
+                `index.css` reads: the chapter inside is built by hand rather
+                than by React, so this is the one element React can style. */}
+            <article
+              style={typographyStyle}
+              className="epubPage mx-auto max-w-2xl rounded-sm bg-white py-8 shadow-sm"
+            >
               <div ref={pageRef} data-page-container={currentPage} className="relative">
                 {/* Filled by hand with the chapter `renderChapter` built, never
                     by React: the markup is the book's, rebuilt from an

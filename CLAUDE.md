@@ -68,16 +68,16 @@ commit 済みの `worker-configuration.d.ts` は `.dev.vars.example` の並び�
 `// oxlint-disable-next-line no-restricted-imports -- <理由>` を付けて理由を明記する運用にしている。
 新しく足すときも同じように理由を書くこと。
 
-現在 15 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
+現在 17 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
 このどれかに当てはまるはずで、当てはまらないなら書き方を疑うこと:
 
-| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）    |
-| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（章の `ResizeObserver` と、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
-| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                           |
-| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込みと、章の先頭・リンク先・引用箇所へのスクロール）                                                                                                                                                               |
-| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                    |
+| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                    |
+| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（章の `ResizeObserver` と、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
+| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                           |
+| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込みと、章の先頭・リンク先・引用箇所へのスクロール）                                                                                                                                                                                                                                               |
+| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                    |
 
 **画面幅の購読には `useEffect` を使わない**。`useIsNarrow`（`src/front/hooks/useIsNarrow.ts`）が
 `useSyncExternalStore` で `matchMedia` を購読する。購読するのは幅そのものではなく
@@ -586,6 +586,41 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
   `renderEpubCover`）。目次が読めない EPUB は目次なしとして開く（`epub.ts` の `openEpub`）
 - **EPUB に無いもの**: 見開き、ピンチ・ズーム、スワイプ・端タップのページ送り。章は縦に
   スクロールして読み、章の移動はキー・目次・下部の `PageStepper`（狭い画面は `PageToolbar`）
+
+#### 表示の設定（Kindle の「Aa」）
+
+文字の大きさ（10 段階）・行間（4 段階）・配置（左揃え / 両端揃え）・フォント（ゴシック /
+明朝）・ページの余白（3 段階）を読者が選べる。**EPUB にだけある**——PDF の書体はページの
+一部なので、ヘッダーの「表示の設定」（`Aa`。`EpubViewer/EpubTypographyMenu.tsx`）は
+`book.format === "epub"` のときだけ `AppPage` が出す。狭い画面でもヘッダーに置く（ヘッダーは
+電話でも常に画面にあり、アイコン 2 つ分の幅はある）。
+
+| 何を                                         | どこが                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 段階の値・既定値・スキーマ・CSS 変数への写像 | `src/front/lib/epubTypography.ts`（`epubTypographyStyle` は純関数）                               |
+| 保存                                         | `settingsAtom.ts` の `epubTypographyAtom`（`chatbook:epub-typography`）                           |
+| 適用                                         | `EpubViewer` が `<article>` に CSS 変数を置き、`index.css` の `.epubPage` / `.epubChapter` が読む |
+
+- **本をまたいで残る読者の好み**なので、倍率と違って本ごとには持たない。壊れた値は
+  `validatedStorage` が既定へ落とすが、**スキーマはフィールドごとに `.catch` する**——
+  1 項目だけ範囲外の値（段階を減らした後の古い値など）で、ほかの選択まで失わないため。
+  オブジェクトでないものは丸ごと既定値になる
+- **既定値は設定ができる前の見た目そのもの**（17px・1.9・左揃え・`.epubPage` の余白は
+  電話 20px / `md` 以上 40px）。**ゴシックの先頭は `ui-sans-serif, system-ui`**——日本語の
+  ゴシックを先頭にすると欧文の字幅が変わって行の折り返しが動き、幅でのリフローを見る E2E
+  （「…its highlight follows the text as the pane changes width」）が行数の前提ごと落ちた。
+  明朝は和文フォントを先頭に置く（欧文セリフが先だと仮名がシステムのゴシックに落ちる）。
+  Web フォントは読み込まない
+- **余白は `max-w-2xl` の内側**に取る。広げても本文の行が短くなるだけで、ページは広がらない
+- **設定はハイライトと引用の印の再計測のきっかけに入る**（`EpubViewer` の 2 つの
+  `useLayoutEffect` の依存に `typography`）。文字の大きさや行間は章の高さを変えるので
+  `ResizeObserver` でも気付くが、**両端揃えや同じ字幅のフォントへの切り替えは箱の寸法を
+  変えずに文字だけを動かす**ので、observer は何も聞かない。jsdom の「measures its
+  highlights again when the reader changes the type, even where the box keeps its size」が
+  唯一の見張り（E2E の文字を大きくするテストは observer 経由でも通る）
+- **設定を変えても読んでいた辺りに留まる**。スクロール位置を章の何割まで読んだかで控え
+  （`onScroll`）、設定が変わったらその割合へ戻す。行の位置までは合わない（割合なので、
+  章の先頭へ戻されない程度）
 
 ### チャットのストリーミング
 

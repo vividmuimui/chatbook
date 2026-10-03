@@ -2326,3 +2326,58 @@ test("a passage of an EPUB offers to ask about it, and its highlight follows the
   expect(folded.drawn[0].top).toBeGreaterThanOrEqual(folded.laidOut.top - 2);
   expect(folded.drawn.at(-1)!.bottom).toBeLessThanOrEqual(folded.laidOut.bottom + 2);
 });
+
+test("an EPUB is drawn larger on the type settings, keeps its highlight on the text, and stays larger through a reload", async ({
+  page,
+}) => {
+  const bookId = await openTestEpub(page);
+
+  const paragraph = page.locator(".epubChapter p").first();
+  const fontSize = () => paragraph.evaluate((p) => parseFloat(getComputedStyle(p).fontSize));
+  const before = await fontSize();
+
+  const text = EPUB_CHAPTERS[0].paragraphs[0];
+  const start = (await page.locator(".epubChapter").textContent())!.indexOf(text);
+  const created = await page.request.post(`/api/pdf/${bookId}/selections`, {
+    data: {
+      selectedText: text,
+      pageNumber: 1,
+      positionData: { rects: [], textRange: { start, end: start + text.length } },
+    },
+  });
+  expect(created.status()).toBe(201);
+  await page.goto(`/books/${bookId}?page=1`);
+  await expect(chapterHeading(page, 0)).toBeVisible();
+
+  await page.getByRole("button", { name: "表示の設定" }).click();
+  await page.getByRole("button", { name: "文字を大きく" }).click();
+  await page.getByRole("button", { name: "文字を大きく" }).click();
+  await expect.poll(fontSize).toBeGreaterThan(before);
+  const larger = await fontSize();
+
+  // The highlight is measured again against the text in its new size
+  const marks = page.getByRole("button", { name: "ハイライトのチャットを開く" });
+  await expect
+    .poll(async () => {
+      const drawn = await marks.evaluateAll((els) =>
+        els.map((el) => el.getBoundingClientRect()).map(({ top, bottom }) => ({ top, bottom })),
+      );
+      const laidOut = await paragraph.evaluate((p) => {
+        const range = document.createRange();
+        range.selectNodeContents(p);
+        const { top, bottom } = range.getBoundingClientRect();
+        return { top, bottom };
+      });
+      return (
+        drawn.length > 0 &&
+        Math.abs(drawn[0].top - laidOut.top) <= 2 &&
+        Math.abs(drawn.at(-1)!.bottom - laidOut.bottom) <= 2
+      );
+    })
+    .toBe(true);
+
+  // A choice of the reader's, not of the visit
+  await page.reload();
+  await expect(chapterHeading(page, 0)).toBeVisible();
+  expect(await fontSize()).toBe(larger);
+});
