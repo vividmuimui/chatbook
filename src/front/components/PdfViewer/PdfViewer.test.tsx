@@ -17,6 +17,7 @@ import type { CreatedSelection } from "../../../shared/schemas/selection";
 const BOOK: BookDetail = {
   id: "p1",
   fileName: "Cloudflare Workers.pdf",
+  format: "pdf",
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,

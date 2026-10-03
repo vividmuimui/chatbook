@@ -28,6 +28,7 @@ function book(id: string, selections: SelectionHighlight[]): BookDetail {
   return {
     id,
     fileName: `${id}.pdf`,
+    format: "pdf",
     pageCount: 209,
     hasThumbnail: true,
     hasOutline: true,

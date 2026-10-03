@@ -1,10 +1,23 @@
 import { z } from "zod";
 import { selectionHighlightSchema } from "./selection";
 
+/**
+ * What kind of file a book is, which decides how it is drawn.
+ *
+ * An EPUB has no pages of its own, so each chapter (each item of its spine)
+ * stands in for one: `pageCount`, `pageNumber` and the reading place all count
+ * chapters there, and the rest of the app — chat excerpts, citations, the
+ * outline — works on them unchanged.
+ */
+export const bookFormatSchema = z.enum(["pdf", "epub"]);
+
+export type BookFormat = z.infer<typeof bookFormatSchema>;
+
 /** A book as the shelf shows it. */
 export const bookSummarySchema = z.object({
   id: z.string(),
   fileName: z.string(),
+  format: bookFormatSchema,
   pageCount: z.number().int().positive(),
   updatedAt: z.string(),
   hasThumbnail: z.boolean(),
@@ -113,6 +126,7 @@ export const chapterListSchema = z.object({ chapters: z.array(bookChapterSchema)
 export const pdfMetadataSchema = z.object({
   id: z.string(),
   fileName: z.string(),
+  format: bookFormatSchema,
   pageCount: z.number().int().positive(),
   fullText: z.string(),
   // Carried here too: the picker seeds the cache from this answer, and a seed
@@ -126,6 +140,7 @@ export type PdfMetadata = z.infer<typeof pdfMetadataSchema>;
 export const bookDetailSchema = z.object({
   id: z.string(),
   fileName: z.string(),
+  format: bookFormatSchema,
   pageCount: z.number().int().positive(),
   hasThumbnail: z.boolean(),
   // Like hasThumbnail, this is what tells the reader whether to backfill: a

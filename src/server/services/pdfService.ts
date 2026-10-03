@@ -3,12 +3,14 @@ import { drizzle } from "drizzle-orm/d1";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { ResultAsync, err, ok } from "neverthrow";
 import { pdfs, selections } from "../db/schema";
-import type {
-  BookOutline,
-  BookSummary,
-  PdfMetadata,
-  ReadingState,
-  SaveReadingStateRequest,
+import {
+  bookFormatSchema,
+  type BookFormat,
+  type BookOutline,
+  type BookSummary,
+  type PdfMetadata,
+  type ReadingState,
+  type SaveReadingStateRequest,
 } from "../../shared/schemas/book";
 import { positionDataSchema, type PositionData } from "../../shared/schemas/selection";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
@@ -17,7 +19,50 @@ import { notFound, storageFailure, type ServiceError, type StorageError } from "
  * R2 object key for a PDF, derived from its content hash.
  */
 export function pdfObjectKey(fileHash: string): string {
-  return `pdfs/${fileHash}.pdf`;
+  return bookObjectKey(fileHash, "pdf");
+}
+
+/**
+ * R2 object key for a book of either format. PDFs keep the key they always
+ * had; an EPUB sits beside them under its own extension.
+ */
+export function bookObjectKey(fileHash: string, format: BookFormat): string {
+  return `pdfs/${fileHash}.${format}`;
+}
+
+/** What `/file` serves a book as, and what R2 is told it holds. */
+export const BOOK_CONTENT_TYPES: Record<BookFormat, string> = {
+  pdf: "application/pdf",
+  epub: "application/epub+zip",
+};
+
+/**
+ * What kind of book a file is, read off its bytes.
+ *
+ * An EPUB is a ZIP archive, which always opens with the local file header
+ * `PK\x03\x04`; a PDF never does. The name the reader gave the file is not
+ * asked: it is theirs to call anything, and the viewer chosen from this has to
+ * be able to read what is actually there.
+ */
+export function bookFormatOf(bytes: ArrayBuffer): BookFormat {
+  const head = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+  const isZip =
+    head.length === 4 &&
+    head[0] === 0x50 &&
+    head[1] === 0x4b &&
+    head[2] === 0x03 &&
+    head[3] === 0x04;
+  return isZip ? "epub" : "pdf";
+}
+
+/**
+ * A stored format, read forgivingly: the column only ever holds what
+ * `bookFormatOf` wrote, but a value nobody recognises is drawn as the format
+ * every book had before there was a choice.
+ */
+export function readFormat(stored: string): BookFormat {
+  const parsed = bookFormatSchema.safeParse(stored);
+  return parsed.success ? parsed.data : "pdf";
 }
 
 /**
@@ -74,6 +119,7 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
     .select({
       id: pdfs.id,
       fileName: pdfs.fileName,
+      format: pdfs.format,
       pageCount: pdfs.pageCount,
       fileHash: pdfs.fileHash,
       updatedAt: pdfs.updatedAt,
@@ -84,8 +130,9 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
     .all();
 
   return Promise.all(
-    rows.map(async ({ fileHash, dropboxId, ...book }) => ({
+    rows.map(async ({ fileHash, dropboxId, format, ...book }) => ({
       ...book,
+      format: readFormat(format),
       inDropbox: dropboxId !== null,
       hasThumbnail: (await bucket.head(thumbnailObjectKey(fileHash))) !== null,
     })),
@@ -117,7 +164,9 @@ async function storePdf(
   const { fileName, fileHash, fullText, pageCount, arrayBuffer, thumbnail, outline, dropboxId } =
     input;
   const d1Db = drizzle(db);
-  const objectKey = pdfObjectKey(fileHash);
+  const format = bookFormatOf(arrayBuffer);
+  const objectKey = bookObjectKey(fileHash, format);
+  const httpMetadata = { contentType: BOOK_CONTENT_TYPES[format] };
   // Stored like the rest of the metadata: whatever the caller just extracted
   // wins, and a book whose PDF ships no outline goes back to NULL.
   const outlineJson = outline ? JSON.stringify(outline) : null;
@@ -143,9 +192,7 @@ async function storePdf(
     // Re-upload the binary if the object is missing (e.g. bucket was cleared).
     const head = await bucket.head(objectKey);
     if (!head) {
-      await bucket.put(objectKey, arrayBuffer, {
-        httpMetadata: { contentType: "application/pdf" },
-      });
+      await bucket.put(objectKey, arrayBuffer, { httpMetadata });
     }
 
     // Refresh the metadata: the caller just re-extracted it, so it supersedes
@@ -169,15 +216,14 @@ async function storePdf(
     return {
       id: existing.id,
       fileName,
+      format,
       pageCount,
       fullText,
       readingState: readingStateOf(existing),
     };
   }
 
-  await bucket.put(objectKey, arrayBuffer, {
-    httpMetadata: { contentType: "application/pdf" },
-  });
+  await bucket.put(objectKey, arrayBuffer, { httpMetadata });
 
   const id = idClock.newId();
   const now = idClock.now();
@@ -189,13 +235,14 @@ async function storePdf(
     fileHash,
     fullText,
     pageCount,
+    format,
     outline: outlineJson,
     dropboxId: dropboxId ?? null,
     createdAt: now,
     updatedAt: now,
   });
 
-  return { id, fileName, pageCount, fullText, readingState: null };
+  return { id, fileName, format, pageCount, fullText, readingState: null };
 }
 
 /**
@@ -292,7 +339,8 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
   if (!pdf) return false;
 
   await d1Db.delete(pdfs).where(eq(pdfs.id, pdfId));
-  await bucket.delete([pdfObjectKey(pdf.fileHash), thumbnailObjectKey(pdf.fileHash)]);
+  // The key the book was stored under, which carries its format's extension
+  await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash)]);
 
   return true;
 }
@@ -393,6 +441,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
   return {
     id: pdf.id,
     fileName: pdf.fileName,
+    format: readFormat(pdf.format),
     pageCount: pdf.pageCount,
     hasThumbnail: thumbnail !== null,
     hasOutline: pdf.outline !== null,

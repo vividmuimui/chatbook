@@ -22,6 +22,16 @@ export const positionDataSchema = z.object({
   /** Page width the rects were measured at, so they can be rescaled later.
    * Missing on records stored before the viewer could be resized. */
   pageWidth: z.number().positive().optional(),
+  /**
+   * Where the passage sits in its chapter's text, as character offsets into
+   * the drawn chapter's `textContent` (end exclusive). EPUB only: a chapter
+   * reflows with the width of the pane, so the rects measured when the passage
+   * was chosen stop lining up with it, and the viewer draws from this instead.
+   */
+  textRange: z
+    .object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() })
+    .refine((range) => range.end > range.start)
+    .optional(),
 });
 
 export type PositionData = z.infer<typeof positionDataSchema>;

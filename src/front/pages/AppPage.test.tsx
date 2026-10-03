@@ -36,6 +36,7 @@ function highlight(id: string, selectedText: string, pageNumber = 1): SelectionH
 const BOOK_A: BookDetail = {
   id: "bookA",
   fileName: "Cloudflare Workers.pdf",
+  format: "pdf",
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
@@ -48,6 +49,7 @@ const BOOK_A: BookDetail = {
 const BOOK_B: BookDetail = {
   id: "bookB",
   fileName: "Durable Objects.pdf",
+  format: "pdf",
   pageCount: 120,
   hasThumbnail: true,
   hasOutline: true,

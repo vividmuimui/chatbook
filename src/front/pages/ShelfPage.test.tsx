@@ -17,6 +17,7 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
   return {
     id: "book-1",
     fileName: "Cloudflare Workers 入門.pdf",
+    format: "pdf",
     pageCount: 209,
     updatedAt: "2026-01-01T00:00:00Z",
     hasThumbnail: false,
@@ -88,6 +89,7 @@ const readsFine = async (file: File): Promise<ExtractedPdfData> => ({
 const STORED_BOOK = {
   id: STORED_ID,
   fileName: "Cloudflare Workers.pdf",
+  format: "pdf",
   pageCount: 209,
   fullText: "エッジはサーバーレス実行基盤です。",
   readingState: null,

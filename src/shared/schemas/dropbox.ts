@@ -38,7 +38,7 @@ export const saveDropboxFolderRequestSchema = z.object({
 
 export type SaveDropboxFolderRequest = z.infer<typeof saveDropboxFolderRequestSchema>;
 
-/** A PDF in the Dropbox folder that is not on the shelf yet. */
+/** A PDF or EPUB in the Dropbox folder that is not on the shelf yet. */
 export const dropboxFileSchema = z.object({
   /** Dropbox's own id ("id:..."), which survives a rename or a move. */
   dropboxId: z.string(),

@@ -82,6 +82,9 @@ export function useOpenPdfBook(
         const book: BookDetail = {
           id: result.id,
           fileName: result.fileName,
+          // Read off the bytes by the server, so the reader picks the viewer
+          // the stored book needs rather than the one the file name implies.
+          format: result.format,
           pageCount: result.pageCount,
           hasThumbnail,
           // The upload this answers for stored the outline in the same

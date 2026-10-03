@@ -6,6 +6,7 @@ import { SESSION_COOKIE, issueSession } from "../../src/server/auth/session";
 import { MINIMAL_PDF_BYTES } from "./fixtures/minimalPdf";
 import app from "../../src/server/index";
 import {
+  bookObjectKey,
   openPdf,
   pdfObjectKey,
   thumbnailObjectKey,
@@ -199,6 +200,7 @@ describe("POST /api/pdf/open", () => {
     expect(await response.json()).toStrictEqual({
       id: expect.any(String),
       fileName: "test.pdf",
+      format: "pdf",
       pageCount: 1,
       fullText: "test content",
       readingState: null,
@@ -273,6 +275,7 @@ describe("POST /api/pdf/open", () => {
     expect(fresh).toStrictEqual({
       id: stale.id,
       fileName: "fresh.pdf",
+      format: "pdf",
       pageCount: 209,
       fullText: "fresh text",
       readingState: null,
@@ -283,6 +286,7 @@ describe("POST /api/pdf/open", () => {
     expect(await getResponse.json()).toStrictEqual({
       id: stale.id,
       fileName: "fresh.pdf",
+      format: "pdf",
       pageCount: 209,
       hasThumbnail: false,
       hasOutline: false,
@@ -456,6 +460,7 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
     expect(await (await apiFetch(`https://example.com/api/pdf/${id}`)).json()).toStrictEqual({
       id,
       fileName: "flagged.pdf",
+      format: "pdf",
       pageCount: 3,
       hasThumbnail: false,
       hasOutline: true,
@@ -523,6 +528,7 @@ describe("GET /api/pdf/:pdfId", () => {
     expect(await response.json()).toStrictEqual({
       id: uploadJson.id,
       fileName: "test.pdf",
+      format: "pdf",
       pageCount: 1,
       hasThumbnail: false,
       hasOutline: false,
@@ -632,6 +638,7 @@ describe("GET /api/pdfs", () => {
     expect(covered).toStrictEqual({
       id: withCover.id,
       fileName: "with-cover.pdf",
+      format: "pdf",
       pageCount: 1,
       updatedAt: expect.any(String),
       hasThumbnail: true,
@@ -1507,6 +1514,7 @@ describe("openPdf with an injected IdClock", () => {
     expect(stored._unsafeUnwrap()).toStrictEqual({
       id: "book-idclock-new",
       fileName: "injected.pdf",
+      format: "pdf",
       pageCount: 3,
       fullText: "本文",
       readingState: null,
@@ -1549,6 +1557,7 @@ describe("openPdf with an injected IdClock", () => {
     expect(reopened._unsafeUnwrap()).toStrictEqual({
       id: "book-idclock-reopen",
       fileName: "second.pdf",
+      format: "pdf",
       pageCount: 4,
       fullText: "再抽出した本文",
       readingState: null,
@@ -1563,5 +1572,130 @@ describe("openPdf with an injected IdClock", () => {
       created_at: "2026-01-02T03:04:05.678Z",
       updated_at: "2026-03-04T05:06:07.891Z",
     });
+  });
+});
+
+/**
+ * Bytes the server takes for an EPUB: an EPUB is a ZIP archive, and the format
+ * is read off the archive's opening signature alone. The tag keeps each test's
+ * book its own, as `uniquePdfBytes` does.
+ */
+function uniqueEpubBytes(tag: string): Uint8Array {
+  return new TextEncoder().encode(`PK\x03\x04mimetypeapplication/epub+zip ${tag}`);
+}
+
+async function uploadEpub(tag: string): Promise<PdfResponse & { format: string }> {
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([uniqueEpubBytes(tag)], `${tag}.epub`, { type: "application/epub+zip" }),
+  );
+  formData.append("fullText", ["序章", "第1章 本文"].join("\f"));
+  formData.append("pageCount", "2");
+
+  const response = await apiFetch("https://example.com/api/pdf/open", {
+    method: "POST",
+    body: formData,
+  });
+  expect(response.status).toBe(200);
+  return (await response.json()) as PdfResponse & { format: string };
+}
+
+describe("EPUB books", () => {
+  it("reads the format off the bytes rather than the file's name", async () => {
+    const formData = new FormData();
+    // Named like a PDF, but the bytes are an archive
+    formData.append("file", new File([uniqueEpubBytes("misnamed")], "misnamed.pdf"));
+    formData.append("fullText", "本文");
+    formData.append("pageCount", "1");
+
+    const response = await apiFetch("https://example.com/api/pdf/open", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(((await response.json()) as { format: string }).format).toBe("epub");
+  });
+
+  it("carries the format to the shelf and to the reader", async () => {
+    const book = await uploadEpub("epub-format");
+
+    expect(book.format).toBe("epub");
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      format: string;
+      pageCount: number;
+    };
+    expect(detail.format).toBe("epub");
+    expect(detail.pageCount).toBe(2);
+
+    const { books } = (await (await apiFetch("https://example.com/api/pdfs")).json()) as {
+      books: { id: string; format: string }[];
+    };
+    expect(books.find((b) => b.id === book.id)?.format).toBe("epub");
+  });
+
+  it("serves the stored EPUB as one, from a key of its own", async () => {
+    const book = await uploadEpub("epub-file");
+    const fileHash = await storedFileHash(book.id);
+
+    expect(await env.PDF_BUCKET.head(bookObjectKey(fileHash, "epub"))).not.toBeNull();
+    expect(await env.PDF_BUCKET.head(pdfObjectKey(fileHash))).toBeNull();
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/file`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/epub+zip");
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(
+      uniqueEpubBytes("epub-file"),
+    );
+  });
+
+  it("takes the EPUB out of storage when the book is deleted", async () => {
+    const book = await uploadEpub("epub-delete");
+    const fileHash = await storedFileHash(book.id);
+
+    await apiFetch(`https://example.com/api/pdf/${book.id}`, { method: "DELETE" });
+
+    expect(await env.PDF_BUCKET.head(bookObjectKey(fileHash, "epub"))).toBeNull();
+  });
+
+  it("keeps where a passage sits in its chapter's text, which is what an EPUB highlight is drawn from", async () => {
+    const book = await uploadEpub("epub-highlight");
+    const rects = [{ x: 10, y: 20, width: 100, height: 18 }];
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/selections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedText: "本文",
+        pageNumber: 2,
+        positionData: { rects, pageWidth: 640, textRange: { start: 4, end: 6 } },
+      }),
+    });
+    expect(response.status).toBe(201);
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      selections: { positionData: unknown }[];
+    };
+    expect(detail.selections[0].positionData).toStrictEqual({
+      rects,
+      pageWidth: 640,
+      textRange: { start: 4, end: 6 },
+    });
+  });
+
+  it("refuses a text range that ends where it starts", async () => {
+    const book = await uploadEpub("epub-empty-range");
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/selections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedText: "本文",
+        pageNumber: 2,
+        positionData: { rects: [], textRange: { start: 4, end: 4 } },
+      }),
+    });
+    expect(response.status).toBe(400);
   });
 });

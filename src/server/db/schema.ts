@@ -28,6 +28,9 @@ export const pdfs = sqliteTable("pdfs", {
   // only in R2. When set, Dropbox holds the book and R2 is a copy of it that
   // `/file` refills from Dropbox if it is gone.
   dropboxId: text("dropbox_id").unique(),
+  // "pdf" or "epub" (`bookFormatSchema`). Read off the bytes when the book is
+  // stored, never off the name the reader gave the file.
+  format: text("format").notNull().default("pdf"),
 });
 
 /** Settings changed from the screen. One row per key (`dropbox_folder`). */

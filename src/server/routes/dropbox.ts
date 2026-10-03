@@ -13,6 +13,7 @@ import {
 } from "../services/dropboxService";
 import { storageFailure, type StorageError } from "../services/serviceError";
 import { getDropboxFolder, saveDropboxFolder } from "../services/settingsService";
+import { BOOK_CONTENT_TYPES } from "../services/pdfService";
 import {
   normalizeDropboxFolder,
   saveDropboxFolderRequestSchema,
@@ -217,7 +218,11 @@ export const dropboxRoute = new Hono<Env>()
 
     return new Response(body, {
       headers: {
-        "Content-Type": "application/pdf",
+        // Named by the extension the listing chose the file by; the reader
+        // reads the bytes for itself, and the server does again on storing.
+        "Content-Type": /\.epub$/i.test(entry.name)
+          ? BOOK_CONTENT_TYPES.epub
+          : BOOK_CONTENT_TYPES.pdf,
         "Cache-Control": "private, no-store",
       },
     });
