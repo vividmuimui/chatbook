@@ -222,7 +222,7 @@ export function EpubViewer({
       setCitedPassage(null);
       return;
     }
-    const range = rangeOfQuote(chapterElement, citedPassage.text);
+    const range = rangeOfQuote(chapterElement, citedPassage.text, citedPassage.context);
     setCitedSelection(range ? selectionOnPage(range, page) : null);
   }, [citedPassage, chapterElement, currentPage, drawnSize, setCitedPassage]);
 
