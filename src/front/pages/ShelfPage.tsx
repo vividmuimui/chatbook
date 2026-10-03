@@ -1,12 +1,15 @@
 import { useState, useCallback, useId, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useAtom } from "jotai";
-import useSWR from "swr";
-import type { ResultAsync } from "neverthrow";
+import useSWR, { useSWRConfig } from "swr";
+import { ResultAsync, errAsync, okAsync } from "neverthrow";
+import { BookTitleDialog } from "../components/BookTitleDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
 import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
+import { bookKey } from "../hooks/useBook";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
+import { bookTitle } from "../lib/bookTitle";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
@@ -16,15 +19,18 @@ import {
   filterShelf,
   groupShelf,
   splitHidden,
-  titleOf,
   type ShelfGroup,
   type ShelfMember,
 } from "../lib/shelfGroups";
 import {
   bookDeletedSchema,
   bookListSchema,
+  bookRenamedSchema,
+  type BookDetail,
   type BookFormat,
+  type BookRenamed,
   type BookSummary,
+  type RenameBookRequest,
 } from "../../shared/schemas/book";
 import { hiddenBooksSchema, type HiddenBooks } from "../../shared/schemas/shelf";
 import {
@@ -45,6 +51,16 @@ export type DeleteBook = (id: string) => ResultAsync<unknown, ApiError>;
 
 const requestBookDeletion: DeleteBook = (id) =>
   resultFetcher(`/api/pdf/${id}`, bookDeletedSchema, { method: "DELETE" });
+
+/** Gives a book a title of the reader's own, or (null) takes it away. A write. */
+export type RenameBook = (id: string, title: string | null) => ResultAsync<BookRenamed, ApiError>;
+
+const requestRename: RenameBook = (id, title) =>
+  resultFetcher(`/api/pdf/${id}`, bookRenamedSchema, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title } satisfies RenameBookRequest),
+  });
 
 /**
  * Cache key of the Dropbox folder's books that are not on the shelf yet. Read
@@ -88,6 +104,7 @@ interface ShelfPageProps {
   downloadDropbox?: DownloadDropboxFile;
   loadHidden?: () => Promise<HiddenBooks>;
   setHidden?: SetHidden;
+  renameBook?: RenameBook;
 }
 
 /**
@@ -230,17 +247,20 @@ interface EntryActions {
   onOpen: (member: ShelfMember) => void;
   onHide: (group: ShelfGroup) => void;
   onDelete: (books: BookSummary[]) => void;
+  onRename: (group: ShelfGroup) => void;
 }
 
 /**
- * The buttons of an entry that are not "open". Hiding is always there; deleting
- * only where the entry holds a book, since a file waiting in Dropbox is not
- * ours to delete.
+ * The buttons of an entry that are not "open". Hiding is always there;
+ * renaming and deleting only where the entry holds a book, since a file
+ * waiting in Dropbox is not ours to rename or delete — its name is the file
+ * system's.
  */
 function EntryButtons({
   group,
   onHide,
   onDelete,
+  onRename,
   className,
   buttonClassName,
   hideClassName,
@@ -248,6 +268,7 @@ function EntryButtons({
   group: ShelfGroup;
   onHide: EntryActions["onHide"];
   onDelete: EntryActions["onDelete"];
+  onRename: EntryActions["onRename"];
   className: string;
   buttonClassName: string;
   hideClassName: string;
@@ -255,6 +276,18 @@ function EntryButtons({
   const books = booksOf(group);
   return (
     <div className={className}>
+      {books.length > 0 && (
+        // Named apart from 「非表示」「削除」「開く」, which the tests and the
+        // E2E reach for by partial name.
+        <button
+          type="button"
+          aria-label={`${group.title} の題名を変更`}
+          onClick={() => onRename(group)}
+          className={`${buttonClassName} ${hideClassName}`}
+        >
+          <span aria-hidden="true">✎</span>
+        </button>
+      )}
       <button
         type="button"
         aria-label={`${group.title} を非表示`}
@@ -309,7 +342,13 @@ function FormatChips({ group, onOpen }: { group: ShelfGroup } & Pick<EntryAction
  * One title on the shelf, however many files it is in. The cover and title open
  * the first file; when there are more, a chip per file opens each.
  */
-function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
+function GroupCard({
+  group,
+  onOpen,
+  onHide,
+  onDelete,
+  onRename,
+}: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
   const showCover = cover !== undefined && !coverFailed;
@@ -387,6 +426,7 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
         group={group}
         onHide={onHide}
         onDelete={onDelete}
+        onRename={onRename}
         className="absolute right-1.5 top-1.5 flex gap-1 transition-opacity md:opacity-0 md:focus-within:opacity-100 md:group-hover/card:opacity-100 [@media(hover:none)]:opacity-100"
         buttonClassName="flex h-11 items-center justify-center rounded-full bg-black/55 px-3 text-lg leading-normal text-white cursor-pointer hover:bg-red-600 md:h-auto md:px-2 md:py-0.5 md:text-sm"
         hideClassName="!text-xs hover:!bg-gray-700"
@@ -396,7 +436,13 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
 }
 
 /** The compact shelf's entry: a small cover, the title and its length on one row. */
-function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
+function GroupRow({
+  group,
+  onOpen,
+  onHide,
+  onDelete,
+  onRename,
+}: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
   const showCover = cover !== undefined && !coverFailed;
@@ -446,6 +492,7 @@ function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & E
         group={group}
         onHide={onHide}
         onDelete={onDelete}
+        onRename={onRename}
         className="ml-1 flex shrink-0 items-center gap-1 pr-1"
         buttonClassName="flex h-11 min-w-11 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
         hideClassName="!px-2 !text-xs hover:!bg-gray-100 hover:!text-gray-700"
@@ -540,8 +587,10 @@ export function ShelfPage({
   downloadDropbox = downloadDropboxFile,
   loadHidden = fetchHidden,
   setHidden = requestHidden,
+  renameBook = requestRename,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
+  const { mutate: mutateKey } = useSWRConfig();
   const { data: books, error: loadError, mutate } = useSWR(SHELF_KEY, loadBooks);
   const {
     data: dropbox,
@@ -585,6 +634,8 @@ export function ShelfPage({
   // What the reader's last action did wrong: adding a book, or removing one.
   // Both are worded by whoever detected them and shown in the same place.
   const [actionError, setActionError] = useState<string | null>(null);
+  // The entry whose title the reader is changing, while its dialog is open.
+  const [renaming, setRenaming] = useState<ShelfGroup | null>(null);
   // The books of the entry the reader pressed × on, all of which go together.
   const [booksPendingDeletion, setBooksPendingDeletion] = useState<BookSummary[] | null>(null);
   // How many elements of the shelf the drag is currently inside. Every card it
@@ -707,10 +758,51 @@ export function ShelfPage({
     );
   };
 
+  /**
+   * Gives every book of an entry the same title — the entry is one book to the
+   * reader, and renaming only one of its files would split it in two
+   * (`groupShelf` gathers renamed books by their title). Stops at the first
+   * book the server refuses, and hands that refusal back for the dialog to show.
+   *
+   * What the server took is written into both caches the title is read from —
+   * the shelf, and the book the reader opens — rather than read again: the
+   * answers already say what each title now is.
+   */
+  const renameGroup = (group: ShelfGroup, title: string | null): ResultAsync<void, ApiError> =>
+    ResultAsync.fromSafePromise(
+      (async () => {
+        const renamed: BookRenamed[] = [];
+        for (const book of booksOf(group)) {
+          const result = await renameBook(book.id, title);
+          if (result.isErr()) return { renamed, failure: result.error };
+          renamed.push(result.value);
+        }
+        return { renamed, failure: null };
+      })(),
+    ).andThen(({ renamed, failure }) => {
+      if (renamed.length > 0) {
+        const titles = new Map(renamed.map((r) => [r.id, r.title]));
+        void mutate(
+          (current) =>
+            current?.map((b) => (titles.has(b.id) ? { ...b, title: titles.get(b.id) ?? null } : b)),
+          { revalidate: false },
+        );
+        for (const { id, title: stored } of renamed) {
+          void mutateKey<BookDetail>(
+            bookKey(id),
+            (current) => (current ? { ...current, title: stored } : current),
+            { revalidate: false },
+          );
+        }
+      }
+      return failure ? errAsync(failure) : okAsync(undefined);
+    });
+
   const entryActions = {
     onOpen: openMember,
     onHide: (group: ShelfGroup) => void setGroupHidden(group, true),
     onDelete: setBooksPendingDeletion,
+    onRename: setRenaming,
   };
 
   return (
@@ -895,8 +987,8 @@ export function ShelfPage({
         <ConfirmDialog
           message={
             (booksPendingDeletion.length === 1
-              ? `「${titleOf(booksPendingDeletion[0].fileName)}」を削除しますか？`
-              : `「${titleOf(booksPendingDeletion[0].fileName)}」の${booksPendingDeletion
+              ? `「${bookTitle(booksPendingDeletion[0])}」を削除しますか？`
+              : `「${bookTitle(booksPendingDeletion[0])}」の${booksPendingDeletion
                   .map((b) => (b.format === "epub" ? "EPUB" : "PDF"))
                   .join("・")}をすべて削除しますか？`) +
             "ハイライトとチャット履歴も削除されます。" +
@@ -908,6 +1000,15 @@ export function ShelfPage({
           confirmLabel="削除する"
           onConfirm={() => removeBooks(booksPendingDeletion)}
           onCancel={() => setBooksPendingDeletion(null)}
+        />
+      )}
+
+      {renaming && (
+        <BookTitleDialog
+          current={renaming.title}
+          save={(title) => renameGroup(renaming, title)}
+          onSaved={() => setRenaming(null)}
+          onCancel={() => setRenaming(null)}
         />
       )}
 

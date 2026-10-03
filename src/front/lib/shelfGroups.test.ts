@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { filterShelf, groupShelf, splitHidden, titleOf } from "./shelfGroups";
+import { filterShelf, groupShelf, splitHidden } from "./shelfGroups";
 import type { BookSummary } from "../../shared/schemas/book";
 import type { DropboxFile } from "../../shared/schemas/dropbox";
 
@@ -166,9 +166,64 @@ describe("filterShelf", () => {
   });
 });
 
-describe("titleOf", () => {
-  it("drops only a trailing book extension", () => {
-    expect(titleOf("a.pdf.epub")).toBe("a.pdf");
-    expect(titleOf("notes.txt")).toBe("notes.txt");
+describe("groupShelf with titles the reader gave", () => {
+  const renamed = (
+    id: string,
+    fileName: string,
+    title: string,
+    format: "pdf" | "epub" = "pdf",
+  ) => ({
+    ...book(id, fileName, format),
+    title,
+  });
+
+  it("calls an entry by the title the reader gave its book", () => {
+    const [group] = groupShelf([renamed("a", "scan_0001.pdf", "Rust 入門")], []);
+
+    expect(group.title).toBe("Rust 入門");
+    expect(filterShelf([group], "rust")).toHaveLength(1);
+    expect(filterShelf([group], "scan")).toHaveLength(0);
+  });
+
+  it("puts books the reader gave the same title into one entry, whatever their files are called", () => {
+    const groups = groupShelf(
+      [renamed("a", "scan_0001.pdf", "Rust 入門"), renamed("b", "rust.epub", "rust 入門", "epub")],
+      [],
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.key)).toStrictEqual(["a", "b"]);
+  });
+
+  it("keeps a Dropbox file with the renamed book its name still matches", () => {
+    const groups = groupShelf(
+      [renamed("a", "scan_0001.pdf", "Rust 入門")],
+      [file("id:1", "scan_0001.epub")],
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].title).toBe("Rust 入門");
+    expect(groups[0].members.map((m) => m.key)).toStrictEqual(["a", "id:1"]);
+  });
+
+  it("takes a book never renamed into the entry of a renamed one its file name matches", () => {
+    // The EPUB brought in from Dropbox after the PDF was renamed: the same
+    // book, though nobody has renamed this file of it yet.
+    const groups = groupShelf(
+      [book("b", "scan_0001.epub", "epub"), renamed("a", "scan_0001.pdf", "Rust 入門")],
+      [],
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].title).toBe("Rust 入門");
+  });
+
+  it("keeps apart a book renamed away from the name it shared", () => {
+    const groups = groupShelf(
+      [renamed("a", "x.pdf", "別の本"), renamed("b", "x.epub", "もう一冊", "epub")],
+      [],
+    );
+
+    expect(groups.map((g) => g.title)).toStrictEqual(["別の本", "もう一冊"]);
   });
 });

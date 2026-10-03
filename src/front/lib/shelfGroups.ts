@@ -1,5 +1,6 @@
 import type { BookFormat, BookSummary } from "../../shared/schemas/book";
 import type { DropboxFile } from "../../shared/schemas/dropbox";
+import { titleOf } from "./bookTitle";
 
 /**
  * One file of a shelf entry: a book already on the shelf, or a file in the
@@ -16,15 +17,13 @@ export type ShelfMember =
 export interface ShelfGroup {
   /** The title, normalized the way files are compared. Stable across reloads. */
   id: string;
-  /** The title as the first file spelt it, without its extension. */
+  /**
+   * The title the reader gave a book of the entry, or else the title as the
+   * first file spelt it, without its extension.
+   */
   title: string;
   /** The preferred format first, and books before Dropbox files inside each. */
   members: ShelfMember[];
-}
-
-/** A file name without its `.pdf` / `.epub`. */
-export function titleOf(fileName: string): string {
-  return fileName.replace(/\.(pdf|epub)$/i, "");
 }
 
 /**
@@ -65,6 +64,14 @@ function memberOrder(member: ShelfMember, preferred: BookFormat): number {
  * Gathers the shelf's books and the Dropbox files not yet opened into entries,
  * one per title. Entries come in the order their first file did, so a book the
  * reader already has keeps its place when its other format turns up in Dropbox.
+ *
+ * **A renamed book is gathered by the title the reader gave it** — that is the
+ * name the reader sees, and two books they called the same are one book to
+ * them, whatever their files are called. A file that still bears the name the
+ * book had before it was renamed follows it into the new entry (`renamedFrom`):
+ * the Dropbox files are named by the reader's file system, which the rename
+ * never touches, and the EPUB of a renamed PDF would otherwise be left on the
+ * shelf under the name the reader replaced.
  */
 export function groupShelf(
   books: BookSummary[],
@@ -72,19 +79,46 @@ export function groupShelf(
   preferred: BookFormat = "pdf",
 ): ShelfGroup[] {
   const groups = new Map<string, ShelfGroup>();
+  // Entries whose title is one the reader wrote, which no file name overrides.
+  const titledByReader = new Set<string>();
 
-  const add = (fileName: string, member: ShelfMember) => {
-    const id = groupIdOf(fileName);
-    const group = groups.get(id);
-    if (group) group.members.push(member);
-    else groups.set(id, { id, title: titleOf(fileName), members: [member] });
+  // A renamed book's file name, pointing at the entry its new title makes. A
+  // file still called what the book was called before — its Dropbox copy in the
+  // other format, or that format once it is brought in and not renamed yet —
+  // is the same book, and goes where the book went. Read in a pass of its own
+  // so the order books arrive in does not decide it.
+  const renamedFrom = new Map<string, string>();
+  for (const book of books) {
+    const id = book.title === null ? null : comparable(book.title);
+    if (id !== null && !renamedFrom.has(groupIdOf(book.fileName))) {
+      renamedFrom.set(groupIdOf(book.fileName), id);
+    }
+  }
+
+  const add = (fileName: string, title: string | null, member: ShelfMember) => {
+    const id =
+      title === null
+        ? (renamedFrom.get(groupIdOf(fileName)) ?? groupIdOf(fileName))
+        : comparable(title);
+    let group = groups.get(id);
+    if (!group) {
+      group = { id, title: title ?? titleOf(fileName), members: [] };
+      groups.set(id, group);
+    }
+    group.members.push(member);
+    // The first title the reader wrote names the entry, even where a file that
+    // followed the renamed book here arrived first.
+    if (title !== null && !titledByReader.has(id)) {
+      titledByReader.add(id);
+      group.title = title;
+    }
   };
 
   for (const book of books) {
-    add(book.fileName, { kind: "book", key: book.id, format: book.format, book });
+    add(book.fileName, book.title, { kind: "book", key: book.id, format: book.format, book });
   }
   for (const file of files) {
-    add(file.name, {
+    add(file.name, null, {
       kind: "dropbox",
       key: file.dropboxId,
       format: formatOfName(file.name),
