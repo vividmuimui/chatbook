@@ -644,8 +644,31 @@ describe("GET /api/pdfs", () => {
       hasThumbnail: true,
       // No Dropbox folder is chosen in this suite, so the book is R2's alone.
       inDropbox: false,
+      // Never opened in a reader, which is not the same as being on page 1.
+      lastReadPage: null,
     });
     expect(uncovered?.hasThumbnail).toBe(false);
+  });
+
+  it("tells the shelf how far the reader has got in each book", async () => {
+    const book = await uploadBook({
+      tag: "shelf-progress",
+      fileName: "progress.pdf",
+      pages: ["one", "two", "three", "four"],
+    });
+    const saved = await apiFetch(`https://example.com/api/pdf/${book.id}/reading-state`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page: 3, selectionId: null }),
+    });
+    expect(saved.status).toBe(200);
+
+    const response = await apiFetch("https://example.com/api/pdfs");
+    const { books } = (await response.json()) as {
+      books: { id: string; pageCount: number; lastReadPage: number | null }[];
+    };
+
+    expect(books.find((b) => b.id === book.id)).toMatchObject({ pageCount: 4, lastReadPage: 3 });
   });
 });
 
