@@ -756,6 +756,38 @@ describe("ShelfPage: one entry per title", () => {
     ).toBeInTheDocument();
   });
 
+  describe("the preferred format", () => {
+    afterEach(() => localStorage.clear());
+
+    it("opens the EPUB from the card once the reader prefers EPUB, and remembers it", async () => {
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      const preference = await screen.findByRole("combobox", { name: "優先する形式" });
+      expect(preference).toHaveValue("pdf");
+      await userEvent.selectOptions(preference, "epub");
+
+      expect(JSON.parse(localStorage.getItem("chatbook:preferred-format")!)).toBe("epub");
+      await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を開く" }));
+      expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
+    });
+
+    it("starts from the format chosen on an earlier visit", async () => {
+      localStorage.setItem("chatbook:preferred-format", JSON.stringify("epub"));
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("epub");
+      await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を開く" }));
+      expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
+    });
+
+    it("falls back to PDF when what was stored is not a format", async () => {
+      localStorage.setItem("chatbook:preferred-format", JSON.stringify("mobi"));
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("pdf");
+    });
+  });
+
   it("deletes every book of the card once the reader agrees", async () => {
     const { deletedIds, deleteBook } = recordingDeleter();
     renderShelf({ loadBooks: PDF_AND_EPUB, deleteBook });

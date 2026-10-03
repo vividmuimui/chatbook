@@ -18,7 +18,7 @@ export interface ShelfGroup {
   id: string;
   /** The title as the first file spelt it, without its extension. */
   title: string;
-  /** Books before Dropbox files, and PDF before EPUB inside each. */
+  /** The preferred format first, and books before Dropbox files inside each. */
   members: ShelfMember[];
 }
 
@@ -45,10 +45,20 @@ function formatOfName(fileName: string): BookFormat {
   return /\.epub$/i.test(fileName) ? "epub" : "pdf";
 }
 
-const FORMAT_ORDER: Record<BookFormat, number> = { pdf: 0, epub: 1 };
-
-function memberOrder(member: ShelfMember): number {
-  return (member.kind === "book" ? 0 : 10) + FORMAT_ORDER[member.format];
+/**
+ * Where a file stands in its entry, lowest first: the entry's cover and title
+ * open the first one.
+ *
+ * **The preferred format wins over being on the shelf already.** A reader who
+ * chose EPUB and has only the PDF imported gets the EPUB fetched from Dropbox
+ * when they open the title — once, after which it is on the shelf too. Putting
+ * imported books first instead would leave the setting doing nothing for
+ * exactly the title whose other format has just turned up in Dropbox, and
+ * open the PDF they said they did not prefer. Inside one format a book on the
+ * shelf comes before a Dropbox file, which costs nothing to open.
+ */
+function memberOrder(member: ShelfMember, preferred: BookFormat): number {
+  return (member.format === preferred ? 0 : 10) + (member.kind === "book" ? 0 : 1);
 }
 
 /**
@@ -56,7 +66,11 @@ function memberOrder(member: ShelfMember): number {
  * one per title. Entries come in the order their first file did, so a book the
  * reader already has keeps its place when its other format turns up in Dropbox.
  */
-export function groupShelf(books: BookSummary[], files: DropboxFile[]): ShelfGroup[] {
+export function groupShelf(
+  books: BookSummary[],
+  files: DropboxFile[],
+  preferred: BookFormat = "pdf",
+): ShelfGroup[] {
   const groups = new Map<string, ShelfGroup>();
 
   const add = (fileName: string, member: ShelfMember) => {
@@ -80,7 +94,9 @@ export function groupShelf(books: BookSummary[], files: DropboxFile[]): ShelfGro
 
   const result = [...groups.values()];
   // Array#sort is stable, so equal members keep the order they came in.
-  for (const group of result) group.members.sort((a, b) => memberOrder(a) - memberOrder(b));
+  for (const group of result) {
+    group.members.sort((a, b) => memberOrder(a, preferred) - memberOrder(b, preferred));
+  }
   return result;
 }
 

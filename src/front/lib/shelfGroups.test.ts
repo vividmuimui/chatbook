@@ -45,6 +45,35 @@ describe("groupShelf", () => {
     expect(groups[0].members.map((m) => m.format)).toStrictEqual(["pdf", "epub"]);
   });
 
+  it("puts the preferred format first when the reader prefers EPUB", () => {
+    const groups = groupShelf([book("a", "x.pdf"), book("b", "x.epub", "epub")], [], "epub");
+
+    expect(groups[0].members.map((m) => m.format)).toStrictEqual(["epub", "pdf"]);
+  });
+
+  it("lets the preferred format win over a book already on the shelf", () => {
+    // The reader asked for EPUB: opening the entry fetches it from Dropbox
+    // rather than quietly opening the PDF they said they did not prefer.
+    const groups = groupShelf([book("a", "x.pdf")], [file("id:1", "x.epub")], "epub");
+
+    expect(groups[0].members.map((m) => [m.kind, m.format])).toStrictEqual([
+      ["dropbox", "epub"],
+      ["book", "pdf"],
+    ]);
+  });
+
+  it("puts the book on the shelf ahead of a Dropbox file of the same format", () => {
+    const groups = groupShelf([book("a", "x.epub", "epub")], [file("id:1", "x.epub")], "epub");
+
+    expect(groups[0].members.map((m) => m.kind)).toStrictEqual(["book", "dropbox"]);
+  });
+
+  it("prefers PDF when told nothing, even over an EPUB already on the shelf", () => {
+    const groups = groupShelf([book("b", "x.epub", "epub")], [file("id:1", "x.pdf")]);
+
+    expect(groups[0].members.map((m) => m.format)).toStrictEqual(["pdf", "epub"]);
+  });
+
   it("ignores case and Unicode normalization when comparing names", () => {
     // が as one code point, and as か plus the combining mark.
     const groups = groupShelf([book("a", "が.PDF"), book("b", "が.epub", "epub")], []);

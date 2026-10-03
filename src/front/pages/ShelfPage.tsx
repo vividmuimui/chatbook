@@ -5,7 +5,7 @@ import useSWR from "swr";
 import type { ResultAsync } from "neverthrow";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
-import { shelfLayoutAtom } from "../atoms/settingsAtom";
+import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
@@ -553,11 +553,17 @@ export function ShelfPage({
   const { data: hidden, error: hiddenError, mutate: mutateHidden } = useSWR(HIDDEN_KEY, loadHidden);
   // Whether the list of books put away is what the page shows, in place of the shelf.
   const [showingHidden, setShowingHidden] = useState(false);
+  // Which file of a title its card opens, when there is a PDF and an EPUB of it.
+  const [preferredFormat, setPreferredFormat] = useAtom(preferredFormatAtom);
   // Until the list arrives nothing is taken to be put away: the shelf does not
   // wait for it, and one that could not be read leaves every book in view.
   const { shown, hidden: putAway } = useMemo(
-    () => splitHidden(groupShelf(books ?? [], dropboxFiles), new Set(hidden?.keys ?? [])),
-    [books, dropboxFiles, hidden],
+    () =>
+      splitHidden(
+        groupShelf(books ?? [], dropboxFiles, preferredFormat),
+        new Set(hidden?.keys ?? []),
+      ),
+    [books, dropboxFiles, hidden, preferredFormat],
   );
   // What the reader typed to find a book. Narrowed on every keystroke, input
   // method composition included: it is a filter over what is already here, so
@@ -779,16 +785,33 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
-        {/* Out of the header: on a phone it already holds three buttons. */}
+        {/* Out of the header: on a phone it already holds three buttons. The
+            preferred format sits beside the search for the same reason, and
+            wraps under it where the two do not fit on one line. A select
+            rather than a pair of PDF / EPUB buttons, whose names the format
+            chips' (「… を PDF で開く」) would partly match. */}
         {(shown.length > 0 || putAway.length > 0 || query !== "") && (
-          <input
-            type="search"
-            aria-label="本棚を検索"
-            placeholder="題名で検索"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="mb-5 w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
+          <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <input
+              type="search"
+              aria-label="本棚を検索"
+              placeholder="題名で検索"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <label className="flex shrink-0 items-center gap-2 text-sm text-gray-600">
+              優先する形式
+              <select
+                value={preferredFormat}
+                onChange={(e) => setPreferredFormat(e.target.value === "epub" ? "epub" : "pdf")}
+                className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 cursor-pointer focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                <option value="pdf">PDF</option>
+                <option value="epub">EPUB</option>
+              </select>
+            </label>
+          </div>
         )}
 
         {showingHidden && (
