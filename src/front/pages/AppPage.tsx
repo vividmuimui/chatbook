@@ -298,7 +298,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
               a phone keeps on screen, and it has room for two icons. A PDF has
               none — its type is part of its pages. */}
           {book?.format === "epub" && <EpubTypographyMenu />}
-          <SettingsMenu />
+          <SettingsMenu pdfId={pdfId} />
         </div>
       </header>
 
@@ -467,6 +467,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
       {isNarrow && book && (
         <PageToolbar
           pageCount={book.pageCount}
+          direction={book.pageDirection}
           highlightCount={book.selections.length}
           chatOpen={chatSheet !== "closed"}
           onToggleChat={() => setChatSheet(chatSheet === "closed" ? "half" : "closed")}

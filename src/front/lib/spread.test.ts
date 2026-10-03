@@ -80,6 +80,15 @@ describe("visiblePages", () => {
   it("shows the page alone when the pane only has room for one", () => {
     expect(visiblePages(7, 12, false)).toStrictEqual([7]);
   });
+
+  it("puts the page the reader is on to the right in a book that opens on the right", () => {
+    // Left to right on the screen: the next page sits on the left
+    expect(visiblePages(7, 12, true, "rtl")).toStrictEqual([8, 7]);
+  });
+
+  it("shows the last page alone in a book that opens on the right too", () => {
+    expect(visiblePages(12, 12, true, "rtl")).toStrictEqual([12]);
+  });
 });
 
 describe("turnTo", () => {

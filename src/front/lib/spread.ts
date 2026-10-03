@@ -8,6 +8,7 @@
 
 import { fitPageScale, type PageSize, type PaneSize } from "./pageScale";
 import type { PageTurn } from "./touchNavigation";
+import type { PageDirection } from "../../shared/schemas/book";
 
 /**
  * The space between the two pages of a spread, in pixels.
@@ -46,13 +47,21 @@ export function fitsTwoPages(page: PageSize, pane: PaneSize, zoom: number): bool
 }
 
 /**
- * The pages up at once, left to right.
+ * The pages up at once, left to right on the screen.
  *
- * The page the reader is on is always the left one, so a link followed to a
- * passage lands on the page that holds it rather than beside it.
+ * The page the reader is on is always the one the spread is read from first —
+ * the left in a book that opens on the left, the right in one that opens on
+ * the right — so a link followed to a passage lands on the page that holds it
+ * rather than beside it, and the page after it is where the eye goes next.
  */
-export function visiblePages(currentPage: number, pageCount: number, twoUp: boolean): number[] {
-  return twoUp && currentPage < pageCount ? [currentPage, currentPage + 1] : [currentPage];
+export function visiblePages(
+  currentPage: number,
+  pageCount: number,
+  twoUp: boolean,
+  direction: PageDirection = "ltr",
+): number[] {
+  if (!twoUp || currentPage >= pageCount) return [currentPage];
+  return direction === "rtl" ? [currentPage + 1, currentPage] : [currentPage, currentPage + 1];
 }
 
 /**

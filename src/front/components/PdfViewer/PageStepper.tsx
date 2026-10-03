@@ -1,9 +1,16 @@
 import { useAtom } from "jotai";
 import { currentPageAtom } from "../../atoms/pdfAtom";
-import { turnTo, visiblePages } from "../../lib/spread";
+import { turnTo } from "../../lib/spread";
+import { turnToward, type PageTurn, type ScreenSide } from "../../lib/touchNavigation";
+import type { PageDirection } from "../../../shared/schemas/book";
 
 /** Apple and Android both put the floor for a tappable control here. */
 const TAP_TARGET = "h-11 min-w-11";
+
+const TURN_LABELS: Record<PageTurn, string> = {
+  prev: "前のページ",
+  next: "次のページ",
+};
 
 interface PageStepperProps {
   pageCount: number;
@@ -14,6 +21,11 @@ interface PageStepperProps {
    * single page whatever else it does.
    */
   step?: number;
+  /**
+   * Which way the book's pages turn. The step on sits on the side the next
+   * page is on — the left, in a book that opens on the right.
+   */
+  direction?: PageDirection;
 }
 
 /**
@@ -29,49 +41,50 @@ interface PageStepperProps {
  * The page is read from its atom rather than passed in, since the keyboard
  * shortcuts and the edges of the page write the same one.
  */
-export function PageStepper({ pageCount, step = 1 }: PageStepperProps) {
+export function PageStepper({ pageCount, step = 1, direction = "ltr" }: PageStepperProps) {
   const [currentPage, setCurrentPage] = useAtom(currentPageAtom);
 
   // Where each control leads, asked of the same arithmetic the edges of the
   // page and the keyboard turn by. A control that leads nowhere is the one
   // that is spent: at the end of the book, and at the start of it.
-  const back = turnTo(currentPage, "prev", pageCount, step);
-  const on = turnTo(currentPage, "next", pageCount, step);
-  const up = visiblePages(currentPage, pageCount, step > 1);
+  const leadsTo = (turn: PageTurn) => turnTo(currentPage, turn, pageCount, step);
+  // Named in the order the book counts them, whichever side of the spread
+  // each is drawn on: "7-8" is where the reader is in a book of either kind.
+  const lastUp = Math.min(pageCount, currentPage + step - 1);
+
+  const stepButton = (side: ScreenSide) => {
+    const turn = turnToward(side, direction);
+    const to = leadsTo(turn);
+    return (
+      <button
+        type="button"
+        aria-label={TURN_LABELS[turn]}
+        disabled={to === currentPage}
+        onClick={() => setCurrentPage(to)}
+        className={`${TAP_TARGET} cursor-pointer rounded-lg text-gray-600 disabled:cursor-default disabled:opacity-30`}
+      >
+        <ChevronIcon direction={side} />
+      </button>
+    );
+  };
 
   return (
     <>
-      <button
-        type="button"
-        aria-label="前のページ"
-        disabled={back === currentPage}
-        onClick={() => setCurrentPage(back)}
-        className={`${TAP_TARGET} cursor-pointer rounded-lg text-gray-600 disabled:cursor-default disabled:opacity-30`}
-      >
-        <ChevronIcon direction="left" />
-      </button>
+      {stepButton("left")}
 
       {/* No padding of its own: the 44px each button reserves around its
           chevron is already the room between them, and adding to it pulls the
           three apart into three things instead of one control. */}
       <span className="text-sm text-gray-600 tabular-nums">
-        {up.length > 1 ? `${up[0]}-${up[1]}` : up[0]} / {pageCount}
+        {lastUp > currentPage ? `${currentPage}-${lastUp}` : currentPage} / {pageCount}
       </span>
 
-      <button
-        type="button"
-        aria-label="次のページ"
-        disabled={on === currentPage}
-        onClick={() => setCurrentPage(on)}
-        className={`${TAP_TARGET} cursor-pointer rounded-lg text-gray-600 disabled:cursor-default disabled:opacity-30`}
-      >
-        <ChevronIcon direction="right" />
-      </button>
+      {stepButton("right")}
     </>
   );
 }
 
-function ChevronIcon({ direction }: { direction: "left" | "right" }) {
+function ChevronIcon({ direction }: { direction: ScreenSide }) {
   return (
     <svg
       viewBox="0 0 24 24"

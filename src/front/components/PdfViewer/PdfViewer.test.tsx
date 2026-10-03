@@ -6,6 +6,7 @@ import { errAsync, ok, okAsync, ResultAsync, type Result } from "neverthrow";
 import { PdfViewer, type MeasureSelection } from "./PdfViewer";
 import { SwrTestCache } from "../../../test/swrTestCache";
 import { activeSelectionAtom, chatPanelOpenAtom, chatSheetAtom } from "../../atoms/chatAtom";
+import { currentPageAtom } from "../../atoms/pdfAtom";
 import { bookKey } from "../../hooks/useBook";
 import { zoomAtomFor } from "../../atoms/settingsAtom";
 import { PHONE_WIDTH, setViewportWidth } from "../../../test/viewport";
@@ -67,14 +68,16 @@ function renderViewer(
     measureSelection?: MeasureSelection;
     saveSelection?: SaveSelection;
     store?: ReturnType<typeof createStore>;
+    book?: BookDetail;
   } = {},
 ) {
+  const book = options.book ?? BOOK;
   return render(
-    <SwrTestCache seed={{ [bookKey(BOOK.id)]: BOOK }}>
+    <SwrTestCache seed={{ [bookKey(book.id)]: book }}>
       <Provider store={options.store ?? createStore()}>
         <PdfViewer
-          pdfId={BOOK.id}
-          book={BOOK}
+          pdfId={book.id}
+          book={book}
           bookError={undefined}
           onSelectionClick={() => {}}
           measureSelection={options.measureSelection}
@@ -101,6 +104,19 @@ describe("PdfViewer", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
+  });
+
+  it("turns on with ← in a book that opens on the right", async () => {
+    // The direction is the book's, handed down with it: the keyboard has to
+    // hear it, not just the pure resolver.
+    vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+    const store = createStore();
+    store.set(currentPageAtom, 5);
+    renderViewer({ store, book: { ...BOOK, pageDirection: "rtl" } });
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+
+    expect(store.get(currentPageAtom)).toBe(6);
   });
 
   it("offers to ask about a passage held down on a touch screen", async () => {
