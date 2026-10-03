@@ -150,6 +150,23 @@ function singleMemberCaption(member: ShelfMember): string {
   return `${subfolder ? `${subfolder} · ` : ""}未読み込み`;
 }
 
+/**
+ * Which format the single file of an entry is. An entry of several files says
+ * so through its chips; one of a single file has no chips, and would otherwise
+ * leave the reader guessing whether it is the PDF or the EPUB.
+ */
+function FormatBadge({ member }: { member: ShelfMember }) {
+  return (
+    <span
+      className={`mr-1 inline-block rounded border px-1 text-[10px] font-medium leading-4 ${
+        member.kind === "dropbox" ? "border-sky-300 text-sky-700" : "border-gray-300 text-gray-600"
+      }`}
+    >
+      {FORMAT_LABEL[member.format]}
+    </span>
+  );
+}
+
 /** What the reader presses to read one file of an entry. */
 function memberLabel(title: string, member: ShelfMember): string {
   return member.kind === "dropbox" ? `${title} を Dropbox から開く` : `${title} を開く`;
@@ -354,6 +371,7 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
         <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{group.title}</p>
         {(progress?.kind === "read" || single) && (
           <p className="truncate text-xs text-gray-500">
+            {single && <FormatBadge member={primary} />}
             {progress?.kind === "read" && <ProgressText id={progressId} progress={progress} />}
             {progress?.kind === "read" && single && " · "}
             {single && singleMemberCaption(primary)}
@@ -411,6 +429,7 @@ function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & E
           <span className="block truncate text-sm font-medium text-gray-800">{group.title}</span>
           {(progress || single) && (
             <span className="block truncate text-xs text-gray-500">
+              {single && <FormatBadge member={primary} />}
               <ProgressText id={progressId} progress={progress} />
               {progress && single && " · "}
               {single && singleMemberCaption(primary)}
