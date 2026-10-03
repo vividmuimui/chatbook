@@ -6,6 +6,6 @@
 pre-push:
   jobs:
     - name: check
-      run: vp check </dev/null
+      run: pnpm exec vp check </dev/null
     - name: build
-      run: vp build </dev/null
+      run: pnpm exec vp build </dev/null
