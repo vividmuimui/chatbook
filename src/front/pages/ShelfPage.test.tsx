@@ -459,6 +459,37 @@ describe("ShelfPage", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
+  describe("compact layout", () => {
+    afterEach(() => localStorage.clear());
+
+    it("lists the books as rows once the compact toggle is pressed, and keeps every action", async () => {
+      const { deletedIds, deleteBook } = recordingDeleter();
+      renderShelf({ loadBooks: TWO_BOOKS, deleteBook });
+
+      const toggle = await screen.findByRole("button", { name: "コンパクト表示" });
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await userEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("Rust 入門")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "PDFを追加" })).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を削除" }));
+      await userEvent.click(screen.getByRole("button", { name: "削除する" }));
+      await waitFor(() => expect(deletedIds).toStrictEqual(["book-2"]));
+    });
+
+    it("opens the reader from a compact row", async () => {
+      localStorage.setItem("chatbook:shelf-layout", JSON.stringify("compact"));
+      renderShelf({ loadBooks: TWO_BOOKS });
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" }),
+      );
+
+      expect(await screen.findByText("リーダー: book-1")).toBeInTheDocument();
+    });
+  });
 });
 
 const DROPBOX_BOOK: DropboxFile = {

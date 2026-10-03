@@ -147,6 +147,18 @@ atom に常駐させているわけではない。
 セッションは stateless なので個別には失効させられず、入れ替えると自分の端末も含めて
 全部ログアウトになる。
 
+### PWA としてのインストール
+
+`public/manifest.webmanifest` と各種アイコン（`icon-192.png` / `icon-512.png` /
+`icon-maskable-512.png` / `apple-touch-icon.png`）、`index.html` の `<link rel="manifest">` と
+`theme-color` でインストールできる。アイコンの元は `favicon.svg` と `icon-maskable.svg`
+（余白を取った全面塗り）で、PNG は `rsvg-convert -w <px> -h <px>` で作り直してコミットする。
+
+**Service Worker は意図的に置かない**。API はログインの内側にあり、本の中身をオフライン用に
+キャッシュすると共有キャッシュ・失効の扱いが増えるだけで、利用者の得が無い。Chrome / Edge は
+Service Worker 無しでもインストールを出し、iOS は「ホーム画面に追加」で足りる。
+マニフェストは静的アセットなので `requireSession` の外（`/api/*` ではない）から取れる。
+
 ### デプロイ
 
 ```bash
