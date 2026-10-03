@@ -56,6 +56,8 @@ const STORED: CreatedSelection = {
   selectedText: PASSAGE,
   pageNumber: 1,
   positionData: MEASURED.selectionPosition,
+  color: "#FFEB3B",
+  note: null,
   createdAt: "2026-08-01T10:00:00.000Z",
 };
 

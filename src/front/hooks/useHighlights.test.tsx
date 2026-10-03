@@ -19,6 +19,7 @@ function highlight(overrides: Partial<SelectionHighlight> = {}): SelectionHighli
     pageNumber: 1,
     positionData: { rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
     color: "#FFEB3B",
+    note: null,
     createdAt: "2026-08-01T10:00:00.000Z",
     ...overrides,
   };
@@ -157,6 +158,8 @@ describe("useHighlights", () => {
       selectedText: "Workers はリクエストごとに分離されます。",
       pageNumber: 12,
       positionData: { rects: [] },
+      color: "#FFEB3B",
+      note: null,
       createdAt: "2026-08-03T10:00:00.000Z",
     };
     await act(async () => {

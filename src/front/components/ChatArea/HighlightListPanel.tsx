@@ -10,6 +10,7 @@ export interface HighlightListItem {
   selectedText: string;
   pageNumber: number;
   color: string;
+  note: string | null;
   createdAt: string;
 }
 

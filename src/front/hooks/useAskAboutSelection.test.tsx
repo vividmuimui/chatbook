@@ -31,6 +31,8 @@ const STORED: CreatedSelection = {
   selectedText: PASSAGE,
   pageNumber: 42,
   positionData: { rects: [{ x: 10, y: 20, width: 100, height: 16 }], pageWidth: 600 },
+  color: "#FFEB3B",
+  note: null,
   createdAt: "2026-08-01T10:00:00.000Z",
 };
 

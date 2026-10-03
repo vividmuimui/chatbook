@@ -36,6 +36,7 @@ const HIGHLIGHTS: SelectionHighlight[] = [
     pageNumber: 42,
     positionData: { rects: [] },
     color: "#FFEB3B",
+    note: null,
     createdAt: "2026-08-01T10:00:00.000Z",
   },
   {
@@ -44,6 +45,7 @@ const HIGHLIGHTS: SelectionHighlight[] = [
     pageNumber: 7,
     positionData: { rects: [] },
     color: "#2196F3",
+    note: null,
     createdAt: "2026-08-02T10:00:00.000Z",
   },
 ];

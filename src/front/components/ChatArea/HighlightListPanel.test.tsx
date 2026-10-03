@@ -11,6 +11,7 @@ const OLDER: HighlightListItem = {
   selectedText: "エッジはサーバーレス実行基盤で、実行単位をまたいでメモリを共有できません。",
   pageNumber: 42,
   color: "#FFEB3B",
+  note: null,
   createdAt: "2026-08-01T10:00:00.000Z",
 };
 
@@ -19,6 +20,7 @@ const MIDDLE: HighlightListItem = {
   selectedText: "KV は結果整合で、書き込みが伝わるまで数秒かかります。",
   pageNumber: 88,
   color: "#4CAF50",
+  note: null,
   createdAt: "2026-08-02T10:00:00.000Z",
 };
 
@@ -27,6 +29,7 @@ const NEWER: HighlightListItem = {
   selectedText: "Durable Objects は単一のインスタンスに処理を集約します。",
   pageNumber: 7,
   color: "#2196F3",
+  note: null,
   createdAt: "2026-08-03T10:00:00.000Z",
 };
 

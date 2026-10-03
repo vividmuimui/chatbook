@@ -12,6 +12,7 @@ import {
   thumbnailObjectKey,
   type IdClock,
 } from "../../src/server/services/pdfService";
+import { MAX_NOTE_LENGTH } from "../../src/shared/schemas/selection";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -1033,6 +1034,8 @@ describe("POST /api/pdf/:pdfId/selections", () => {
       selectedText: "Workers",
       pageNumber: 2,
       positionData: { rects, pageWidth: 600 },
+      color: "#FFEB3B",
+      note: null,
       createdAt: expect.any(String),
     });
     expect(await readSelections(book.id)).toStrictEqual([
@@ -1042,9 +1045,159 @@ describe("POST /api/pdf/:pdfId/selections", () => {
         pageNumber: 2,
         positionData: { rects, pageWidth: 600 },
         color: "#FFEB3B",
+        note: null,
         createdAt: expect.any(String),
       },
     ]);
+  });
+
+  it("keeps the colour and the note the reader chose, and reads them back with the book", async () => {
+    const book = await uploadBook({ tag: "sel-color-note", fileName: "sel-color-note.pdf" });
+
+    const response = await postSelection(book.id, {
+      selectedText: "Workers",
+      pageNumber: 1,
+      positionData: { rects: [] },
+      color: "#EC407A",
+      note: "  あとで読み返す  ",
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ color: "#EC407A", note: "あとで読み返す" });
+    expect(await readSelections(book.id)).toMatchObject([
+      { color: "#EC407A", note: "あとで読み返す" },
+    ]);
+  });
+
+  it("stores a blank note as no note at all", async () => {
+    const book = await uploadBook({ tag: "sel-blank-note", fileName: "sel-blank-note.pdf" });
+
+    await postSelection(book.id, {
+      selectedText: "Workers",
+      pageNumber: 1,
+      positionData: { rects: [] },
+      note: "   ",
+    });
+
+    expect(await readSelections(book.id)).toMatchObject([{ note: null }]);
+  });
+
+  it("refuses a colour the reader could not have picked", async () => {
+    const book = await uploadBook({ tag: "sel-bad-color", fileName: "sel-bad-color.pdf" });
+
+    const response = await postSelection(book.id, {
+      selectedText: "Workers",
+      pageNumber: 1,
+      positionData: { rects: [] },
+      color: "#123456",
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "VALIDATION_ERROR", message: "Invalid request body: color" },
+    });
+    expect(await readSelections(book.id)).toStrictEqual([]);
+  });
+
+  it("refuses a note longer than the limit rather than cutting it short", async () => {
+    const book = await uploadBook({ tag: "sel-long-note", fileName: "sel-long-note.pdf" });
+
+    const response = await postSelection(book.id, {
+      selectedText: "Workers",
+      pageNumber: 1,
+      positionData: { rects: [] },
+      note: "あ".repeat(MAX_NOTE_LENGTH + 1),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await readSelections(book.id)).toStrictEqual([]);
+  });
+});
+
+describe("PATCH /api/pdf/:pdfId/selections/:selId", () => {
+  async function highlight(tag: string, extra: Record<string, unknown> = {}) {
+    const book = await uploadBook({ tag, fileName: `${tag}.pdf` });
+    const created = (await (
+      await postSelection(book.id, {
+        selectedText: "Workers",
+        pageNumber: 1,
+        positionData: { rects: [] },
+        ...extra,
+      })
+    ).json()) as { id: string };
+    return { book, selectionId: created.id };
+  }
+
+  async function patchSelection(pdfId: string, selectionId: string, body: unknown) {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}/selections/${selectionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("recolours a highlight and leaves its note alone", async () => {
+    const { book, selectionId } = await highlight("patch-color", { note: "残すメモ" });
+
+    const response = await patchSelection(book.id, selectionId, { color: "#42A5F5" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({
+      id: selectionId,
+      color: "#42A5F5",
+      note: "残すメモ",
+    });
+    expect(await readSelections(book.id)).toMatchObject([{ color: "#42A5F5", note: "残すメモ" }]);
+  });
+
+  it("writes a note onto a highlight that had none, keeping its colour", async () => {
+    const { book, selectionId } = await highlight("patch-note", { color: "#FF9800" });
+
+    const response = await patchSelection(book.id, selectionId, { note: "書き足した" });
+
+    expect(await response.json()).toStrictEqual({
+      id: selectionId,
+      color: "#FF9800",
+      note: "書き足した",
+    });
+  });
+
+  it.each([null, "  "])("takes the note away when it is sent as %j", async (note) => {
+    const { book, selectionId } = await highlight(`patch-clear-${String(note).length}`, {
+      note: "消すメモ",
+    });
+
+    await patchSelection(book.id, selectionId, { note });
+
+    expect(await readSelections(book.id)).toMatchObject([{ note: null }]);
+  });
+
+  it("refuses a change that names nothing to change", async () => {
+    const { book, selectionId } = await highlight("patch-empty");
+
+    expect((await patchSelection(book.id, selectionId, {})).status).toBe(400);
+  });
+
+  it("refuses a colour off the palette", async () => {
+    const { book, selectionId } = await highlight("patch-bad-color");
+
+    const response = await patchSelection(book.id, selectionId, { color: "red" });
+
+    expect(response.status).toBe(400);
+    expect(await readSelections(book.id)).toMatchObject([{ color: "#FFEB3B" }]);
+  });
+
+  it("answers not found for a highlight of another book, and leaves it as it was", async () => {
+    const { selectionId, book } = await highlight("patch-owner-a");
+    const other = await uploadBook({ tag: "patch-owner-b", fileName: "patch-owner-b.pdf" });
+
+    const response = await patchSelection(other.id, selectionId, { color: "#42A5F5" });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "SELECTION_NOT_FOUND", message: "Selection not found" },
+    });
+    expect(await readSelections(book.id)).toMatchObject([{ color: "#FFEB3B" }]);
   });
 });
 
@@ -1113,6 +1266,7 @@ describe("DELETE /api/pdf/:pdfId/selections/:selId", () => {
         pageNumber: 2,
         positionData: { rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
         color: "#FFEB3B",
+        note: null,
         createdAt: expect.any(String),
       },
     ]);
@@ -1226,6 +1380,23 @@ describe("GET /api/pdf/:pdfId/search", () => {
     expect(selectionIds).toHaveLength(2);
   });
 
+  it("finds a highlight by the note written against it", async () => {
+    const { book, inAnswer } = await bookWithSearchableChats("search-note");
+    await apiFetch(`https://example.com/api/pdf/${book.id}/selections/${inAnswer}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: "設計レビューで 100% 引用したい" }),
+    });
+
+    expect(await (await search(book.id, "設計レビュー")).json()).toStrictEqual({
+      selectionIds: [inAnswer],
+    });
+    // The escape covers the note too: "%" is the character in it, not "anything".
+    expect(await (await search(book.id, "0%")).json()).toStrictEqual({
+      selectionIds: [inAnswer],
+    });
+  });
+
   it("treats a percent sign as a character to look for, not as a wildcard", async () => {
     // Passed straight into LIKE it would match every highlight in the book.
     const { book } = await bookWithSearchableChats("search-wildcard");
@@ -1282,6 +1453,7 @@ describe("GET /api/pdf/:pdfId highlight geometry", () => {
         pageNumber: 1,
         positionData: { rects: [], pageWidth: 900 },
         color: "#FFEB3B",
+        note: null,
         createdAt: "2026-01-01T00:00:00Z",
       },
       {
@@ -1290,6 +1462,7 @@ describe("GET /api/pdf/:pdfId highlight geometry", () => {
         pageNumber: 2,
         positionData: { rects: [] },
         color: "#FF9800",
+        note: null,
         createdAt: "2026-01-02T00:00:00Z",
       },
     ]);

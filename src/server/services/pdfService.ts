@@ -12,7 +12,11 @@ import {
   type ReadingState,
   type SaveReadingStateRequest,
 } from "../../shared/schemas/book";
-import { positionDataSchema, type PositionData } from "../../shared/schemas/selection";
+import {
+  positionDataSchema,
+  type PositionData,
+  type SelectionUpdated,
+} from "../../shared/schemas/selection";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
 
 /**
@@ -365,7 +369,7 @@ function readPositionData(stored: string): PositionData {
 }
 
 /**
- * The book's highlights whose passage, or whose chat, holds `query`.
+ * The book's highlights whose passage, note or chat holds `query`.
  *
  * One statement rather than two searches merged afterwards: a highlight matched
  * by both would otherwise have to be de-duplicated, and the two halves could
@@ -406,6 +410,7 @@ async function findSelections(
       `SELECT s.id FROM selections s
        WHERE s.pdf_id = ?1
          AND (s.selected_text LIKE ?2 ESCAPE '\\'
+              OR s.note LIKE ?2 ESCAPE '\\'
               OR EXISTS (SELECT 1 FROM chat_messages m
                          WHERE m.selection_id = s.id AND m.content LIKE ?2 ESCAPE '\\'))
        ORDER BY s.created_at DESC`,
@@ -414,6 +419,45 @@ async function findSelections(
     .all<{ id: string }>();
 
   return rows.results.map((row) => row.id);
+}
+
+/**
+ * Change the colour or the note of one of a book's highlights.
+ *
+ * A field left undefined keeps what is stored; a note of null takes it away.
+ * NOT_FOUND when the highlight is not in that book — including when it is in
+ * another one, so a request naming the wrong book cannot reach it.
+ */
+export function updateSelection(
+  db: D1Database,
+  pdfId: string,
+  selectionId: string,
+  change: { color?: string; note?: string | null },
+): ResultAsync<SelectionUpdated, ServiceError> {
+  return ResultAsync.fromPromise(
+    writeSelection(db, pdfId, selectionId, change),
+    storageFailure,
+  ).andThen((updated) => (updated ? ok(updated) : err(notFound())));
+}
+
+async function writeSelection(
+  db: D1Database,
+  pdfId: string,
+  selectionId: string,
+  change: { color?: string; note?: string | null },
+): Promise<SelectionUpdated | null> {
+  const owned = and(eq(selections.id, selectionId), eq(selections.pdfId, pdfId));
+  const updated = await drizzle(db)
+    .update(selections)
+    .set({
+      ...(change.color === undefined ? {} : { color: change.color }),
+      ...(change.note === undefined ? {} : { note: change.note }),
+    })
+    .where(owned)
+    .returning({ id: selections.id, color: selections.color, note: selections.note })
+    .get();
+
+  return updated ?? null;
 }
 
 /**
@@ -452,6 +496,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
       pageNumber: s.pageNumber,
       positionData: readPositionData(s.positionData),
       color: s.color,
+      note: s.note,
       createdAt: s.createdAt,
     })),
   };

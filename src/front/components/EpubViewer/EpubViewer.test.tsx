@@ -136,6 +136,8 @@ describe("EpubViewer", () => {
           selectedText: draft.selectedText,
           pageNumber: draft.pageNumber,
           positionData: draft.positionData,
+          color: "#FFEB3B",
+          note: null,
           createdAt: "2026-10-04T00:00:00.000Z",
         });
       },
