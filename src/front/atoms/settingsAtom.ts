@@ -69,6 +69,21 @@ export const useWebSearchAtom = atomWithStorage<boolean>(
   { getOnInit: true },
 );
 
+/** How the shelf lays its books out: cover cards, or one slim row per book. */
+export type ShelfLayout = "grid" | "compact";
+
+/**
+ * Persisted because the shelf is a page of its own: a reader who chose the
+ * compact list wants it again on the next visit, not only until the next
+ * navigation.
+ */
+export const shelfLayoutAtom = atomWithStorage<ShelfLayout>(
+  "chatbook:shelf-layout",
+  "grid",
+  validatedStorage(z.enum(["grid", "compact"])),
+  { getOnInit: true },
+);
+
 function createZoomAtom(pdfId: string) {
   return atomWithStorage<number>(
     `chatbook:zoom:${pdfId}`,

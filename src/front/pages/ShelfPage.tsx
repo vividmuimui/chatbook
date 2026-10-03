@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
+import { useAtom } from "jotai";
 import useSWR from "swr";
 import type { ResultAsync } from "neverthrow";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { shelfLayoutAtom } from "../atoms/settingsAtom";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
 import { pickDroppedPdf } from "../lib/droppedPdf";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
@@ -116,6 +118,57 @@ function BookCard({
   );
 }
 
+/** The compact shelf's entry: a small cover, the title and the page count on one row. */
+function BookRow({
+  book,
+  onOpen,
+  onDelete,
+}: {
+  book: BookSummary;
+  onOpen: (id: string) => void;
+  onDelete: (book: BookSummary) => void;
+}) {
+  const [coverFailed, setCoverFailed] = useState(false);
+  const showCover = book.hasThumbnail && !coverFailed;
+  const title = bookTitle(book.fileName);
+
+  return (
+    <div className="flex items-center rounded-md border border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40">
+      <button
+        type="button"
+        aria-label={`${title} を開く`}
+        onClick={() => onOpen(book.id)}
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-md p-2 text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+      >
+        <div className="h-12 w-9 shrink-0 overflow-hidden rounded-sm border-l-2 border-gray-300 bg-slate-700">
+          {showCover && (
+            <img
+              src={`/api/pdf/${book.id}/thumbnail`}
+              alt=""
+              loading="lazy"
+              onError={() => setCoverFailed(true)}
+              className="h-full w-full object-cover"
+            />
+          )}
+        </div>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-gray-800">{title}</span>
+          <span className="block text-xs text-gray-500">{book.pageCount} ページ</span>
+        </span>
+      </button>
+      {/* Always shown: a row has room for it, and a finger never hovers. */}
+      <button
+        type="button"
+        aria-label={`${title} を削除`}
+        onClick={() => onDelete(book)}
+        className="mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 /**
  * The way to add a book, sitting where books do.
  *
@@ -127,9 +180,11 @@ function BookCard({
 function AddBookTile({
   onFileChosen,
   disabled,
+  compact,
 }: {
   onFileChosen: (file: File) => void;
   disabled: boolean;
+  compact: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -139,9 +194,14 @@ function AddBookTile({
         type="button"
         disabled={disabled}
         onClick={() => inputRef.current?.click()}
-        className="flex aspect-3/4 w-full flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed border-gray-300 bg-white/40 text-gray-500 transition-colors cursor-pointer hover:border-blue-400 hover:bg-blue-50 hover:text-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus:outline-none disabled:cursor-default disabled:opacity-50 disabled:hover:border-gray-300 disabled:hover:bg-white/40 disabled:hover:text-gray-500"
+        className={`flex w-full items-center justify-center gap-2 rounded-md border-2 border-dashed ${
+          compact ? "h-16 flex-row" : "aspect-3/4 flex-col"
+        } border-gray-300 bg-white/40 text-gray-500 transition-colors cursor-pointer hover:border-blue-400 hover:bg-blue-50 hover:text-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus:outline-none disabled:cursor-default disabled:opacity-50 disabled:hover:border-gray-300 disabled:hover:bg-white/40 disabled:hover:text-gray-500`}
       >
-        <span aria-hidden="true" className="text-3xl leading-none">
+        <span
+          aria-hidden="true"
+          className={compact ? "text-xl leading-none" : "text-3xl leading-none"}
+        >
           ＋
         </span>
         <span className="text-sm font-medium">PDFを追加</span>
@@ -171,6 +231,8 @@ export function ShelfPage({
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { data: books, error: loadError, mutate } = useSWR(SHELF_KEY, loadBooks);
+  const [layout, setLayout] = useAtom(shelfLayoutAtom);
+  const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
   const openFile = useOpenPdfBook(
     extract,
@@ -251,6 +313,14 @@ export function ShelfPage({
     <div className="min-h-screen bg-gray-50">
       <header className="flex h-12 items-center border-b border-gray-200 bg-white px-4">
         <h1 className="text-lg font-bold text-gray-800">chatbook</h1>
+        <button
+          type="button"
+          aria-pressed={compact}
+          onClick={() => setLayout(compact ? "grid" : "compact")}
+          className="ml-auto rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
+        >
+          コンパクト表示
+        </button>
       </header>
 
       <main
@@ -297,14 +367,28 @@ export function ShelfPage({
             whatever the list did — while it loads, and when it could not be
             read at all — because adding a book does not go through it, and a
             shelf that answered with an error would otherwise have no way in. */}
-        <ul className="grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-5">
+        <ul
+          className={
+            compact
+              ? "grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
+              : "grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-5"
+          }
+        >
           {(books ?? []).map((book) => (
             <li key={book.id}>
-              <BookCard book={book} onOpen={openBook} onDelete={setBookPendingDeletion} />
+              {compact ? (
+                <BookRow book={book} onOpen={openBook} onDelete={setBookPendingDeletion} />
+              ) : (
+                <BookCard book={book} onOpen={openBook} onDelete={setBookPendingDeletion} />
+              )}
             </li>
           ))}
           <li>
-            <AddBookTile onFileChosen={handleFile} disabled={importing !== null} />
+            <AddBookTile
+              onFileChosen={handleFile}
+              disabled={importing !== null}
+              compact={compact}
+            />
           </li>
         </ul>
       </main>
