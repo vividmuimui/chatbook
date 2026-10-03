@@ -114,8 +114,34 @@
  */
 /* The reader's choices (`epubTypographyStyle`) arrive as custom properties on
    the page; the fallbacks are the defaults, for a page drawn without them. */
-.epubPage {
-  padding-inline: var(--epub-page-margin, clamp(1.25rem, 5.2vw, 2.5rem));
+/*
+ * A chapter is read a screen at a time: laid out in columns as tall as the
+ * paper, one to a screen (two for a spread), which run on to the right of it and
+ * are clipped there (`EpubViewer`). Each screen's margins are half of the gap on
+ * either side of its column plus the chapter's own margin at the two ends, so
+ * every screen is exactly a column and a gap wide and a turn is a whole number
+ * of them.
+ */
+.epubColumns {
+  height: 100%;
+  margin-inline: var(--epub-page-margin, clamp(1.25rem, 5.2vw, 2.5rem));
+  column-gap: calc(2 * var(--epub-page-margin, clamp(1.25rem, 5.2vw, 2.5rem)));
+  column-fill: auto;
+}
+.epubColumns h1,
+.epubColumns h2,
+.epubColumns h3,
+.epubColumns h4,
+.epubColumns h5,
+.epubColumns h6 {
+  break-after: avoid;
+}
+/* An image taller than a screen would be cut between two of them. */
+.epubColumns img {
+  max-height: var(--epub-column-height, 80vh);
+  width: auto;
+  object-fit: contain;
+  break-inside: avoid;
 }
 .epubChapter {
   color: #1f2937;

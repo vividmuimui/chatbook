@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { PageStepper } from "./PageStepper";
 import { currentPageAtom } from "../../atoms/pdfAtom";
+import type { PageDirection } from "../../../shared/schemas/book";
 
 /** As many pages as the fixture book has, which is an even number. */
 const PAGE_COUNT = 12;
@@ -11,18 +12,42 @@ const PAGE_COUNT = 12;
 /** Two pages up, which is what the wide layout shows when there is room. */
 const SPREAD = 2;
 
-function renderStepper(currentPage: number, step?: number) {
+function renderStepper(currentPage: number, step?: number, direction?: PageDirection) {
   const store = createStore();
   store.set(currentPageAtom, currentPage);
 
   render(
     <Provider store={store}>
-      <PageStepper pageCount={PAGE_COUNT} step={step} />
+      <PageStepper pageCount={PAGE_COUNT} step={step} direction={direction} />
     </Provider>,
   );
 
   return store;
 }
+
+describe("PageStepper in a book that opens on the right", () => {
+  it("puts the step on to the left, where the next page is", () => {
+    renderStepper(7, SPREAD, "rtl");
+
+    expect(
+      screen.getAllByRole("button").map((button) => button.getAttribute("aria-label")),
+    ).toStrictEqual(["次のページ", "前のページ"]);
+  });
+
+  it("still names the pages in the order the book counts them", () => {
+    renderStepper(7, SPREAD, "rtl");
+
+    expect(screen.getByText("7-8 / 12", { exact: true })).toBeInTheDocument();
+  });
+
+  it("moves on by the whole spread from the left", async () => {
+    const store = renderStepper(7, SPREAD, "rtl");
+
+    await userEvent.click(screen.getByRole("button", { name: "次のページ" }));
+
+    expect(store.get(currentPageAtom)).toBe(9);
+  });
+});
 
 describe("PageStepper", () => {
   it("names the one page it is on when one page is up", () => {

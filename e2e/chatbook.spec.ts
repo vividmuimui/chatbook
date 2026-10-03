@@ -17,6 +17,11 @@ import {
   EPUB_TITLE,
   LINKED_ANCHOR,
 } from "./fixtures/testEpubManifest.ts";
+import {
+  SCANNED_FIXTURE_FILE_NAME,
+  SCANNED_SEARCH_PAGE,
+  SCANNED_SEARCH_WORD,
+} from "./fixtures/scannedBookManifest.ts";
 // Taken from the viewer rather than copied: a wait written as a number here
 // would stay put if the viewer's own wait grew, and quietly stop covering it.
 import { SELECTION_SETTLE_MS } from "../src/front/hooks/useSettledSelection.ts";
@@ -143,11 +148,12 @@ async function openTestBook(page: Page): Promise<string> {
   await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
 
   const pdfId = new URL(page.url()).pathname.split("/").pop()!;
-  const { selections, readingState } = (await (
+  const { selections, readingState, pageDirection } = (await (
     await page.request.get(`/api/pdf/${pdfId}`)
   ).json()) as {
     selections: { id: string }[];
     readingState: StoredPlace;
+    pageDirection: "ltr" | "rtl";
   };
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
@@ -170,9 +176,15 @@ async function openTestBook(page: Page): Promise<string> {
     },
   });
 
+  // The way the pages turn is the book's too, and a test that turned it to
+  // open on the right would otherwise hand every later one a mirrored reader.
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "ltr" },
+  });
+
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
-  if (selections.length > 0 || resumedElsewhere(readingState)) {
+  if (selections.length > 0 || resumedElsewhere(readingState) || pageDirection !== "ltr") {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // A tap or a drag needs the page itself to have been drawn, not merely the
@@ -318,6 +330,68 @@ test("a book with CID-keyed fonts renders without asking for a CMap", async ({ p
 
   expect(await inkRatio(page)).toBeGreaterThan(0.001);
   expect(fontErrors).toStrictEqual([]);
+});
+
+/**
+ * A book of scans: every page is a picture of its lines, so pdf.js reads no
+ * text off it and the shelf has to read it by OCR before it can be stored.
+ * Drawn by `fixtures/generateScannedBook.ts` and committed alongside it.
+ */
+const SCANNED_BOOK = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  SCANNED_FIXTURE_FILE_NAME,
+);
+
+test("a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page", async ({
+  page,
+}) => {
+  // Real Tesseract, served from the app: the engine and two language models
+  // load, then each page is read — tens of seconds on a slow machine.
+  test.setTimeout(240000);
+  await logIn(page);
+
+  await page.goto("/");
+  await page.setInputFiles('input[type="file"]', SCANNED_BOOK);
+  await expect(page.getByRole("status")).toContainText("文字を読み取り中", { timeout: 60000 });
+  await expect(page).toHaveURL(/\/books\//, { timeout: 180000 });
+  // The spans of page 1 carry its number only once the text layer — built
+  // from the OCR lines, since the page has none of its own — is drawn
+  await expect(drawnPage(page, 1).first()).toBeVisible({ timeout: 60000 });
+
+  await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
+  const search = page.getByRole("region", { name: "本文の検索" });
+  await search.getByLabel("本文から探す語").fill(SCANNED_SEARCH_WORD);
+  await search.getByLabel("本文から探す語").press("Enter");
+
+  await expect(search.getByRole("status")).toHaveText("1件", { timeout: 30000 });
+  await search.getByRole("button", { name: new RegExp(`^p\\.${SCANNED_SEARCH_PAGE}`) }).click();
+
+  await expect(drawnPage(page, SCANNED_SEARCH_PAGE).first()).toBeVisible({ timeout: 60000 });
+  // The mark is placed by finding the word in the page's spans: it lands only
+  // if the OCR lines were laid out as the page's text layer
+  await expect(page.locator(".citedPassage").first()).toBeVisible({ timeout: 30000 });
+  const tops = await markAndLineTops(page, SCANNED_SEARCH_WORD);
+  expect(tops).not.toBeNull();
+  expect(Math.abs(tops!.mark - tops!.line)).toBeLessThan(6);
+
+  // And the line sits over its ink: the first line of a page is set 160px down
+  // and 140px in on the 1240×1754 picture (`generateScannedBook.ts`), which a
+  // box read off the image but placed in the wrong space would miss by far
+  const where = await page.evaluate((pageNumber) => {
+    const canvas = document
+      .querySelector(`[data-page-container="${pageNumber}"] canvas`)!
+      .getBoundingClientRect();
+    const line = document
+      .querySelector(`.textLayer span[data-page-number="${pageNumber}"]`)!
+      .getBoundingClientRect();
+    return {
+      left: (line.left - canvas.left) / canvas.width,
+      top: (line.top - canvas.top) / canvas.height,
+    };
+  }, SCANNED_SEARCH_PAGE);
+  expect(Math.abs(where.left - 140 / 1240)).toBeLessThan(0.02);
+  expect(Math.abs(where.top - 160 / 1754)).toBeLessThan(0.03);
 });
 
 /**
@@ -680,6 +754,34 @@ test("turns both pages of a spread at once, and stops at the last one", async ({
   await expect(page).toHaveURL(new RegExp(`[?&]page=${PAGE_COUNT - 3}(&|$)`));
   await expect(drawnPage(page, PAGE_COUNT - 3).first()).toBeVisible();
   await expect(drawnPage(page, PAGE_COUNT - 2).first()).toBeVisible();
+});
+
+test("lays a spread of a book that opens on the right out from the right, and ← turns it on", async ({
+  page,
+}) => {
+  const pdfId = await openTestBook(page);
+  await foldChatPane(page, pdfId);
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "rtl" },
+  });
+  await page.goto(`/books/${pdfId}?page=3`);
+  await expect(drawnPage(page, 3).first()).toBeVisible({ timeout: 60000 });
+  await expect(drawnPage(page, 4).first()).toBeVisible();
+
+  // Named left to right on the screen: the page the reader is on, 3, is the
+  // right hand one, and 4 — the next — is beside it on the left.
+  const spread = await pagesAgainstPane(page, [4, 3]);
+  expect(spread.count).toBe(2);
+  expect(spread.laidOutRightOf).toBeGreaterThan(0);
+  expect(spread.topsApart).toBeLessThan(1);
+  expect(spread.overflows).toBeLessThanOrEqual(0);
+
+  await page.keyboard.press("ArrowLeft");
+
+  await expect(page).toHaveURL(/[?&]page=5(&|$)/);
+  await expect(drawnPage(page, 5).first()).toBeVisible();
+  await expect(drawnPage(page, 6).first()).toBeVisible();
+  expect((await pagesAgainstPane(page, [6, 5])).laidOutRightOf).toBeGreaterThan(0);
 });
 
 /**
@@ -1529,13 +1631,49 @@ test("the book title stays in the reader header instead of the chat panel", asyn
   await page.reload();
   await page.getByRole("button", { name: "ハイライトのチャットを開く" }).click();
 
-  await expect(page.getByRole("banner").getByText(FIXTURE_FILE_NAME)).toBeVisible();
+  await expect(page.getByRole("banner").getByText(FIXTURE_TITLE)).toBeVisible();
 
   // The chat panel is for the conversation; repeating the title there only ate
   // vertical space
   const chatPanel = page.locator("main > div").last();
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
-  await expect(chatPanel.getByText(FIXTURE_FILE_NAME)).toBeHidden();
+  await expect(chatPanel.getByText(FIXTURE_TITLE)).toBeHidden();
+});
+
+test("a title given on the shelf is what the shelf and the reader say after a reload", async ({
+  page,
+}) => {
+  await logIn(page);
+  // A book of its own: the fixture's title is what every other test finds it
+  // by, and a rename left behind by a failure here would cost them all.
+  const stored = await page.request.post("/api/pdf/open", {
+    multipart: {
+      file: apiFixtureFile("rename-on-shelf"),
+      fullText: "A book the reader gives a title of their own.",
+      pageCount: String(PAGE_COUNT),
+    },
+  });
+  const { id } = (await stored.json()) as { id: string };
+  const given = "書棚で付けた題名";
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "rename-on-shelf の題名を変更" }).click();
+  const dialog = page.getByRole("dialog", { name: "題名の変更" });
+  await dialog.getByRole("textbox", { name: "題名" }).fill(given);
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: `${given} を開く` })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: `${given} を開く` })).toBeVisible();
+  await expect(page.getByRole("button", { name: "rename-on-shelf を開く" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: `${given} を開く` }).click();
+  await expect(page).toHaveURL(new RegExp(`/books/${id}`));
+  await expect(page.getByRole("banner").getByText(given)).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("banner").getByText(given)).toBeVisible();
 });
 
 test("the chat panel lists the highlights, opens one, and comes back to the list", async ({
@@ -2190,6 +2328,44 @@ test("turns the page on a click at the edge, but not on a drag that selected tex
   await expect(drawnPage(page, 1).first()).toBeVisible();
 });
 
+test("a book turned to open on the right goes on from its left edge, and still does after a reload", async ({
+  page,
+}) => {
+  // A book set vertically in Japanese — or a manga — is read from the right,
+  // and its next page is on the left. The choice is the book's, so it comes
+  // back with the book rather than with the browser.
+  await openTestBook(page);
+  await page.getByRole("button", { name: "設定" }).click();
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().includes("/page-direction") &&
+      response.request().method() === "PUT" &&
+      response.ok(),
+  );
+  await page.getByRole("radio", { name: "右開き" }).click();
+  await saved;
+  await expect(page.getByRole("radio", { name: "右開き" })).toBeChecked();
+  await page.keyboard.press("Escape");
+
+  const pane = page.locator("main .overflow-auto").first();
+  const box = (await pane.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.1, box.y + box.height / 2);
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+
+  await page.reload();
+  await expect(drawnPage(page, 2).first()).toBeVisible({ timeout: 60000 });
+  const reloaded = (await pane.boundingBox())!;
+
+  await page.mouse.click(reloaded.x + reloaded.width * 0.1, reloaded.y + reloaded.height / 2);
+  await expect(drawnPage(page, 3).first()).toBeVisible();
+  // ...and the right edge, which used to go on, goes back
+  await page.mouse.click(reloaded.x + reloaded.width * 0.9, reloaded.y + reloaded.height / 2);
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("radio", { name: "右開き" })).toBeChecked();
+});
+
 test("the click that puts the question box away does not also turn the page", async ({ page }) => {
   // Dismissing the box is a click outside it, and the box goes on `mousedown`.
   // Whether a turn was on offer therefore has to be read when the press lands:
@@ -2398,15 +2574,36 @@ test("a passage of an EPUB offers to ask about it, and its highlight follows the
     return { lines: drawn.length, drawn, laidOut };
   };
 
-  const wide = await highlightAgainstText();
-  await page.getByRole("button", { name: "目次を隠す" }).click();
-  await page.getByRole("button", { name: "チャットを隠す" }).click();
-  // The chapter reflows onto fewer lines once the pane is wider
-  await expect.poll(async () => (await highlightAgainstText()).lines).toBeLessThan(wide.lines);
+  /** Whether the highlight is drawn over its text as the text is laid out now. */
+  const onItsText = async () => {
+    const { drawn, laidOut } = await highlightAgainstText();
+    return (
+      Math.abs(drawn[0].top - laidOut.top) <= 2 &&
+      Math.abs(drawn.at(-1)!.bottom - laidOut.bottom) <= 2
+    );
+  };
 
-  const folded = await highlightAgainstText();
-  expect(folded.drawn[0].top).toBeGreaterThanOrEqual(folded.laidOut.top - 2);
-  expect(folded.drawn.at(-1)!.bottom).toBeLessThanOrEqual(folded.laidOut.bottom + 2);
+  // The outline out of the way, so the splitter below has the pane to narrow.
+  // A wide pane lays the chapter out two screens to a spread, whose lines are
+  // no longer than one screen's: narrowing the pane is what reflows it.
+  await page.getByRole("button", { name: "目次を隠す" }).click();
+  await expect.poll(onItsText).toBe(true);
+  const wide = await highlightAgainstText();
+
+  const splitter = (await page
+    .getByRole("separator", { name: "PDFとチャットの幅を変更" })
+    .boundingBox())!;
+  const splitterY = splitter.y + splitter.height / 2;
+  await page.mouse.move(splitter.x + splitter.width / 2, splitterY);
+  await page.mouse.down();
+  await page.mouse.move(splitter.x + splitter.width / 2 - 300, splitterY, { steps: 20 });
+  await page.mouse.up();
+  // The chapter reflows onto more lines once the pane is narrower
+  await expect.poll(async () => (await highlightAgainstText()).lines).toBeGreaterThan(wide.lines);
+
+  const narrowed = await highlightAgainstText();
+  expect(narrowed.drawn[0].top).toBeGreaterThanOrEqual(narrowed.laidOut.top - 2);
+  expect(narrowed.drawn.at(-1)!.bottom).toBeLessThanOrEqual(narrowed.laidOut.bottom + 2);
 });
 
 test("an EPUB is drawn larger on the type settings, keeps its highlight on the text, and stays larger through a reload", async ({
@@ -2482,7 +2679,9 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
   await search.getByRole("button", { name: new RegExp(`^p\\.${lastChapter + 1}`) }).click();
 
   await expect(chapterHeading(page, lastChapter)).toBeVisible();
-  await expect(page.locator(".citedPassage").first()).toBeVisible();
+  // On the screen being read: the words are screens into their chapter, and the
+  // screens around the one up are drawn too, only clipped out of sight
+  await expect(page.locator(".citedPassage").first()).toBeInViewport();
   // Over the words, not merely somewhere in the chapter
   const covered = await page.evaluate((wanted) => {
     const marked = document.querySelector(".citedPassage")!.getBoundingClientRect();
@@ -2492,4 +2691,86 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
     return marked.top >= paragraph.top - 2 && marked.bottom <= paragraph.bottom + 2;
   }, words);
   expect(covered).toBe(true);
+});
+
+/** The screen of its chapter the stepper says the reader is on, and how many the chapter fills. */
+async function epubScreen(page: Page): Promise<{ screen: number; count: number }> {
+  const label = await page.getByText(/^\d+ \/ \d+$/).textContent();
+  const [screen, count] = label!.split("/").map((n) => Number(n.trim()));
+  return { screen, count };
+}
+
+/** To the second chapter from the outline, which fills several screens. */
+async function openLongChapter(page: Page): Promise<number> {
+  const outline = page.getByRole("navigation", { name: "目次" });
+  await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
+  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
+  const { count } = await epubScreen(page);
+  expect(count).toBeGreaterThan(2);
+  return count;
+}
+
+/** A paragraph of the chapter, by the words it starts with. */
+const chapterParagraph = (page: Page, text: string) =>
+  page.locator(".epubChapter p", { hasText: text });
+
+test("an EPUB turns a screen at a time, and from the last screen of a chapter on into the next", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  const count = await openLongChapter(page);
+  const chapter = EPUB_CHAPTERS[1].paragraphs;
+
+  const opening = chapterParagraph(page, chapter[0]);
+  await expect(opening).toBeInViewport();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByText(`2 / ${count}`, { exact: true })).toBeVisible();
+  // The screen itself moved on, not only the number under it
+  await expect(opening).not.toBeInViewport();
+
+  for (let screen = 3; screen <= count; screen++) {
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByText(`${screen} / ${count}`, { exact: true })).toBeVisible();
+  }
+  const closing = chapterParagraph(page, chapter.at(-1)!);
+  await expect(closing).toBeInViewport();
+
+  // On from the chapter's last screen is the next chapter's first
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByText(`3 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+  await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
+
+  // And back from there is the end of the chapter before, not its start
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(page.getByText(`${count} / ${count}`, { exact: true })).toBeVisible();
+  await expect(closing).toBeInViewport();
+});
+
+test("an EPUB stays on the words being read when the pane changes width", async ({ page }) => {
+  await openTestEpub(page);
+  const count = await openLongChapter(page);
+  for (let screen = 2; screen <= 4; screen++) {
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByText(`${screen} / ${count}`, { exact: true })).toBeVisible();
+  }
+
+  // The paragraph the screen starts in, which may have begun on the one before
+  const reading = await page.evaluate(() => {
+    const paper = document.querySelector("article")!.getBoundingClientRect();
+    return Array.from(document.querySelectorAll(".epubChapter p")).find((p) =>
+      Array.from(p.getClientRects()).some(
+        (line) => line.left >= paper.left - 1 && line.right <= paper.right + 1,
+      ),
+    )!.textContent!;
+  });
+
+  // Folding the chat away lays the chapter out again, two screens to a spread:
+  // the fourth screen there is somewhere else in the chapter altogether.
+  await page.getByRole("button", { name: "チャットを隠す" }).click();
+  await expect.poll(async () => (await epubScreen(page)).count).not.toBe(count);
+
+  await expect(chapterParagraph(page, reading)).toBeInViewport();
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  keybindingHelp,
   resolveAction,
   type KeyStroke,
   type KeybindingMode,
@@ -98,6 +99,74 @@ describe("resolveAction in emacs mode", () => {
       action: null,
       pending: null,
     });
+  });
+});
+
+describe("resolveAction in a book that opens on the right", () => {
+  it.each([
+    ["vim", "ArrowLeft", "nextPage"],
+    ["vim", "ArrowRight", "prevPage"],
+    ["none", "ArrowLeft", "nextPage"],
+    ["none", "ArrowRight", "prevPage"],
+    ["emacs", "ArrowLeft", "nextPage"],
+    // h and l are left and right on the keyboard, so they go where the arrows go
+    ["vim", "h", "nextPage"],
+    ["vim", "l", "prevPage"],
+  ] as [KeybindingMode, string, ViewerAction][])(
+    "maps %s mode's %s to %s, toward the side the next page is on",
+    (mode, key, action) => {
+      expect(resolveAction(mode, stroke(key), null, "rtl")).toStrictEqual({
+        action,
+        pending: null,
+      });
+    },
+  );
+
+  it.each([
+    ["f", "nextPage"],
+    ["b", "prevPage"],
+  ] as [string, ViewerAction][])(
+    "leaves emacs' C-%s as %s, since forward and back name no side of the screen",
+    (key, action) => {
+      expect(resolveAction("emacs", stroke(key, { ctrlKey: true }), null, "rtl")).toStrictEqual({
+        action,
+        pending: null,
+      });
+    },
+  );
+
+  it("leaves the arrows that scroll alone", () => {
+    expect(resolveAction("none", stroke("ArrowDown"), null, "rtl")).toStrictEqual({
+      action: "scrollDown",
+      pending: null,
+    });
+  });
+});
+
+describe("keybindingHelp", () => {
+  it("lists the arrows ahead of the chosen mode's keys, as a left-opening book turns them", () => {
+    expect(keybindingHelp("vim").slice(0, 4)).toStrictEqual([
+      ["←/→", "前 / 次のページ"],
+      ["↑/↓", "スクロール"],
+      ["l", "次のページ"],
+      ["h", "前のページ"],
+    ]);
+  });
+
+  it("says ← and h turn on in a book that opens on the right", () => {
+    expect(keybindingHelp("vim", "rtl").slice(0, 4)).toStrictEqual([
+      ["←/→", "次 / 前のページ"],
+      ["↑/↓", "スクロール"],
+      ["l", "前のページ"],
+      ["h", "次のページ"],
+    ]);
+  });
+
+  it("leaves emacs' forward and back as they are in a book that opens on the right", () => {
+    expect(keybindingHelp("emacs", "rtl").slice(2, 4)).toStrictEqual([
+      ["C-f", "次のページ"],
+      ["C-b", "前のページ"],
+    ]);
   });
 });
 

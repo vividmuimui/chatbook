@@ -22,7 +22,8 @@ import { getSelectionFromTextLayer } from "../../lib/pdfTextMatcher";
 import { rangeWithinPage, selectionOnPage, type PageSelection } from "../../lib/selectionRects";
 import { citedPassageOnPage } from "../../lib/citedPassage";
 import { usePdfDocument } from "../../hooks/usePdfDocument";
-import { usePdfOutline } from "../../hooks/usePdfOutline";
+import { useReaderOutline } from "../../hooks/useReaderOutline";
+import { useOcrText, type LoadOcrText } from "../../hooks/useOcrText";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useWebSearchAtom, zoomAtomFor } from "../../atoms/settingsAtom";
 import { nextZoom } from "../../lib/pageScale";
@@ -59,6 +60,8 @@ interface PdfViewerProps {
   measureSelection?: MeasureSelection;
   /** Stores the highlight; injectable so a failed save can be tested. */
   saveSelection?: SaveSelection;
+  /** Reads a scanned book's OCR lines; injectable so a failed read can be tested. */
+  loadOcrText?: LoadOcrText;
 }
 
 /** How far a finger may stray and still have been a tap rather than a drag. */
@@ -174,6 +177,7 @@ export function PdfViewer({
   onSelectionClick,
   measureSelection = measureSelectionOnPage,
   saveSelection,
+  loadOcrText,
 }: PdfViewerProps) {
   const [currentPage, setCurrentPage] = useAtom(currentPageAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
@@ -239,7 +243,15 @@ export function PdfViewer({
    */
   const offerFirst = isNarrow || chosenByFinger;
   const { pdfDocument, error: documentError } = usePdfDocument(pdfId, book);
-  const { outline, error: outlineError } = usePdfOutline(pdfDocument);
+  const { outline, error: outlineError, generation } = useReaderOutline(pdfId, pdfDocument);
+  // A scanned book's pages carry no text of their own, so the lines OCR read
+  // at upload are laid over them instead. Keyed by page so each drawn page
+  // finds its own; a page absent here draws the text pdf.js reads off it.
+  const { data: ocrText, error: ocrError } = useOcrText(book?.id, book?.hasOcr, loadOcrText);
+  const ocrLinesByPage = useMemo(
+    () => new Map(ocrText?.pages.map((page) => [page.pageNumber, page.lines])),
+    [ocrText],
+  );
   const { askAboutSelection, markSelection, saveError } = useAskAboutSelection(
     addHighlight,
     saveSelection,
@@ -253,6 +265,11 @@ export function PdfViewer({
   );
 
   const pageCount = book?.pageCount ?? 1;
+  /**
+   * Which way the book's pages turn. Read off the book itself, as a prop: it
+   * decides where the next page sits on the screen, and nothing here writes it.
+   */
+  const direction = book?.pageDirection ?? "ltr";
 
   /**
    * Two pages beside each other as soon as the pane has room for both at the
@@ -266,10 +283,10 @@ export function PdfViewer({
    */
   const pageBaseSize = usePageBaseSize(pdfDocument, currentPage);
   const twoUp = pageBaseSize !== null && fitsTwoPages(pageBaseSize, contentSize, zoom);
-  /** The pages up at once, left to right. */
+  /** The pages up at once, left to right on the screen. */
   const pagesUp = useMemo(
-    () => visiblePages(currentPage, pageCount, twoUp),
-    [currentPage, pageCount, twoUp],
+    () => visiblePages(currentPage, pageCount, twoUp, direction),
+    [currentPage, pageCount, twoUp, direction],
   );
   /** How far a page turn moves: as many pages as are up, so the reader is
    * always given pages they have not read. */
@@ -306,7 +323,7 @@ export function PdfViewer({
     },
     [pageCount, pageStep, setCurrentPage, setOutlineOpen, setBookSearchOpen],
   );
-  useKeyboardShortcuts(handleShortcut);
+  useKeyboardShortcuts(handleShortcut, direction);
 
   /**
    * Over the page — the one column layout — the outline covers the page it has
@@ -344,6 +361,8 @@ export function PdfViewer({
   zoomRef.current = zoom;
   const turnPageRef = useRef(turnPage);
   turnPageRef.current = turnPage;
+  const directionRef = useRef(direction);
+  directionRef.current = direction;
 
   // Render the page into whatever area the panel currently has, so dragging the
   // splitter or folding the chat away resizes the PDF instead of clipping it.
@@ -451,11 +470,14 @@ export function PdfViewer({
       if (zoomRef.current > ENLARGED_ABOVE) return;
 
       const last = firstTouch(event.changedTouches);
-      const turn = resolveSwipe({
-        dx: last.clientX - gesture.x,
-        dy: last.clientY - gesture.y,
-        durationMs: event.timeStamp - gesture.startedAt,
-      });
+      const turn = resolveSwipe(
+        {
+          dx: last.clientX - gesture.x,
+          dy: last.clientY - gesture.y,
+          durationMs: event.timeStamp - gesture.startedAt,
+        },
+        directionRef.current,
+      );
       if (turn) turnPageRef.current(turn);
     };
 
@@ -599,7 +621,7 @@ export function PdfViewer({
       const container = containerRef.current;
       if (!container) return;
       const pane = container.getBoundingClientRect();
-      const zone = resolveTapZone((event.clientX - pane.left) / pane.width);
+      const zone = resolveTapZone((event.clientX - pane.left) / pane.width, direction);
 
       if (zone === "zoom") {
         // A mouse has the wheel for this, and a double click in the middle of a
@@ -620,7 +642,7 @@ export function PdfViewer({
       if (zoomRef.current > ENLARGED_ABOVE) return;
       turnPage(zone);
     },
-    [turnable, turnPage, setZoom],
+    [turnable, turnPage, setZoom, direction],
   );
 
   /**
@@ -789,6 +811,15 @@ export function PdfViewer({
         </p>
       ) : null}
 
+      {ocrError ? (
+        // The pages still draw: only their text is missing, so the reader can
+        // read on but not select or mark anything until a reload reads it.
+        <p role="alert" className="m-2 rounded-md bg-red-50 p-3 text-sm text-red-600">
+          読み取った文字を読み込めませんでした（ページの文字を選べません）:{" "}
+          {(ocrError as Error).message}
+        </p>
+      ) : null}
+
       {renderError && pagesUp.includes(renderError.page) ? (
         <p role="alert" className="m-2 rounded-md bg-red-50 p-3 text-sm text-red-600">
           このページを表示できません: {renderError.message}
@@ -821,6 +852,7 @@ export function PdfViewer({
                     error={outlineError}
                     currentPage={currentPage}
                     onJump={handleOutlineJump}
+                    generation={generation}
                   />
                 </div>
               </>
@@ -830,6 +862,7 @@ export function PdfViewer({
                 error={outlineError}
                 currentPage={currentPage}
                 onJump={handleOutlineJump}
+                generation={generation}
               />
             ))}
 
@@ -871,6 +904,7 @@ export function PdfViewer({
                         containerWidth={contentSize.width}
                         containerHeight={contentSize.height}
                         zoom={zoom}
+                        ocrLines={ocrLinesByPage.get(page)}
                         onError={reportRenderError}
                       />
                     )}
@@ -930,7 +964,11 @@ export function PdfViewer({
                 panels is the header's job at this width. */}
             {book && !isNarrow && (
               <div className="flex items-center justify-center py-4 [@media(hover:hover)]:hidden">
-                <PageStepper pageCount={book.pageCount} step={pageStep} />
+                <PageStepper
+                  pageCount={book.pageCount}
+                  step={pageStep}
+                  direction={book.pageDirection}
+                />
               </div>
             )}
           </div>

@@ -10,10 +10,15 @@ export const ERROR_CODES = [
   "PDF_FILE_MISSING",
   "PDF_EXTRACT_FAILED",
   "THUMBNAIL_MISSING",
+  "OCR_NOT_FOUND",
   "SELECTION_NOT_FOUND",
   "CONFIG_ERROR",
   "UNAUTHORIZED",
   "AI_API_ERROR",
+  // The model answered, but not with anything that could be read as asked.
+  "AI_RESPONSE_INVALID",
+  // A table of contents was asked to be made for a book that has one.
+  "OUTLINE_EXISTS",
   "AI_STREAM_ERROR",
   "CHAT_SAVE_FAILED",
   "DROPBOX_UNAVAILABLE",

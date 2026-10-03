@@ -44,9 +44,10 @@ async function openTestBook(page: Page): Promise<string> {
   await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
 
   const pdfId = new URL(page.url()).pathname.split("/").pop()!;
-  const { selections, readingState } = (await (
+  const { selections, readingState, pageDirection } = (await (
     await page.request.get(`/api/pdf/${pdfId}`)
   ).json()) as {
+    pageDirection: "ltr" | "rtl";
     selections: { id: string }[];
     readingState: {
       page: number;
@@ -76,6 +77,12 @@ async function openTestBook(page: Page): Promise<string> {
     },
   });
 
+  // The way the pages turn is the book's too, and a test that turned it to
+  // open on the right would otherwise hand every later one a mirrored reader.
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "ltr" },
+  });
+
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
   const resumedElsewhere =
@@ -84,7 +91,7 @@ async function openTestBook(page: Page): Promise<string> {
       readingState.bookChat === true ||
       readingState.outlineOpen === false ||
       readingState.chatPanelOpen === false);
-  if (selections.length > 0 || resumedElsewhere) {
+  if (selections.length > 0 || resumedElsewhere || pageDirection !== "ltr") {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // The page counter arrives with the book, but a tap or a drag needs the page
@@ -194,6 +201,47 @@ test("turns the page on a tap at the edge, and leaves the middle alone", async (
   // Asserting page 1 straight after the middle tap would pass whether the tap
   // was ignored or had not been acted on yet. Turning the page from here says
   // which: a middle tap that had counted would land on 3 instead.
+  await page.touchscreen.tap(pane.x + pane.width * 0.9, middleY);
+  await expect(page.getByText(pageLabel(2), { exact: true })).toBeVisible();
+});
+
+test("turns a book that opens on the right on from the left, by tap, swipe and stepper alike", async ({
+  page,
+}) => {
+  const pdfId = await openTestBook(page);
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "rtl" },
+  });
+  await page.goto(`/books/${pdfId}?page=1`);
+  await expect(page.getByText(pageLabel(1), { exact: true })).toBeVisible({ timeout: 60000 });
+  await expect(page.locator("canvas.block")).toBeVisible({ timeout: 60000 });
+
+  // The step on is the left hand chevron, where the next page is
+  const stepper = page.getByRole("button", { name: /^(前|次)のページ$/ });
+  await expect(stepper).toHaveCount(2);
+  await expect(stepper.first()).toHaveAccessibleName("次のページ");
+
+  const pane = (await pagePane(page).boundingBox())!;
+  const middleY = pane.y + pane.height / 2;
+  await page.touchscreen.tap(pane.x + pane.width * 0.1, middleY);
+  await expect(page.getByText(pageLabel(2), { exact: true })).toBeVisible();
+
+  // A finger travelling right pulls the next page in from the left
+  const touch = await page.context().newCDPSession(page);
+  const fromX = pane.x + pane.width * 0.35;
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: fromX, y: middleY }],
+  });
+  for (const step of [40, 80, 120, 160]) {
+    await touch.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: fromX + step, y: middleY }],
+    });
+  }
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect(page.getByText(pageLabel(3), { exact: true })).toBeVisible();
+
   await page.touchscreen.tap(pane.x + pane.width * 0.9, middleY);
   await expect(page.getByText(pageLabel(2), { exact: true })).toBeVisible();
 });

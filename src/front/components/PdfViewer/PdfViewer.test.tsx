@@ -6,21 +6,26 @@ import { errAsync, ok, okAsync, ResultAsync, type Result } from "neverthrow";
 import { PdfViewer, type MeasureSelection } from "./PdfViewer";
 import { SwrTestCache } from "../../../test/swrTestCache";
 import { activeSelectionAtom, chatPanelOpenAtom, chatSheetAtom } from "../../atoms/chatAtom";
+import { currentPageAtom } from "../../atoms/pdfAtom";
 import { bookKey } from "../../hooks/useBook";
 import { zoomAtomFor } from "../../atoms/settingsAtom";
 import { PHONE_WIDTH, setViewportWidth } from "../../../test/viewport";
 import { ApiError } from "../../lib/fetcher";
 import type { SaveSelection } from "../../hooks/useAskAboutSelection";
+import type { LoadOcrText } from "../../hooks/useOcrText";
 import type { BookDetail } from "../../../shared/schemas/book";
 import type { CreatedSelection } from "../../../shared/schemas/selection";
 
 const BOOK: BookDetail = {
+  title: null,
   id: "p1",
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
+  pageDirection: "ltr",
+  hasOcr: false,
   selections: [],
   readingState: null,
 };
@@ -66,14 +71,18 @@ function renderViewer(
     measureSelection?: MeasureSelection;
     saveSelection?: SaveSelection;
     store?: ReturnType<typeof createStore>;
+    book?: BookDetail;
+    loadOcrText?: LoadOcrText;
   } = {},
 ) {
+  const book = options.book ?? BOOK;
   return render(
-    <SwrTestCache seed={{ [bookKey(BOOK.id)]: BOOK }}>
+    <SwrTestCache seed={{ [bookKey(book.id)]: book }}>
       <Provider store={options.store ?? createStore()}>
         <PdfViewer
-          pdfId={BOOK.id}
-          book={BOOK}
+          pdfId={book.id}
+          book={book}
+          loadOcrText={options.loadOcrText}
           bookError={undefined}
           onSelectionClick={() => {}}
           measureSelection={options.measureSelection}
@@ -100,6 +109,49 @@ describe("PdfViewer", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
+  });
+
+  it("turns on with ← in a book that opens on the right", async () => {
+    // The direction is the book's, handed down with it: the keyboard has to
+    // hear it, not just the pure resolver.
+    vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+    const store = createStore();
+    store.set(currentPageAtom, 5);
+    renderViewer({ store, book: { ...BOOK, pageDirection: "rtl" } });
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+
+    expect(store.get(currentPageAtom)).toBe(6);
+  });
+
+  it("says when the lines read off a scanned book could not be fetched", async () => {
+    // The pages still draw, but nothing on them can be selected: worth saying
+    // rather than leaving the reader dragging over a page that does nothing.
+    vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+    const asked: string[] = [];
+    renderViewer({
+      book: { ...BOOK, hasOcr: true },
+      loadOcrText: (pdfId) => {
+        asked.push(pdfId);
+        return Promise.reject(new Error("Failed to fetch"));
+      },
+    });
+
+    expect(
+      await screen.findByText(
+        "読み取った文字を読み込めませんでした（ページの文字を選べません）: Failed to fetch",
+      ),
+    ).toBeInTheDocument();
+    expect(asked).toStrictEqual([BOOK.id]);
+  });
+
+  it("asks for no OCR lines for a book whose pages carry their own text", async () => {
+    vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+    const loadOcrText = vi.fn<LoadOcrText>();
+    renderViewer({ loadOcrText });
+
+    await screen.findByText("PDFを読み込み中...");
+    expect(loadOcrText).not.toHaveBeenCalled();
   });
 
   it("offers to ask about a passage held down on a touch screen", async () => {

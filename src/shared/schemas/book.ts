@@ -13,6 +13,36 @@ export const bookFormatSchema = z.enum(["pdf", "epub"]);
 
 export type BookFormat = z.infer<typeof bookFormatSchema>;
 
+/**
+ * The title the reader gave a book. `null` — never renamed, or renamed back —
+ * shows the one made from the file name, which every screen derives the same
+ * way (`bookTitle.ts`).
+ */
+const bookTitleSchema = z.string().nullable();
+
+/**
+ * Which way a book's pages turn.
+ *
+ * `ltr` opens on the left and is read left to right — a book set horizontally,
+ * and every book stored before there was a choice. `rtl` opens on the right: a
+ * book set vertically in Japanese, or a manga, whose next page is on the left.
+ * It is the reader's to choose, book by book; a PDF does not say.
+ *
+ * What it changes is only where "previous" and "next" are on the screen. What
+ * a turn means — which page comes next — is the same both ways.
+ */
+export const pageDirectionSchema = z.enum(["ltr", "rtl"]);
+
+export type PageDirection = z.infer<typeof pageDirectionSchema>;
+
+/** What a device sends to turn a book the other way. */
+export const savePageDirectionRequestSchema = z.object({ pageDirection: pageDirectionSchema });
+
+export type SavePageDirectionRequest = z.infer<typeof savePageDirectionRequestSchema>;
+
+/** The direction as the server now holds it. */
+export const pageDirectionSavedSchema = z.object({ pageDirection: pageDirectionSchema });
+
 /** A book as the shelf shows it. */
 export const bookSummarySchema = z.object({
   id: z.string(),
@@ -27,6 +57,7 @@ export const bookSummarySchema = z.object({
   // The page the reader last had open, for the shelf's progress. `null` for a
   // book never opened in a reader — which is not the same as page 1.
   lastReadPage: z.number().int().nullable(),
+  title: bookTitleSchema,
 });
 
 export type BookSummary = z.infer<typeof bookSummarySchema>;
@@ -135,6 +166,12 @@ export const pdfMetadataSchema = z.object({
   // Carried here too: the picker seeds the cache from this answer, and a seed
   // without the place would open an already-read book at page 1.
   readingState: readingStateSchema.nullable(),
+  // Also carried for the seed: re-opening a renamed book from its file keeps
+  // the name the reader gave it, and the seed must not show the file's.
+  title: bookTitleSchema,
+  // Likewise: a right-opening book added again would otherwise open turning
+  // the wrong way until the book was read back.
+  pageDirection: pageDirectionSchema,
 });
 
 export type PdfMetadata = z.infer<typeof pdfMetadataSchema>;
@@ -150,8 +187,14 @@ export const bookDetailSchema = z.object({
   // book stored before outlines were kept gets its chapters extracted from
   // the document the reader has open anyway (usePdfDocument).
   hasOutline: z.boolean(),
+  // Whether pages of the book were read by OCR at upload (a scanned book).
+  // The viewer asks `/ocr` for the lines to lay over those pages only when
+  // this says there are any, so a typeset book costs no extra request.
+  hasOcr: z.boolean(),
   selections: z.array(selectionHighlightSchema),
   readingState: readingStateSchema.nullable(),
+  title: bookTitleSchema,
+  pageDirection: pageDirectionSchema,
 });
 
 export type BookDetail = z.infer<typeof bookDetailSchema>;
@@ -189,3 +232,32 @@ export const bookDeletedSchema = z.object({ deleted: z.literal(true) });
 export const thumbnailStoredSchema = z.object({ stored: z.literal(true) });
 
 export const outlineStoredSchema = z.object({ stored: z.literal(true) });
+
+/** A title, not a blurb: long enough for any real one, short enough to show. */
+export const MAX_BOOK_TITLE_LENGTH = 200;
+
+/**
+ * A new title for a book. Blank — or null — is no title of the reader's own:
+ * it is stored as null, and the book goes back to the one its file name gives.
+ * Trimmed before the length is checked, so spaces around a title do not count.
+ */
+export const renameBookRequestSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .max(MAX_BOOK_TITLE_LENGTH)
+    .nullable()
+    .transform((title) => (title === "" ? null : title)),
+});
+
+export type RenameBookRequest = z.input<typeof renameBookRequestSchema>;
+
+/** The book's title as it stands after a rename. */
+export const bookRenamedSchema = z.object({ id: z.string(), title: bookTitleSchema });
+
+export type BookRenamed = z.infer<typeof bookRenamedSchema>;
+
+/** What asking the model for a table of contents stored. */
+export const generatedOutlineSchema = z.object({ outline: bookOutlineSchema });
+
+export type GeneratedOutline = z.infer<typeof generatedOutlineSchema>;

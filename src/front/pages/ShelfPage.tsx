@@ -1,30 +1,37 @@
 import { useState, useCallback, useId, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useAtom } from "jotai";
-import useSWR from "swr";
-import type { ResultAsync } from "neverthrow";
+import useSWR, { useSWRConfig } from "swr";
+import { ResultAsync, errAsync, okAsync } from "neverthrow";
+import { BookTitleDialog } from "../components/BookTitleDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
-import { shelfLayoutAtom } from "../atoms/settingsAtom";
+import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
+import { bookKey } from "../hooks/useBook";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
+import { bookTitle } from "../lib/bookTitle";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
-import type { ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { OcrProgress } from "../lib/pdfOcr";
 import { groupProgress } from "../lib/readingProgress";
 import {
   filterShelf,
   groupShelf,
   splitHidden,
-  titleOf,
   type ShelfGroup,
   type ShelfMember,
 } from "../lib/shelfGroups";
 import {
   bookDeletedSchema,
   bookListSchema,
+  bookRenamedSchema,
+  type BookDetail,
   type BookFormat,
+  type BookRenamed,
   type BookSummary,
+  type RenameBookRequest,
 } from "../../shared/schemas/book";
 import { hiddenBooksSchema, type HiddenBooks } from "../../shared/schemas/shelf";
 import {
@@ -45,6 +52,16 @@ export type DeleteBook = (id: string) => ResultAsync<unknown, ApiError>;
 
 const requestBookDeletion: DeleteBook = (id) =>
   resultFetcher(`/api/pdf/${id}`, bookDeletedSchema, { method: "DELETE" });
+
+/** Gives a book a title of the reader's own, or (null) takes it away. A write. */
+export type RenameBook = (id: string, title: string | null) => ResultAsync<BookRenamed, ApiError>;
+
+const requestRename: RenameBook = (id, title) =>
+  resultFetcher(`/api/pdf/${id}`, bookRenamedSchema, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title } satisfies RenameBookRequest),
+  });
 
 /**
  * Cache key of the Dropbox folder's books that are not on the shelf yet. Read
@@ -80,7 +97,7 @@ interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
   /** Passed straight to the file picker; injectable so tests can fail a read. */
-  extract?: (file: File) => Promise<ExtractedPdfData>;
+  extract?: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData>;
   /** The upload's own request; injectable so tests can drive its progress. */
   createUploadRequest?: () => XMLHttpRequest;
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
@@ -88,6 +105,7 @@ interface ShelfPageProps {
   downloadDropbox?: DownloadDropboxFile;
   loadHidden?: () => Promise<HiddenBooks>;
   setHidden?: SetHidden;
+  renameBook?: RenameBook;
 }
 
 /**
@@ -96,11 +114,13 @@ interface ShelfPageProps {
  * Three states rather than a share alone: the reading happens before anything
  * has been sent, and once the whole body is up there is still the server
  * writing it away — a bar sat at 0% or at 100% for either of those reads as a
- * shelf that has hung.
+ * shelf that has hung. A book without text adds a fourth between reading and
+ * sending: OCR, counted in pages, which for a long scan is minutes.
  */
 type Importing =
   | { phase: "downloading"; ratio: number }
   | { phase: "reading" }
+  | ({ phase: "recognizing" } & OcrProgress)
   | { phase: "uploading"; ratio: number }
   | { phase: "storing" };
 
@@ -111,6 +131,8 @@ function importWording(importing: Importing): string {
       return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
       return "本を読み取り中...";
+    case "recognizing":
+      return `文字を読み取り中 ${importing.done}/${importing.total} ページ`;
     case "uploading":
       return `アップロード中 ${Math.round(importing.ratio * 100)}%`;
     case "storing":
@@ -230,17 +252,20 @@ interface EntryActions {
   onOpen: (member: ShelfMember) => void;
   onHide: (group: ShelfGroup) => void;
   onDelete: (books: BookSummary[]) => void;
+  onRename: (group: ShelfGroup) => void;
 }
 
 /**
- * The buttons of an entry that are not "open". Hiding is always there; deleting
- * only where the entry holds a book, since a file waiting in Dropbox is not
- * ours to delete.
+ * The buttons of an entry that are not "open". Hiding is always there;
+ * renaming and deleting only where the entry holds a book, since a file
+ * waiting in Dropbox is not ours to rename or delete — its name is the file
+ * system's.
  */
 function EntryButtons({
   group,
   onHide,
   onDelete,
+  onRename,
   className,
   buttonClassName,
   hideClassName,
@@ -248,6 +273,7 @@ function EntryButtons({
   group: ShelfGroup;
   onHide: EntryActions["onHide"];
   onDelete: EntryActions["onDelete"];
+  onRename: EntryActions["onRename"];
   className: string;
   buttonClassName: string;
   hideClassName: string;
@@ -255,6 +281,18 @@ function EntryButtons({
   const books = booksOf(group);
   return (
     <div className={className}>
+      {books.length > 0 && (
+        // Named apart from 「非表示」「削除」「開く」, which the tests and the
+        // E2E reach for by partial name.
+        <button
+          type="button"
+          aria-label={`${group.title} の題名を変更`}
+          onClick={() => onRename(group)}
+          className={`${buttonClassName} ${hideClassName}`}
+        >
+          <span aria-hidden="true">✎</span>
+        </button>
+      )}
       <button
         type="button"
         aria-label={`${group.title} を非表示`}
@@ -309,7 +347,13 @@ function FormatChips({ group, onOpen }: { group: ShelfGroup } & Pick<EntryAction
  * One title on the shelf, however many files it is in. The cover and title open
  * the first file; when there are more, a chip per file opens each.
  */
-function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
+function GroupCard({
+  group,
+  onOpen,
+  onHide,
+  onDelete,
+  onRename,
+}: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
   const showCover = cover !== undefined && !coverFailed;
@@ -358,9 +402,9 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
             </span>
           )}
           {progress?.kind === "unread" && (
-            // Kindle's "NEW": the corner the reader's eye starts from. The
-            // buttons take the other top corner.
-            <span className="absolute left-1.5 top-1.5">
+            // Kindle's "NEW", in the bottom corner: on a phone the buttons are
+            // always out and, a thumb wide each, fill the whole top of the cover.
+            <span className="absolute bottom-1.5 left-1.5">
               <ProgressText id={progressId} progress={progress} />
             </span>
           )}
@@ -387,6 +431,7 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
         group={group}
         onHide={onHide}
         onDelete={onDelete}
+        onRename={onRename}
         className="absolute right-1.5 top-1.5 flex gap-1 transition-opacity md:opacity-0 md:focus-within:opacity-100 md:group-hover/card:opacity-100 [@media(hover:none)]:opacity-100"
         buttonClassName="flex h-11 items-center justify-center rounded-full bg-black/55 px-3 text-lg leading-normal text-white cursor-pointer hover:bg-red-600 md:h-auto md:px-2 md:py-0.5 md:text-sm"
         hideClassName="!text-xs hover:!bg-gray-700"
@@ -396,7 +441,13 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
 }
 
 /** The compact shelf's entry: a small cover, the title and its length on one row. */
-function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
+function GroupRow({
+  group,
+  onOpen,
+  onHide,
+  onDelete,
+  onRename,
+}: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
   const showCover = cover !== undefined && !coverFailed;
@@ -446,6 +497,7 @@ function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & E
         group={group}
         onHide={onHide}
         onDelete={onDelete}
+        onRename={onRename}
         className="ml-1 flex shrink-0 items-center gap-1 pr-1"
         buttonClassName="flex h-11 min-w-11 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
         hideClassName="!px-2 !text-xs hover:!bg-gray-100 hover:!text-gray-700"
@@ -540,8 +592,10 @@ export function ShelfPage({
   downloadDropbox = downloadDropboxFile,
   loadHidden = fetchHidden,
   setHidden = requestHidden,
+  renameBook = requestRename,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
+  const { mutate: mutateKey } = useSWRConfig();
   const { data: books, error: loadError, mutate } = useSWR(SHELF_KEY, loadBooks);
   const {
     data: dropbox,
@@ -553,11 +607,17 @@ export function ShelfPage({
   const { data: hidden, error: hiddenError, mutate: mutateHidden } = useSWR(HIDDEN_KEY, loadHidden);
   // Whether the list of books put away is what the page shows, in place of the shelf.
   const [showingHidden, setShowingHidden] = useState(false);
+  // Which file of a title its card opens, when there is a PDF and an EPUB of it.
+  const [preferredFormat, setPreferredFormat] = useAtom(preferredFormatAtom);
   // Until the list arrives nothing is taken to be put away: the shelf does not
   // wait for it, and one that could not be read leaves every book in view.
   const { shown, hidden: putAway } = useMemo(
-    () => splitHidden(groupShelf(books ?? [], dropboxFiles), new Set(hidden?.keys ?? [])),
-    [books, dropboxFiles, hidden],
+    () =>
+      splitHidden(
+        groupShelf(books ?? [], dropboxFiles, preferredFormat),
+        new Set(hidden?.keys ?? []),
+      ),
+    [books, dropboxFiles, hidden, preferredFormat],
   );
   // What the reader typed to find a book. Narrowed on every keystroke, input
   // method composition included: it is a filter over what is already here, so
@@ -569,6 +629,10 @@ export function ShelfPage({
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
+  // Stops the OCR of the book being added. Only OCR listens: everything else
+  // in an import is over in seconds, and an upload that was half sent is no
+  // more a stored book than one never started.
+  const cancelImport = useRef<AbortController | null>(null);
   const openFile = useOpenPdfBook(
     extract,
     // The share the browser reports is the upload's alone; once it is all up
@@ -579,6 +643,8 @@ export function ShelfPage({
   // What the reader's last action did wrong: adding a book, or removing one.
   // Both are worded by whoever detected them and shown in the same place.
   const [actionError, setActionError] = useState<string | null>(null);
+  // The entry whose title the reader is changing, while its dialog is open.
+  const [renaming, setRenaming] = useState<ShelfGroup | null>(null);
   // The books of the entry the reader pressed × on, all of which go together.
   const [booksPendingDeletion, setBooksPendingDeletion] = useState<BookSummary[] | null>(null);
   // How many elements of the shelf the drag is currently inside. Every card it
@@ -606,14 +672,39 @@ export function ShelfPage({
     setActionError(null);
     setImporting({ phase: "reading" });
 
-    const outcome = await openFile(file);
+    const outcome = await openFile(file, startImport());
     outcome.match(
       (pdfId) => void openBook(pdfId),
-      (failure) => {
-        setImporting(null);
-        setActionError(`本を開けませんでした: ${failure.message}`);
-      },
+      (failure) => importFailed(failure, "本を開けませんでした"),
     );
+  };
+
+  /** A way to cancel the import about to start, and to hear how far its OCR has got. */
+  const startImport = () => {
+    const controller = new AbortController();
+    cancelImport.current = controller;
+    return {
+      signal: controller.signal,
+      // The last page read is the end of OCR, and of anything "中止" could
+      // stop: what follows — the cover, the outline — is the ordinary reading.
+      onOcrProgress: (progress: OcrProgress) =>
+        setImporting(
+          progress.done < progress.total
+            ? { phase: "recognizing", ...progress }
+            : { phase: "reading" },
+        ),
+    };
+  };
+
+  /**
+   * Hands the shelf back after an import that did not become a book. A reader
+   * who cancelled is not told anything went wrong — they asked for it, and the
+   * shelf looking as it did before is the answer.
+   */
+  const importFailed = (failure: Error, lead: string) => {
+    cancelImport.current = null;
+    setImporting(null);
+    if (failure.name !== "AbortError") setActionError(`${lead}: ${failure.message}`);
   };
 
   /**
@@ -630,14 +721,11 @@ export function ShelfPage({
       setImporting({ phase: "downloading", ratio }),
     ).andThen((file) => {
       setImporting({ phase: "reading" });
-      return openFile(file, entry.dropboxId);
+      return openFile(file, { dropboxId: entry.dropboxId, ...startImport() });
     });
     outcome.match(
       (pdfId) => void openBook(pdfId),
-      (failure) => {
-        setImporting(null);
-        setActionError(`Dropboxの本を開けませんでした: ${failure.message}`);
-      },
+      (failure) => importFailed(failure, "Dropboxの本を開けませんでした"),
     );
   };
 
@@ -701,10 +789,51 @@ export function ShelfPage({
     );
   };
 
+  /**
+   * Gives every book of an entry the same title — the entry is one book to the
+   * reader, and renaming only one of its files would split it in two
+   * (`groupShelf` gathers renamed books by their title). Stops at the first
+   * book the server refuses, and hands that refusal back for the dialog to show.
+   *
+   * What the server took is written into both caches the title is read from —
+   * the shelf, and the book the reader opens — rather than read again: the
+   * answers already say what each title now is.
+   */
+  const renameGroup = (group: ShelfGroup, title: string | null): ResultAsync<void, ApiError> =>
+    ResultAsync.fromSafePromise(
+      (async () => {
+        const renamed: BookRenamed[] = [];
+        for (const book of booksOf(group)) {
+          const result = await renameBook(book.id, title);
+          if (result.isErr()) return { renamed, failure: result.error };
+          renamed.push(result.value);
+        }
+        return { renamed, failure: null };
+      })(),
+    ).andThen(({ renamed, failure }) => {
+      if (renamed.length > 0) {
+        const titles = new Map(renamed.map((r) => [r.id, r.title]));
+        void mutate(
+          (current) =>
+            current?.map((b) => (titles.has(b.id) ? { ...b, title: titles.get(b.id) ?? null } : b)),
+          { revalidate: false },
+        );
+        for (const { id, title: stored } of renamed) {
+          void mutateKey<BookDetail>(
+            bookKey(id),
+            (current) => (current ? { ...current, title: stored } : current),
+            { revalidate: false },
+          );
+        }
+      }
+      return failure ? errAsync(failure) : okAsync(undefined);
+    });
+
   const entryActions = {
     onOpen: openMember,
     onHide: (group: ShelfGroup) => void setGroupHidden(group, true),
     onDelete: setBooksPendingDeletion,
+    onRename: setRenaming,
   };
 
   return (
@@ -779,16 +908,33 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
-        {/* Out of the header: on a phone it already holds three buttons. */}
+        {/* Out of the header: on a phone it already holds three buttons. The
+            preferred format sits beside the search for the same reason, and
+            wraps under it where the two do not fit on one line. A select
+            rather than a pair of PDF / EPUB buttons, whose names the format
+            chips' (「… を PDF で開く」) would partly match. */}
         {(shown.length > 0 || putAway.length > 0 || query !== "") && (
-          <input
-            type="search"
-            aria-label="本棚を検索"
-            placeholder="題名で検索"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="mb-5 w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
+          <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <input
+              type="search"
+              aria-label="本棚を検索"
+              placeholder="題名で検索"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <label className="flex shrink-0 items-center gap-2 text-sm text-gray-600">
+              優先する形式
+              <select
+                value={preferredFormat}
+                onChange={(e) => setPreferredFormat(e.target.value === "epub" ? "epub" : "pdf")}
+                className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 cursor-pointer focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                <option value="pdf">PDF</option>
+                <option value="epub">EPUB</option>
+              </select>
+            </label>
+          </div>
         )}
 
         {showingHidden && (
@@ -862,9 +1008,22 @@ export function ShelfPage({
 
       {importing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/70">
-          <p role="status" className="text-lg text-gray-600">
-            {importWording(importing)}
-          </p>
+          <div className="flex flex-col items-center gap-4">
+            <p role="status" className="text-lg text-gray-600">
+              {importWording(importing)}
+            </p>
+            {/* Only while OCR runs: it is the one part long enough to want
+                stopping, and the one that listens. */}
+            {importing.phase === "recognizing" && (
+              <button
+                type="button"
+                onClick={() => cancelImport.current?.abort()}
+                className="rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 cursor-pointer hover:bg-gray-100"
+              >
+                中止
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -872,8 +1031,8 @@ export function ShelfPage({
         <ConfirmDialog
           message={
             (booksPendingDeletion.length === 1
-              ? `「${titleOf(booksPendingDeletion[0].fileName)}」を削除しますか？`
-              : `「${titleOf(booksPendingDeletion[0].fileName)}」の${booksPendingDeletion
+              ? `「${bookTitle(booksPendingDeletion[0])}」を削除しますか？`
+              : `「${bookTitle(booksPendingDeletion[0])}」の${booksPendingDeletion
                   .map((b) => (b.format === "epub" ? "EPUB" : "PDF"))
                   .join("・")}をすべて削除しますか？`) +
             "ハイライトとチャット履歴も削除されます。" +
@@ -885,6 +1044,15 @@ export function ShelfPage({
           confirmLabel="削除する"
           onConfirm={() => removeBooks(booksPendingDeletion)}
           onCancel={() => setBooksPendingDeletion(null)}
+        />
+      )}
+
+      {renaming && (
+        <BookTitleDialog
+          current={renaming.title}
+          save={(title) => renameGroup(renaming, title)}
+          onSaved={() => setRenaming(null)}
+          onCancel={() => setRenaming(null)}
         />
       )}
 

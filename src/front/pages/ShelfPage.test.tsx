@@ -1,13 +1,15 @@
 import { describe, it, expect, afterEach, vi } from "vite-plus/test";
-import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { ResultAsync, errAsync, okAsync } from "neverthrow";
-import { ShelfPage, type DeleteBook, type SetHidden } from "./ShelfPage";
+import { ShelfPage, type DeleteBook, type RenameBook, type SetHidden } from "./ShelfPage";
 import type { HiddenBooks } from "../../shared/schemas/shelf";
 import { ApiError } from "../lib/fetcher";
-import type { ExtractedPdfData } from "../lib/pdfLoader";
-import type { BookSummary } from "../../shared/schemas/book";
+import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { BookDetail, BookSummary } from "../../shared/schemas/book";
+import { useSWRConfig } from "swr";
+import { bookKey } from "../hooks/useBook";
 import type { DropboxFile, DropboxFolderListing } from "../../shared/schemas/dropbox";
 import type { DownloadDropboxFile } from "../lib/dropboxDownload";
 import type { SaveDropboxFolder } from "../components/DropboxFolderDialog";
@@ -16,6 +18,7 @@ import { fakeUpload } from "../../test/fakeUpload";
 
 function book(overrides: Partial<BookSummary> = {}): BookSummary {
   return {
+    title: null,
     id: "book-1",
     fileName: "Cloudflare Workers 入門.pdf",
     format: "pdf",
@@ -31,13 +34,16 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
 function renderShelf(props: {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
-  extract?: (file: File) => Promise<ExtractedPdfData>;
+  extract?: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData>;
   createUploadRequest?: () => XMLHttpRequest;
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
   saveDropboxFolder?: SaveDropboxFolder;
   downloadDropbox?: DownloadDropboxFile;
   loadHidden?: () => Promise<HiddenBooks>;
   setHidden?: SetHidden;
+  renameBook?: RenameBook;
+  /** Entries already in the cache, standing in for what the server answered before. */
+  seed?: Record<string, unknown>;
 }) {
   // A deploy without Dropbox unless the test says otherwise, so the shelf
   // never reaches for a real endpoint jsdom has no server behind.
@@ -47,7 +53,7 @@ function renderShelf(props: {
     ...props,
   };
   return render(
-    <SwrTestCache>
+    <SwrTestCache seed={props.seed}>
       <MemoryRouter>
         <Routes>
           <Route path="/" element={<ShelfPage {...withDropbox} />} />
@@ -60,7 +66,15 @@ function renderShelf(props: {
 
 /** Stands in for the reader so navigation away from the shelf is observable. */
 function ReaderStub() {
-  return <p>リーダー: {useParams().pdfId}</p>;
+  const pdfId = useParams().pdfId!;
+  // What the reader would head the page with, read from the cache it shares.
+  const cached = useSWRConfig().cache.get(bookKey(pdfId))?.data as BookDetail | undefined;
+  return (
+    <>
+      <p>リーダー: {pdfId}</p>
+      {cached && <p>題名: {cached.title ?? "なし"}</p>}
+    </>
+  );
 }
 
 /** Records the ids it was asked to delete so tests can assert on them. */
@@ -88,6 +102,7 @@ const readsFine = async (file: File): Promise<ExtractedPdfData> => ({
   fileContentBase64: "",
   thumbnail: null,
   outline: null,
+  ocr: null,
 });
 
 /** What the API answers a stored book with. */
@@ -98,6 +113,8 @@ const STORED_BOOK = {
   pageCount: 209,
   fullText: "エッジはサーバーレス実行基盤です。",
   readingState: null,
+  title: null,
+  pageDirection: "ltr",
 };
 
 /** Hands the hidden input a file, the way clicking the tile ends up doing. */
@@ -424,6 +441,81 @@ describe("ShelfPage", () => {
     // A second file while the first is in flight would open a book the reader
     // is already leaving the shelf for.
     expect(screen.getByRole("button", { name: "本を追加" })).toBeDisabled();
+  });
+
+  it("counts the pages up while a book without text is read by OCR", async () => {
+    // OCR takes seconds a page: a 200-page scan is minutes, and a notice that
+    // did not move for that long would read as a shelf that has hung.
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: (_file, { onOcrProgress }) => {
+        onOcrProgress?.({ done: 0, total: 3 });
+        onOcrProgress?.({ done: 2, total: 3 });
+        return new Promise<ExtractedPdfData>(() => {});
+      },
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+
+    expect(await screen.findByText("文字を読み取り中 2/3 ページ")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("文字を読み取り中 2/3 ページ");
+  });
+
+  it("takes the cancel button away once the last page has been read", async () => {
+    // Past the last page nothing listens for it: a button left up would do nothing
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: (_file, { onOcrProgress }) => {
+        onOcrProgress?.({ done: 3, total: 3 });
+        return new Promise<ExtractedPdfData>(() => {});
+      },
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+
+    expect(await screen.findByText("本を読み取り中...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "中止" })).not.toBeInTheDocument();
+  });
+
+  it("stops reading a book by OCR when the reader cancels, and stores nothing", async () => {
+    const sending = fakeUpload();
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      createUploadRequest: () => sending.request,
+      extract: (_file, { onOcrProgress, signal }) => {
+        onOcrProgress?.({ done: 1, total: 200 });
+        return new Promise<ExtractedPdfData>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("OCR was cancelled", "AbortError")),
+          );
+        });
+      },
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+    await userEvent.click(await screen.findByRole("button", { name: "中止" }));
+
+    // Back on the shelf as it was: no notice, nothing said, nothing sent
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "本を追加" })).toBeEnabled();
+    expect(screen.queryByText(/本を開けませんでした/)).not.toBeInTheDocument();
+    expect(sending.openedWith()).toBeNull();
+  });
+
+  it("offers no way to cancel outside OCR, where nothing would stop", async () => {
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: () => new Promise<ExtractedPdfData>(() => {}),
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+
+    expect(await screen.findByText("本を読み取り中...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "中止" })).not.toBeInTheDocument();
   });
 
   it("counts the book up as it is sent, and says so once it is all there", async () => {
@@ -756,6 +848,38 @@ describe("ShelfPage: one entry per title", () => {
     ).toBeInTheDocument();
   });
 
+  describe("the preferred format", () => {
+    afterEach(() => localStorage.clear());
+
+    it("opens the EPUB from the card once the reader prefers EPUB, and remembers it", async () => {
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      const preference = await screen.findByRole("combobox", { name: "優先する形式" });
+      expect(preference).toHaveValue("pdf");
+      await userEvent.selectOptions(preference, "epub");
+
+      expect(JSON.parse(localStorage.getItem("chatbook:preferred-format")!)).toBe("epub");
+      await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を開く" }));
+      expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
+    });
+
+    it("starts from the format chosen on an earlier visit", async () => {
+      localStorage.setItem("chatbook:preferred-format", JSON.stringify("epub"));
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("epub");
+      await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を開く" }));
+      expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
+    });
+
+    it("falls back to PDF when what was stored is not a format", async () => {
+      localStorage.setItem("chatbook:preferred-format", JSON.stringify("mobi"));
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("pdf");
+    });
+  });
+
   it("deletes every book of the card once the reader agrees", async () => {
     const { deletedIds, deleteBook } = recordingDeleter();
     renderShelf({ loadBooks: PDF_AND_EPUB, deleteBook });
@@ -1006,5 +1130,129 @@ describe("ShelfPage: finding a book", () => {
     await userEvent.clear(box);
     await userEvent.type(box, "zig");
     expect(list).toHaveTextContent("「zig」に一致する本はありません");
+  });
+});
+
+describe("ShelfPage: renaming a book", () => {
+  const PDF_AND_EPUB = async () => [
+    book({ id: "pdf-1", fileName: "Rust 入門.pdf" }),
+    book({ id: "epub-1", fileName: "Rust 入門.epub", format: "epub", pageCount: 12 }),
+  ];
+
+  /** Records what it was asked to rename, answering the way the server does. */
+  function recordingRenamer() {
+    const calls: { id: string; title: string | null }[] = [];
+    const renameBook: RenameBook = (id, title) => {
+      calls.push({ id, title });
+      return okAsync({ id, title: title?.trim() || null });
+    };
+    return { calls, renameBook };
+  }
+
+  async function renameTo(entryTitle: string, typed: string) {
+    await userEvent.click(
+      await screen.findByRole("button", { name: `${entryTitle} の題名を変更` }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "題名の変更" });
+    const box = within(dialog).getByRole("textbox", { name: "題名" });
+    expect(box).toHaveValue(entryTitle);
+    await userEvent.clear(box);
+    if (typed !== "") await userEvent.type(box, typed);
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+  }
+
+  it("gives every book of the entry the new title, and the shelf shows it", async () => {
+    const { calls, renameBook } = recordingRenamer();
+    renderShelf({ loadBooks: PDF_AND_EPUB, renameBook });
+
+    await renameTo("Rust 入門", "プログラミング Rust");
+
+    expect(calls).toStrictEqual([
+      { id: "pdf-1", title: "プログラミング Rust" },
+      { id: "epub-1", title: "プログラミング Rust" },
+    ]);
+    expect(
+      await screen.findByRole("button", { name: "プログラミング Rust を開く" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Still one entry: both files went to the same title together.
+    expect(screen.getAllByText("プログラミング Rust", { selector: "p" })).toHaveLength(1);
+  });
+
+  it("goes back to the file's name when the title is emptied", async () => {
+    const { calls, renameBook } = recordingRenamer();
+    renderShelf({
+      loadBooks: async () => [book({ id: "a", fileName: "scan_0001.pdf", title: "付けた題名" })],
+      renameBook,
+    });
+
+    await renameTo("付けた題名", "");
+
+    expect(calls).toStrictEqual([{ id: "a", title: null }]);
+    expect(await screen.findByRole("button", { name: "scan_0001 を開く" })).toBeInTheDocument();
+  });
+
+  it("hands the reader the new title too, without reading the book again", async () => {
+    const { renameBook } = recordingRenamer();
+    const cached: BookDetail = {
+      id: "book-1",
+      fileName: "Cloudflare Workers 入門.pdf",
+      format: "pdf",
+      pageCount: 209,
+      hasThumbnail: false,
+      hasOutline: false,
+      hasOcr: false,
+      selections: [],
+      readingState: null,
+      title: null,
+      pageDirection: "ltr",
+    };
+    renderShelf({
+      loadBooks: async () => [book()],
+      renameBook,
+      seed: { [bookKey("book-1")]: cached },
+    });
+
+    await renameTo("Cloudflare Workers 入門", "エッジ入門");
+    await userEvent.click(await screen.findByRole("button", { name: "エッジ入門 を開く" }));
+
+    expect(await screen.findByText("リーダー: book-1")).toBeInTheDocument();
+    expect(screen.getByText("題名: エッジ入門")).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and says why when the server refuses", async () => {
+    renderShelf({
+      loadBooks: async () => [book()],
+      renameBook: () => errAsync(new ApiError("Server exploded", "INTERNAL_ERROR", 500)),
+    });
+
+    await renameTo("Cloudflare Workers 入門", "エッジ入門");
+
+    const dialog = await screen.findByRole("dialog", { name: "題名の変更" });
+    expect(dialog).toHaveTextContent("題名を変更できませんでした: Server exploded");
+    expect(within(dialog).getByRole("textbox", { name: "題名" })).toHaveValue("エッジ入門");
+    expect(
+      screen.getByRole("button", { name: "Cloudflare Workers 入門 を開く" }),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves the title alone when the dialog is cancelled", async () => {
+    const { calls, renameBook } = recordingRenamer();
+    renderShelf({ loadBooks: async () => [book()], renameBook });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Cloudflare Workers 入門 の題名を変更" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("offers no renaming for a file still waiting in Dropbox", async () => {
+    renderShelf({ loadBooks: async () => [], loadDropboxFolder: FOLDER_WITH_ONE_BOOK });
+
+    await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" });
+    expect(screen.queryByRole("button", { name: /の題名を変更/ })).not.toBeInTheDocument();
   });
 });

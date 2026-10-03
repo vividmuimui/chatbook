@@ -9,10 +9,14 @@ import {
   listPdfs,
   deletePdf,
   saveReadingState,
+  savePageDirection,
   searchSelections,
   findInBook,
   updateSelection,
+  renameBook,
   thumbnailObjectKey,
+  ocrObjectKey,
+  OCR_CONTENT_TYPE,
   BOOK_CONTENT_TYPES,
   readFormat,
   THUMBNAIL_CONTENT_TYPE,
@@ -20,13 +24,16 @@ import {
   type IdClock,
 } from "../services/pdfService";
 
-import { buildSystemPrompt, resolveLlmConfig } from "../services/llmService";
+import { buildSystemPrompt, completeChat, resolveLlmConfig } from "../services/llmService";
+import { buildOutlineMessages, readGeneratedOutline } from "../services/outlineGeneration";
 import { findPageNumber, readCitations } from "../services/chatService";
 import { streamChatReply, type SaveAnswer } from "../services/chatStream";
 import {
   bookOutlineSchema,
   locateQuerySchema,
+  renameBookRequestSchema,
   saveReadingStateRequestSchema,
+  savePageDirectionRequestSchema,
   type BookOutline,
 } from "../../shared/schemas/book";
 import {
@@ -36,6 +43,7 @@ import {
   updateSelectionRequestSchema,
 } from "../../shared/schemas/selection";
 import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
+import { ocrTextSchema, type OcrText } from "../../shared/schemas/ocr";
 import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { storageFailure, type ServiceError } from "../services/serviceError";
@@ -293,6 +301,35 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           outline = checked.data;
         }
 
+        // Optional like the outline, and refused like it when present but
+        // unreadable: a scanned book stored without its OCR lines would open
+        // with pages nobody can select. Sent as a file of its own — it is a
+        // box per line on every page — though a plain field is read too.
+        let ocr: OcrText | undefined;
+        const ocrField = formData.ocr;
+        if (ocrField !== undefined) {
+          const raw = ocrField instanceof File ? await ocrField.text() : ocrField;
+          let parsedOcr: unknown;
+          try {
+            parsedOcr = typeof raw === "string" ? JSON.parse(raw) : null;
+          } catch {
+            parsedOcr = null;
+          }
+          const checked = ocrTextSchema.safeParse(parsedOcr);
+          if (!checked.success) {
+            return c.json(
+              {
+                error: {
+                  code: "VALIDATION_ERROR" satisfies ErrorCode,
+                  message: "Invalid OCR text",
+                },
+              },
+              400,
+            );
+          }
+          ocr = checked.data;
+        }
+
         // An uploaded book goes into the Dropbox folder before it is stored
         // here: Dropbox holds the books, so one that only made it into R2
         // would be a book the folder does not have. A book that is already a
@@ -334,6 +371,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
             arrayBuffer,
             thumbnail,
             outline,
+            ocr,
           },
           idClock,
         );
@@ -481,6 +519,102 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return c.json({ stored: true });
       })
+      // A table of contents for a PDF that came without one, asked of the
+      // model from the head of each page. Only ever written where there is
+      // none: a book's own outline is what its author wrote, and one made
+      // here earlier was paid for. Answers with what was stored.
+      .post("/pdf/:pdfId/outline/generate", async (c) => {
+        const llmConfig = resolveLlmConfig(c.env);
+        if (!llmConfig.apiKey) {
+          return c.json(
+            {
+              error: { code: "CONFIG_ERROR" satisfies ErrorCode, message: "LLM_API_KEY not set" },
+            },
+            500,
+          );
+        }
+
+        const d1Db = drizzle(c.env.DB);
+        const pdf = await d1Db
+          .select({
+            id: pdfs.id,
+            fullText: pdfs.fullText,
+            pageCount: pdfs.pageCount,
+            outline: pdfs.outline,
+          })
+          .from(pdfs)
+          .where(eq(pdfs.id, c.req.param("pdfId")))
+          .get();
+        if (!pdf) {
+          return c.json({ error: PDF_NOT_FOUND }, 404);
+        }
+        if (pdf.outline !== null) {
+          return c.json(
+            {
+              error: {
+                code: "OUTLINE_EXISTS" satisfies ErrorCode,
+                message: "This book already has an outline",
+              },
+            },
+            409,
+          );
+        }
+
+        const reply = await ResultAsync.fromPromise(
+          completeChat(llmConfig, buildOutlineMessages(pdf.fullText, pdf.pageCount)),
+          (cause) => cause,
+        );
+        if (reply.isErr()) {
+          console.error("Outline generation failed:", reply.error);
+          return c.json(
+            {
+              error: {
+                code: "AI_API_ERROR" satisfies ErrorCode,
+                message: "The model could not be reached",
+              },
+            },
+            502,
+          );
+        }
+
+        const outline = readGeneratedOutline(reply.value, pdf.pageCount);
+        if (!outline) {
+          console.error("Outline generation answered with no outline:", reply.value.slice(0, 500));
+          return c.json(
+            {
+              error: {
+                code: "AI_RESPONSE_INVALID" satisfies ErrorCode,
+                message: "The model did not answer with a table of contents",
+              },
+            },
+            502,
+          );
+        }
+
+        await d1Db
+          .update(pdfs)
+          .set({ outline: JSON.stringify(outline) })
+          .where(eq(pdfs.id, pdf.id));
+
+        return c.json({ outline });
+      })
+      // Which way the book's pages turn, chosen by the reader for this book.
+      .put(
+        "/pdf/:pdfId/page-direction",
+        validate("json", savePageDirectionRequestSchema),
+        async (c) => {
+          const saved = await savePageDirection(
+            c.env.DB,
+            c.req.param("pdfId"),
+            c.req.valid("json").pageDirection,
+          );
+
+          return saved.match(
+            (pageDirection) => c.json({ pageDirection }),
+            (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+          );
+        },
+      )
       // The chapters a question can be aimed at, each with the pages it covers.
       // Worked out here rather than by the reader, so that what the menu offers
       // and what an excerpt is cut by come from one outline. The page count is
@@ -578,6 +712,43 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return new Response(object.body, { headers });
       })
+      // The lines OCR read off a scanned book's pages, which the viewer lays
+      // over them as the text layer pdf.js could not build. Served like the
+      // book's bytes: it is stored under the same hash and written only by an
+      // upload of those bytes, so a browser keeps it rather than asking again.
+      .get("/pdf/:pdfId/ocr", async (c) => {
+        const pdf = await drizzle(c.env.DB)
+          .select({ fileHash: pdfs.fileHash })
+          .from(pdfs)
+          .where(eq(pdfs.id, c.req.param("pdfId")))
+          .get();
+        if (!pdf) return c.json({ error: PDF_NOT_FOUND }, 404);
+
+        // Handed to R2 for the same reason as `/file`: a match answers without
+        // the object being read out of storage at all.
+        const object = await c.env.PDF_BUCKET.get(ocrObjectKey(pdf.fileHash), {
+          onlyIf: c.req.raw.headers,
+        });
+        if (!object) {
+          return c.json(
+            {
+              error: {
+                code: "OCR_NOT_FOUND" satisfies ErrorCode,
+                message: "No OCR text stored for this book",
+              },
+            },
+            404,
+          );
+        }
+
+        const headers = {
+          "Content-Type": OCR_CONTENT_TYPE,
+          "Cache-Control": "private, max-age=31536000, immutable",
+          ETag: object.httpEtag,
+        };
+        if (!("body" in object)) return new Response(null, { status: 304, headers });
+        return new Response(object.body, { headers });
+      })
       // Narrows the highlight list by what was marked and what was said about
       // it. The chats are not in the book the list was drawn from, so this is
       // the only place both can be looked through at once.
@@ -641,6 +812,16 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return book.match(
           (found) => c.json(found),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
+      })
+      // Gives the book a title of the reader's own, or takes it away. Answers
+      // with the title as it now stands, which is all the shelf needs.
+      .patch("/pdf/:pdfId", validate("json", renameBookRequestSchema), async (c) => {
+        const renamed = await renameBook(c.env.DB, c.req.param("pdfId"), c.req.valid("json").title);
+
+        return renamed.match(
+          (book) => c.json(book),
           (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
         );
       })

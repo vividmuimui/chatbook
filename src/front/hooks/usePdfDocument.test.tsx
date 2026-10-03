@@ -138,12 +138,15 @@ describe("storeOutlineIfMissing", () => {
 });
 
 const BOOK: BookDetail = {
+  title: null,
   id: PDF_ID,
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
+  pageDirection: "ltr",
+  hasOcr: false,
   selections: [],
   readingState: null,
 };

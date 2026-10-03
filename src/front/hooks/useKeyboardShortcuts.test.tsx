@@ -4,19 +4,26 @@ import { Provider, createStore } from "jotai";
 import { keybindingModeAtom } from "../atoms/settingsAtom";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import type { KeybindingMode, ViewerAction } from "../lib/keybindings";
+import type { PageDirection } from "../../shared/schemas/book";
 
-function Reader({ onAction }: { onAction: (action: ViewerAction) => void }) {
-  useKeyboardShortcuts(onAction);
+function Reader({
+  onAction,
+  direction,
+}: {
+  onAction: (action: ViewerAction) => void;
+  direction?: PageDirection;
+}) {
+  useKeyboardShortcuts(onAction, direction);
   return <input aria-label="質問" />;
 }
 
-function renderReader(mode: KeybindingMode) {
+function renderReader(mode: KeybindingMode, direction?: PageDirection) {
   const onAction = vi.fn<(action: ViewerAction) => void>();
   const store = createStore();
   store.set(keybindingModeAtom, mode);
   const { unmount } = render(
     <Provider store={store}>
-      <Reader onAction={onAction} />
+      <Reader onAction={onAction} direction={direction} />
     </Provider>,
   );
   return { onAction, unmount };
@@ -34,6 +41,14 @@ function pressArrowRight(target: EventTarget) {
 }
 
 describe("useKeyboardShortcuts", () => {
+  it("turns back on → in a book that opens on the right", () => {
+    const { onAction } = renderReader("none", "rtl");
+
+    pressArrowRight(window);
+
+    expect(onAction.mock.calls).toStrictEqual([["prevPage"]]);
+  });
+
   it("turns the page on an arrow even when no bindings are chosen", () => {
     const { onAction } = renderReader("none");
 

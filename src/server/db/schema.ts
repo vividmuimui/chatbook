@@ -31,6 +31,13 @@ export const pdfs = sqliteTable("pdfs", {
   // "pdf" or "epub" (`bookFormatSchema`). Read off the bytes when the book is
   // stored, never off the name the reader gave the file.
   format: text("format").notNull().default("pdf"),
+  // The title the reader gave the book (`PATCH /api/pdf/:pdfId`). Null shows
+  // the one made from `file_name`, and is what a cleared title goes back to.
+  // Re-opening the book from its file leaves it alone.
+  title: text("title"),
+  // "ltr" or "rtl" (`pageDirectionSchema`): which way the pages turn. Chosen
+  // by the reader per book, never read off the file — a PDF does not say.
+  pageDirection: text("page_direction").notNull().default("ltr"),
 });
 
 /** Settings changed from the screen. One row per key (`dropbox_folder`). */

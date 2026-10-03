@@ -5,6 +5,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   MAX_OUTLINE_CHAPTERS,
   MAX_OUTLINE_TITLE_LENGTH,
+  type BookChapter,
   type BookOutline,
 } from "../../shared/schemas/book";
 
@@ -79,4 +80,17 @@ export function toStoredOutline(entries: OutlineEntry[]): BookOutline | null {
     }))
     .slice(0, MAX_OUTLINE_CHAPTERS);
   return chapters.length > 0 ? chapters : null;
+}
+
+/**
+ * The book's stored chapters as entries the outline panel lists, for a PDF
+ * with no bookmarks of its own — one whose table of contents the model made.
+ *
+ * Top-level only, as stored. The span ahead of the first chapter is the server
+ * tiling the book for the chat's scope menu, not a heading, so it is left out.
+ */
+export function chaptersAsOutline(chapters: BookChapter[]): OutlineEntry[] {
+  return chapters
+    .filter((chapter): chapter is BookChapter & { title: string } => chapter.title !== null)
+    .map(({ title, startPage }) => ({ title, pageNumber: startPage, children: [] }));
 }

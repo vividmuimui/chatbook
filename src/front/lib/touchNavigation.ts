@@ -1,4 +1,5 @@
 import { MAX_ZOOM, MIN_ZOOM } from "./pageScale";
+import type { PageDirection } from "../../shared/schemas/book";
 
 /**
  * How the reader's fingers are read on a page they cannot point at.
@@ -31,10 +32,31 @@ const SWIPE_MAX_MS = 700;
 
 export type PageTurn = "prev" | "next";
 
+/** A side of the screen, as the reader sees it. */
+export type ScreenSide = "left" | "right";
+
+/**
+ * The page turn that lies toward one side of the screen.
+ *
+ * The one place a book's direction is read: a book that opens on the left has
+ * its next page on the right, and one that opens on the right — set vertically
+ * in Japanese, or a manga — has it on the left. Everything that turns pages by
+ * where on the screen the reader pointed (the edges, a swipe, ←/→, h/l, the
+ * stepper's chevrons) asks here, and what a turn then does is `turnTo`'s,
+ * which knows nothing of sides.
+ */
+export function turnToward(side: ScreenSide, direction: PageDirection): PageTurn {
+  const nextSide: ScreenSide = direction === "rtl" ? "left" : "right";
+  return side === nextSide ? "next" : "prev";
+}
+
 /** What a tap at this share of the way across the page is for. */
-export function resolveTapZone(relativeX: number): PageTurn | "zoom" {
-  if (relativeX < TAP_EDGE) return "prev";
-  if (relativeX > 1 - TAP_EDGE) return "next";
+export function resolveTapZone(
+  relativeX: number,
+  direction: PageDirection = "ltr",
+): PageTurn | "zoom" {
+  if (relativeX < TAP_EDGE) return turnToward("left", direction);
+  if (relativeX > 1 - TAP_EDGE) return turnToward("right", direction);
   return "zoom";
 }
 
@@ -44,12 +66,21 @@ interface Swipe {
   durationMs: number;
 }
 
-/** The page turn a finger's travel asked for, or nothing if it asked for none. */
-export function resolveSwipe({ dx, dy, durationMs }: Swipe): PageTurn | null {
+/**
+ * The page turn a finger's travel asked for, or nothing if it asked for none.
+ *
+ * A finger travelling left pulls in the page that was on the right, as a sheet
+ * of paper does — which is the next page in a book that opens on the left, and
+ * the previous one in a book that opens on the right.
+ */
+export function resolveSwipe(
+  { dx, dy, durationMs }: Swipe,
+  direction: PageDirection = "ltr",
+): PageTurn | null {
   if (durationMs > SWIPE_MAX_MS) return null;
   if (Math.abs(dx) < SWIPE_MIN_DISTANCE) return null;
   if (Math.abs(dx) < Math.abs(dy) * SWIPE_STRAIGHTNESS) return null;
-  return dx < 0 ? "next" : "prev";
+  return turnToward(dx < 0 ? "right" : "left", direction);
 }
 
 /**

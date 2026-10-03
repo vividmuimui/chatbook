@@ -16,6 +16,7 @@ import {
 import { PdfViewer } from "../components/PdfViewer/PdfViewer";
 import { EpubViewer } from "../components/EpubViewer/EpubViewer";
 import { EpubTypographyMenu } from "../components/EpubViewer/EpubTypographyMenu";
+import { EpubPageStepper } from "../components/EpubViewer/EpubPageStepper";
 import { BookSearch } from "../components/PdfViewer/BookSearch";
 import { bookSearchOpenAtom } from "../atoms/bookSearchAtom";
 import { PageToolbar } from "../components/PdfViewer/PageToolbar";
@@ -28,6 +29,7 @@ import { useReadingLocation, type PassageMiss } from "../hooks/useReadingLocatio
 import { useReadingStateSync } from "../hooks/useReadingStateSync";
 import { passageFromNavigation } from "../lib/textFragment";
 import { fetcher, resultFetcher } from "../lib/fetcher";
+import { bookTitle } from "../lib/bookTitle";
 import { locatedPageSchema, type LocatedPage } from "../../shared/schemas/book";
 import { chatHistorySchema } from "../../shared/schemas/chat";
 
@@ -235,7 +237,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
         </Link>
         {book && (
           <span className="ml-3 min-w-0 flex-1 truncate text-sm text-gray-500 md:flex-none md:max-w-xs">
-            {book.fileName}
+            {bookTitle(book)}
           </span>
         )}
         {/* Both toggles live up here rather than in the panels they fold away,
@@ -298,7 +300,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
               a phone keeps on screen, and it has room for two icons. A PDF has
               none — its type is part of its pages. */}
           {book?.format === "epub" && <EpubTypographyMenu />}
-          <SettingsMenu />
+          <SettingsMenu pdfId={pdfId} />
         </div>
       </header>
 
@@ -467,9 +469,15 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
       {isNarrow && book && (
         <PageToolbar
           pageCount={book.pageCount}
+          direction={book.pageDirection}
           highlightCount={book.selections.length}
           chatOpen={chatSheet !== "closed"}
           onToggleChat={() => setChatSheet(chatSheet === "closed" ? "half" : "closed")}
+          stepper={
+            book.format === "epub" ? (
+              <EpubPageStepper pageCount={book.pageCount} direction={book.pageDirection} />
+            ) : undefined
+          }
         />
       )}
     </div>

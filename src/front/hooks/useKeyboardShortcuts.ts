@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { useAtomValue } from "jotai";
 import { keybindingModeAtom } from "../atoms/settingsAtom";
 import { resolveAction, type ViewerAction } from "../lib/keybindings";
+import type { PageDirection } from "../../shared/schemas/book";
 
 /**
  * Typing must never trigger shortcuts: without this, "j" could not be typed
@@ -20,8 +21,14 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * Subscribed in every mode, "none" included: the arrows answer whatever the
  * reader has chosen. Nothing else is claimed there, since `resolveAction` has
  * only the arrows to give back.
+ *
+ * `direction` is the way the open book's pages turn, which decides where ←/→
+ * and h/l lead (`resolveAction`).
  */
-export function useKeyboardShortcuts(onAction: (action: ViewerAction) => void) {
+export function useKeyboardShortcuts(
+  onAction: (action: ViewerAction) => void,
+  direction: PageDirection = "ltr",
+) {
   const mode = useAtomValue(keybindingModeAtom);
   const pendingRef = useRef<string | null>(null);
 
@@ -35,7 +42,7 @@ export function useKeyboardShortcuts(onAction: (action: ViewerAction) => void) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
 
-      const { action, pending } = resolveAction(mode, event, pendingRef.current);
+      const { action, pending } = resolveAction(mode, event, pendingRef.current, direction);
       pendingRef.current = pending;
 
       // Only claim the keys we actually use, so browser shortcuts keep working
@@ -49,5 +56,5 @@ export function useKeyboardShortcuts(onAction: (action: ViewerAction) => void) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [mode]);
+  }, [mode, direction]);
 }

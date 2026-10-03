@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FIXTURE_FILE_NAME, OUTLINE, PAGE_COUNT } from "./fixtures/testBookManifest.ts";
+import { EPUB_CHAPTERS, EPUB_FILE_NAME } from "./fixtures/testEpubManifest.ts";
 
 /**
  * The reader on a screen with room for one column.
@@ -47,9 +48,10 @@ async function openTestBook(page: Page): Promise<string> {
   await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
 
   const pdfId = new URL(page.url()).pathname.split("/").pop()!;
-  const { selections, readingState } = (await (
+  const { selections, readingState, pageDirection } = (await (
     await page.request.get(`/api/pdf/${pdfId}`)
   ).json()) as {
+    pageDirection: "ltr" | "rtl";
     selections: { id: string }[];
     readingState: {
       page: number;
@@ -79,6 +81,12 @@ async function openTestBook(page: Page): Promise<string> {
     },
   });
 
+  // The way the pages turn is the book's too, and a test that turned it to
+  // open on the right would otherwise hand every later one a mirrored reader.
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "ltr" },
+  });
+
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
   const resumedElsewhere =
@@ -87,7 +95,7 @@ async function openTestBook(page: Page): Promise<string> {
       readingState.bookChat === true ||
       readingState.outlineOpen === false ||
       readingState.chatPanelOpen === false);
-  if (selections.length > 0 || resumedElsewhere) {
+  if (selections.length > 0 || resumedElsewhere || pageDirection !== "ltr") {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // The page counter arrives with the book, but a tap or a drag needs the page
@@ -257,4 +265,60 @@ test("keeps the shelf shut until the password is typed", async ({ page }) => {
   // Signed in, and still at the address that was asked for
   await expect(page.getByRole("button", { name: "本を追加" })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe("/");
+});
+
+const TEST_EPUB = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  EPUB_FILE_NAME,
+);
+
+test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ page }) => {
+  await logIn(page);
+  await page.goto("/");
+  await page.setInputFiles('input[type="file"]', TEST_EPUB);
+  await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
+
+  // The second chapter, which fills several screens of a phone
+  const bookId = new URL(page.url()).pathname.split("/").pop()!;
+  await page.goto(`/books/${bookId}?page=2`);
+  const chapters = EPUB_CHAPTERS.length;
+  await expect(page.getByText(`2 / ${chapters} 章`, { exact: true })).toBeVisible();
+  const screenLabel = page.getByText(/^\d+ \/ \d+$/);
+  await expect(screenLabel).toHaveText(/^1 \//);
+  const count = Number((await screenLabel.textContent())!.split("/")[1]);
+  expect(count).toBeGreaterThan(2);
+
+  const paper = (await page.locator("article").boundingBox())!;
+  const middleY = paper.y + paper.height / 2;
+
+  await page.touchscreen.tap(paper.x + paper.width * 0.9, middleY);
+  await expect(screenLabel).toHaveText(`2 / ${count}`);
+  await page.touchscreen.tap(paper.x + paper.width * 0.1, middleY);
+  await expect(screenLabel).toHaveText(`1 / ${count}`);
+  await page.touchscreen.tap(paper.x + paper.width * 0.5, middleY);
+  await expect(screenLabel).toHaveText(`1 / ${count}`);
+
+  // A finger flicked from right to left reads on, as it turns a PDF page.
+  // Real touches, so the gesture arrives as the browser would deliver it.
+  const touch = await page.context().newCDPSession(page);
+  const from = paper.x + paper.width * 0.7;
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: from, y: middleY }],
+  });
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x: from - 80, y: middleY }],
+  });
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x: from - 160, y: middleY }],
+  });
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect(screenLabel).toHaveText(`2 / ${count}`);
+  // The chapter's opening is a screen behind now, not merely renumbered
+  await expect(
+    page.locator(".epubChapter p", { hasText: EPUB_CHAPTERS[1].paragraphs[0] }),
+  ).not.toBeInViewport();
 });

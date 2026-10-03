@@ -7,12 +7,14 @@ import { MINIMAL_PDF_BYTES } from "./fixtures/minimalPdf";
 import app from "../../src/server/index";
 import {
   bookObjectKey,
+  ocrObjectKey,
   openPdf,
   pdfObjectKey,
   thumbnailObjectKey,
   type IdClock,
 } from "../../src/server/services/pdfService";
 import { MAX_NOTE_LENGTH } from "../../src/shared/schemas/selection";
+import { MAX_BOOK_TITLE_LENGTH } from "../../src/shared/schemas/book";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -38,6 +40,8 @@ async function uploadBook(options: {
   pages?: string[];
   /** Top-level chapters, sent the way the extractor serializes them. */
   outline?: { title: string; pageNumber: number }[];
+  /** What OCR read, sent as the extractor sends it: a JSON file of its own. */
+  ocr?: unknown;
 }): Promise<PdfResponse> {
   const formData = new FormData();
   formData.append(
@@ -47,6 +51,12 @@ async function uploadBook(options: {
   formData.append("fullText", options.pages ? options.pages.join("\f") : "text");
   formData.append("pageCount", String(options.pages?.length ?? 1));
   if (options.outline) formData.append("outline", JSON.stringify(options.outline));
+  if (options.ocr !== undefined) {
+    formData.append(
+      "ocr",
+      new File([JSON.stringify(options.ocr)], "ocr.json", { type: "application/json" }),
+    );
+  }
   if (options.thumbnail) {
     formData.append(
       "thumbnail",
@@ -205,6 +215,8 @@ describe("POST /api/pdf/open", () => {
       pageCount: 1,
       fullText: "test content",
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -280,6 +292,8 @@ describe("POST /api/pdf/open", () => {
       pageCount: 209,
       fullText: "fresh text",
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
 
     // The refreshed values must be persisted, not just echoed back
@@ -291,8 +305,11 @@ describe("POST /api/pdf/open", () => {
       pageCount: 209,
       hasThumbnail: false,
       hasOutline: false,
+      hasOcr: false,
       selections: [],
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -402,10 +419,12 @@ describe("POST /api/pdf/open outline", () => {
     });
   });
 
-  it("clears the stored outline when the same book is re-opened without one", async () => {
-    // Same tag, same bytes, same row: the second upload is the re-open path,
-    // and like the rest of the metadata the outline follows the latest
-    // extraction — here, a client that read no table of contents.
+  it("keeps the stored outline when the same book is re-opened without one", async () => {
+    // Same tag, same bytes, same row: the second upload is the re-open path.
+    // The bytes are the ones the stored outline came from, so a client that
+    // read none this time either failed to read it or never could — in which
+    // case the outline is one the model made (`/outline/generate`), and was
+    // paid for.
     const { id } = await uploadBook({
       tag: "outline-reopen",
       fileName: "reopened.pdf",
@@ -419,7 +438,25 @@ describe("POST /api/pdf/open outline", () => {
     });
 
     expect(second.id).toBe(id);
-    expect(await storedOutline(id)).toBeNull();
+    expect(await storedOutline(id)).toBe(JSON.stringify(OUTLINE));
+  });
+
+  it("replaces the stored outline with the one a re-open extracted", async () => {
+    const replacement = [{ title: "序章", pageNumber: 1 }];
+    const { id } = await uploadBook({
+      tag: "outline-replace",
+      fileName: "replaced.pdf",
+      pages: ["p1", "p2", "p3"],
+      outline: OUTLINE,
+    });
+    await uploadBook({
+      tag: "outline-replace",
+      fileName: "replaced.pdf",
+      pages: ["p1", "p2", "p3"],
+      outline: replacement,
+    });
+
+    expect(await storedOutline(id)).toBe(JSON.stringify(replacement));
   });
 });
 
@@ -465,8 +502,11 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
       pageCount: 3,
       hasThumbnail: false,
       hasOutline: true,
+      hasOcr: false,
       selections: [],
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -533,8 +573,11 @@ describe("GET /api/pdf/:pdfId", () => {
       pageCount: 1,
       hasThumbnail: false,
       hasOutline: false,
+      hasOcr: false,
       selections: [],
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -647,6 +690,8 @@ describe("GET /api/pdfs", () => {
       inDropbox: false,
       // Never opened in a reader, which is not the same as being on page 1.
       lastReadPage: null,
+      // Never renamed: the shelf makes the title from the file name.
+      title: null,
     });
     expect(uncovered?.hasThumbnail).toBe(false);
   });
@@ -670,6 +715,96 @@ describe("GET /api/pdfs", () => {
     };
 
     expect(books.find((b) => b.id === book.id)).toMatchObject({ pageCount: 4, lastReadPage: 3 });
+  });
+});
+
+describe("PATCH /api/pdf/:pdfId", () => {
+  function renameBook(pdfId: string, body: unknown): Promise<Response> {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function titleOnShelf(pdfId: string): Promise<string | null | undefined> {
+    const response = await apiFetch("https://example.com/api/pdfs");
+    const { books } = (await response.json()) as { books: { id: string; title: string | null }[] };
+    return books.find((b) => b.id === pdfId)?.title;
+  }
+
+  async function titleOfBook(pdfId: string): Promise<string | null> {
+    const response = await apiFetch(`https://example.com/api/pdf/${pdfId}`);
+    return ((await response.json()) as { title: string | null }).title;
+  }
+
+  it("gives the book the title the reader wrote, on the shelf and in the book", async () => {
+    const book = await uploadBook({ tag: "rename", fileName: "scan_0001.pdf" });
+
+    const response = await renameBook(book.id, { title: "  Rust 入門  " });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({ id: book.id, title: "Rust 入門" });
+    expect(await titleOnShelf(book.id)).toBe("Rust 入門");
+    expect(await titleOfBook(book.id)).toBe("Rust 入門");
+  });
+
+  it.each([null, "", "   "])("goes back to the file name's title when sent %j", async (title) => {
+    const book = await uploadBook({
+      tag: `rename-clear-${String(title).length}`,
+      fileName: "clear.pdf",
+    });
+    await renameBook(book.id, { title: "付けた題名" });
+
+    const response = await renameBook(book.id, { title });
+
+    expect(await response.json()).toStrictEqual({ id: book.id, title: null });
+    expect(await titleOfBook(book.id)).toBeNull();
+  });
+
+  it("refuses a title longer than the limit", async () => {
+    const book = await uploadBook({ tag: "rename-long", fileName: "long.pdf" });
+
+    const response = await renameBook(book.id, { title: "あ".repeat(MAX_BOOK_TITLE_LENGTH + 1) });
+
+    expect(response.status).toBe(400);
+    expect(await titleOfBook(book.id)).toBeNull();
+  });
+
+  it("refuses a body that names no title", async () => {
+    const book = await uploadBook({ tag: "rename-empty", fileName: "empty.pdf" });
+
+    const response = await renameBook(book.id, {});
+
+    expect(response.status).toBe(400);
+  });
+
+  it("answers 404 for a book that is not on the shelf", async () => {
+    const response = await renameBook("no-such-book", { title: "x" });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "PDF_NOT_FOUND" } });
+  });
+
+  it("leaves the shelf's order alone", async () => {
+    const book = await uploadBook({ tag: "rename-order", fileName: "order.pdf" });
+    const before = await bookUpdatedAt(book.id);
+
+    await renameBook(book.id, { title: "並びは動かない" });
+
+    expect(await bookUpdatedAt(book.id)).toBe(before);
+  });
+
+  it("keeps the title when the same book is opened again from its file", async () => {
+    const book = await uploadBook({ tag: "rename-reopen", fileName: "reopen.pdf" });
+    await renameBook(book.id, { title: "残る題名" });
+
+    const reopened = await uploadBook({ tag: "rename-reopen", fileName: "reopen-renamed.pdf" });
+
+    expect(reopened.id).toBe(book.id);
+    // The upload's answer seeds the reader's cache, so it carries the title too.
+    expect((reopened as PdfResponse & { title: string | null }).title).toBe("残る題名");
+    expect(await titleOfBook(book.id)).toBe("残る題名");
   });
 });
 
@@ -1806,6 +1941,8 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 3,
       fullText: "本文",
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
     expect(await storedBookRow("book-idclock-new")).toStrictEqual({
       id: "book-idclock-new",
@@ -1849,6 +1986,8 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 4,
       fullText: "再抽出した本文",
       readingState: null,
+      title: null,
+      pageDirection: "ltr",
     });
     expect(await storedBookRow("book-idclock-reopen")).toStrictEqual({
       id: "book-idclock-reopen",
@@ -1985,5 +2124,194 @@ describe("EPUB books", () => {
       }),
     });
     expect(response.status).toBe(400);
+  });
+});
+
+describe("PUT /api/pdf/:pdfId/page-direction", () => {
+  async function putDirection(pdfId: string, body: unknown) {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}/page-direction`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("turns a book the other way and hands the direction to whoever opens it next", async () => {
+    const { id } = await uploadBook({ tag: "direction-rtl", fileName: "manga.pdf" });
+
+    const response = await putDirection(id, { pageDirection: "rtl" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({ pageDirection: "rtl" });
+    const book = (await (await apiFetch(`https://example.com/api/pdf/${id}`)).json()) as {
+      pageDirection: string;
+    };
+    expect(book.pageDirection).toBe("rtl");
+  });
+
+  it("keeps the direction when the same book is added again", async () => {
+    const { id } = await uploadBook({ tag: "direction-reopen", fileName: "tategaki.pdf" });
+    await putDirection(id, { pageDirection: "rtl" });
+
+    const reopened = await uploadBook({ tag: "direction-reopen", fileName: "tategaki.pdf" });
+
+    expect(reopened).toMatchObject({ id, pageDirection: "rtl" });
+    const book = (await (await apiFetch(`https://example.com/api/pdf/${id}`)).json()) as {
+      pageDirection: string;
+    };
+    expect(book.pageDirection).toBe("rtl");
+  });
+
+  it("leaves the shelf's order alone", async () => {
+    const { id } = await uploadBook({ tag: "direction-order", fileName: "order.pdf" });
+    const before = (await env.DB.prepare("SELECT updated_at FROM pdfs WHERE id = ?")
+      .bind(id)
+      .first()) as { updated_at: string };
+
+    await putDirection(id, { pageDirection: "rtl" });
+
+    const after = (await env.DB.prepare("SELECT updated_at FROM pdfs WHERE id = ?")
+      .bind(id)
+      .first()) as { updated_at: string };
+    expect(after.updated_at).toBe(before.updated_at);
+  });
+
+  it("refuses a direction that is neither of the two", async () => {
+    const { id } = await uploadBook({ tag: "direction-bad", fileName: "bad.pdf" });
+
+    const response = await putDirection(id, { pageDirection: "ttb" });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "VALIDATION_ERROR", message: "Invalid request body: pageDirection" },
+    });
+  });
+
+  it("returns 404 for a book that is not on the shelf", async () => {
+    const response = await putDirection("no-such-book", { pageDirection: "rtl" });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
+    });
+  });
+});
+
+/** What the extractor sends for a scanned book: the lines OCR read, page by page. */
+const OCR_TEXT = {
+  pages: [
+    {
+      pageNumber: 1,
+      lines: [{ text: "the brass lantern", x: 72, y: 100, width: 200, height: 18 }],
+    },
+  ],
+};
+
+describe("OCR text of a book without its own", () => {
+  it("keeps what OCR read and says the book has it", async () => {
+    const book = await uploadBook({ tag: "ocr-stored", fileName: "scan.pdf", ocr: OCR_TEXT });
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      hasOcr: boolean;
+    };
+    expect(detail.hasOcr).toBe(true);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(await response.json()).toStrictEqual(OCR_TEXT);
+  });
+
+  it("lets the browser keep the OCR text, as it keeps the book's bytes", async () => {
+    const book = await uploadBook({ tag: "ocr-cache", fileName: "scan.pdf", ocr: OCR_TEXT });
+
+    const first = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(first.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
+    const etag = first.headers.get("ETag")!;
+    expect(etag).not.toBeNull();
+    await first.arrayBuffer();
+
+    const second = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`, {
+      headers: { "If-None-Match": etag },
+    });
+    expect(second.status).toBe(304);
+  });
+
+  it("keeps only the shape it knows", async () => {
+    const book = await uploadBook({
+      tag: "ocr-strip",
+      fileName: "scan.pdf",
+      ocr: {
+        engine: "tesseract",
+        pages: [{ ...OCR_TEXT.pages[0], confidence: 91 }],
+      },
+    });
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(await response.json()).toStrictEqual(OCR_TEXT);
+  });
+
+  it("says a book read without OCR has none, and has nothing to serve", async () => {
+    const book = await uploadBook({ tag: "ocr-absent", fileName: "typeset.pdf" });
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      hasOcr: boolean;
+    };
+    expect(detail.hasOcr).toBe(false);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "OCR_NOT_FOUND", message: "No OCR text stored for this book" },
+    });
+  });
+
+  it("answers 404 for a book that is not on the shelf", async () => {
+    const response = await apiFetch("https://example.com/api/pdf/no-such-book/ocr");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
+    });
+  });
+
+  it("follows the latest reading of the same book, dropping OCR it no longer sends", async () => {
+    const first = await uploadBook({ tag: "ocr-reopen", fileName: "scan.pdf", ocr: OCR_TEXT });
+    const again = await uploadBook({ tag: "ocr-reopen", fileName: "scan.pdf" });
+    expect(again.id).toBe(first.id);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${first.id}/ocr`);
+    expect(response.status).toBe(404);
+  });
+
+  it("refuses OCR text it cannot read, rather than storing a book that draws no text", async () => {
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([uniquePdfBytes("ocr-broken")], "broken.pdf", { type: "application/pdf" }),
+    );
+    formData.append("fullText", "text");
+    formData.append("pageCount", "1");
+    formData.append("ocr", new File(["{broken"], "ocr.json", { type: "application/json" }));
+
+    const response = await apiFetch("https://example.com/api/pdf/open", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "VALIDATION_ERROR", message: "Invalid OCR text" },
+    });
+  });
+
+  it("takes the OCR text out of storage when the book is deleted", async () => {
+    const book = await uploadBook({ tag: "ocr-delete", fileName: "scan.pdf", ocr: OCR_TEXT });
+    const fileHash = await storedFileHash(book.id);
+    expect(await env.PDF_BUCKET.head(ocrObjectKey(fileHash))).not.toBeNull();
+
+    await apiFetch(`https://example.com/api/pdf/${book.id}`, { method: "DELETE" });
+
+    expect(await env.PDF_BUCKET.head(ocrObjectKey(fileHash))).toBeNull();
   });
 });

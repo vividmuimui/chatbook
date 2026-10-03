@@ -3,11 +3,13 @@ import { useState, useRef, useEffect } from "react";
 import { useAtom } from "jotai";
 import { keybindingModeAtom } from "../atoms/settingsAtom";
 import { useWebSearchAtom } from "../atoms/settingsAtom";
-import { ARROW_KEYBINDING_HELP, KEYBINDING_HELP, type KeybindingMode } from "../lib/keybindings";
+import { keybindingHelp, type KeybindingMode } from "../lib/keybindings";
 import type { ResultAsync } from "neverthrow";
 import { resultFetcher, type ApiError } from "../lib/fetcher";
 import { sessionEndedSchema, type SessionEnded } from "../../shared/schemas/auth";
 import { useServerConfig } from "../hooks/useServerConfig";
+import { usePageDirection, type SavePageDirection } from "../hooks/usePageDirection";
+import type { PageDirection } from "../../shared/schemas/book";
 
 const MODE_LABELS: Record<KeybindingMode, string> = {
   none: "なし",
@@ -15,17 +17,34 @@ const MODE_LABELS: Record<KeybindingMode, string> = {
   emacs: "Emacs",
 };
 
+const DIRECTION_LABELS: Record<PageDirection, string> = {
+  ltr: "左開き",
+  rtl: "右開き",
+};
+
 interface SettingsMenuProps {
+  /**
+   * The book open in the reader, whose own settings — which way its pages turn
+   * — the menu offers along with the reader's. None where no book is open.
+   */
+  pdfId?: string;
   /** Injectable so a session that could not be ended can be driven in a test. */
   endSession?: () => ResultAsync<SessionEnded, ApiError>;
+  /** Injectable so a direction the server refused can be driven in a test. */
+  savePageDirection?: SavePageDirection;
 }
 
-export function SettingsMenu({ endSession = requestSessionEnd }: SettingsMenuProps = {}) {
+export function SettingsMenu({
+  pdfId,
+  endSession = requestSessionEnd,
+  savePageDirection,
+}: SettingsMenuProps = {}) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useAtom(keybindingModeAtom);
   const [useWebSearch, setUseWebSearch] = useAtom(useWebSearchAtom);
   const { webSearchAvailable } = useServerConfig();
   const [logOutError, setLogOutError] = useState<string | null>(null);
+  const pageDirection = usePageDirection(pdfId, savePageDirection);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const logOut = async () => {
@@ -63,9 +82,9 @@ export function SettingsMenu({ endSession = requestSessionEnd }: SettingsMenuPro
     };
   }, [open]);
 
-  // The arrows first because they hold in every mode, the chosen mode's own
-  // keys under them — including when that choice is to have none.
-  const help = [...ARROW_KEYBINDING_HELP, ...(mode === "none" ? [] : KEYBINDING_HELP[mode])];
+  // Worded for the book that is open: in one that opens on the right, ← and h
+  // are the way on.
+  const help = keybindingHelp(mode, pageDirection.direction ?? "ltr");
 
   return (
     <div ref={menuRef} className="relative">
@@ -98,6 +117,40 @@ export function SettingsMenu({ endSession = requestSessionEnd }: SettingsMenuPro
               </label>
             </fieldset>
           ) : null}
+
+          {/* The book's own setting rather than the reader's: kept with the
+              book on the server, so every device turns it the same way. Not
+              offered until the book has said which way it turns. Any format:
+              an EPUB keeps the choice for when its pages turn too. */}
+          {pageDirection.direction !== null && (
+            <fieldset className="mb-3 border-b border-gray-100 pb-3">
+              <legend className="mb-2 text-xs font-semibold text-gray-500">ページめくり</legend>
+              <div className="flex gap-1">
+                {(Object.keys(DIRECTION_LABELS) as PageDirection[]).map((value) => (
+                  <label
+                    key={value}
+                    className="flex flex-1 cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <input
+                      type="radio"
+                      name="page-direction"
+                      value={value}
+                      checked={pageDirection.direction === value}
+                      disabled={pageDirection.saving}
+                      onChange={() => void pageDirection.changeDirection(value)}
+                      className="h-3.5 w-3.5"
+                    />
+                    {DIRECTION_LABELS[value]}
+                  </label>
+                ))}
+              </div>
+              {pageDirection.error !== null && (
+                <p role="alert" className="px-1 pt-1 text-xs text-red-600">
+                  ページめくりの向きを保存できませんでした: {pageDirection.error}
+                </p>
+              )}
+            </fieldset>
+          )}
 
           <fieldset>
             <legend className="mb-2 text-xs font-semibold text-gray-500">キーバインド</legend>

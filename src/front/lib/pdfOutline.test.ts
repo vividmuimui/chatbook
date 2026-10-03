@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { readOutlineEntries, toStoredOutline } from "./pdfOutline";
+import { chaptersAsOutline, readOutlineEntries, toStoredOutline } from "./pdfOutline";
 
 /**
  * A document whose bookmarks resolve the two ways pdf.js offers them: a named
@@ -101,5 +101,28 @@ describe("toStoredOutline", () => {
     expect(stored?.length).toBe(1000);
     expect(stored?.[0]).toStrictEqual({ title: "第1章", pageNumber: 1 });
     expect(stored?.[999]).toStrictEqual({ title: "第1000章", pageNumber: 1000 });
+  });
+});
+
+describe("chaptersAsOutline", () => {
+  it("lists the stored chapters as top-level entries at the pages they start on", () => {
+    expect(
+      chaptersAsOutline([
+        { title: "第1章 はじめに", startPage: 3, endPage: 4 },
+        { title: "第2章 しくみ", startPage: 5, endPage: 12 },
+      ]),
+    ).toStrictEqual([
+      { title: "第1章 はじめに", pageNumber: 3, children: [] },
+      { title: "第2章 しくみ", pageNumber: 5, children: [] },
+    ]);
+  });
+
+  it("leaves out the untitled pages ahead of the first chapter, which are no heading", () => {
+    expect(
+      chaptersAsOutline([
+        { title: null, startPage: 1, endPage: 2 },
+        { title: "第1章", startPage: 3, endPage: 9 },
+      ]),
+    ).toStrictEqual([{ title: "第1章", pageNumber: 3, children: [] }]);
   });
 });

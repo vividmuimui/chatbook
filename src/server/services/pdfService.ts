@@ -5,8 +5,11 @@ import { ResultAsync, err, ok } from "neverthrow";
 import { pdfs, selections } from "../db/schema";
 import {
   bookFormatSchema,
+  pageDirectionSchema,
   type BookFormat,
   type BookOutline,
+  type BookRenamed,
+  type PageDirection,
   type BookSummary,
   type PdfMetadata,
   type ReadingState,
@@ -18,6 +21,7 @@ import {
   type SelectionUpdated,
 } from "../../shared/schemas/selection";
 import type { BookSearchResult } from "../../shared/schemas/bookSearch";
+import type { OcrText } from "../../shared/schemas/ocr";
 import { findInBookText } from "./bookTextSearch";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
 
@@ -72,6 +76,16 @@ export function readFormat(stored: string): BookFormat {
 }
 
 /**
+ * A stored page direction, read as forgivingly as the format: anything but the
+ * two the endpoint writes turns the way every book turned before there was a
+ * choice.
+ */
+export function readPageDirection(stored: string): PageDirection {
+  const parsed = pageDirectionSchema.safeParse(stored);
+  return parsed.success ? parsed.data : "ltr";
+}
+
+/**
  * R2 object key for a PDF's cover thumbnail.
  */
 export function thumbnailObjectKey(fileHash: string): string {
@@ -79,6 +93,17 @@ export function thumbnailObjectKey(fileHash: string): string {
 }
 
 export const THUMBNAIL_CONTENT_TYPE = "image/webp";
+
+/**
+ * R2 object key for the lines OCR read off a scanned book's pages. Kept in R2
+ * rather than D1: it is a box per line on every page, a megabyte or so for a
+ * long book, and only the viewer reads it — never a query.
+ */
+export function ocrObjectKey(fileHash: string): string {
+  return `ocr/${fileHash}.json`;
+}
+
+export const OCR_CONTENT_TYPE = "application/json";
 
 /**
  * The two non-deterministic values every write needs. Injected so tests can
@@ -104,6 +129,8 @@ interface OpenPdfInput {
   arrayBuffer: ArrayBuffer;
   thumbnail?: ArrayBuffer;
   outline?: BookOutline;
+  /** What OCR read off pages without text; absent for a book that needed none. */
+  ocr?: OcrText;
   /** The Dropbox file the bytes came from or were written to, when there is one. */
   dropboxId?: string;
 }
@@ -131,6 +158,7 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
       updatedAt: pdfs.updatedAt,
       dropboxId: pdfs.dropboxId,
       lastReadPage: pdfs.lastReadPage,
+      title: pdfs.title,
     })
     .from(pdfs)
     .orderBy(desc(pdfs.updatedAt))
@@ -168,20 +196,43 @@ async function storePdf(
   input: OpenPdfInput,
   idClock: IdClock,
 ): Promise<PdfMetadata> {
-  const { fileName, fileHash, fullText, pageCount, arrayBuffer, thumbnail, outline, dropboxId } =
-    input;
+  const {
+    fileName,
+    fileHash,
+    fullText,
+    pageCount,
+    arrayBuffer,
+    thumbnail,
+    outline,
+    ocr,
+    dropboxId,
+  } = input;
   const d1Db = drizzle(db);
   const format = bookFormatOf(arrayBuffer);
   const objectKey = bookObjectKey(fileHash, format);
   const httpMetadata = { contentType: BOOK_CONTENT_TYPES[format] };
   // Stored like the rest of the metadata: whatever the caller just extracted
-  // wins, and a book whose PDF ships no outline goes back to NULL.
+  // wins. An upload that extracted none leaves a stored outline alone, though
+  // (below): the bytes are the same ones it came from, so it was either read
+  // from them on an earlier upload this one failed to repeat, or made by the
+  // model for a PDF that has none — and paid for.
   const outlineJson = outline ? JSON.stringify(outline) : null;
 
   if (thumbnail) {
     await bucket.put(thumbnailObjectKey(fileHash), thumbnail, {
       httpMetadata: { contentType: THUMBNAIL_CONTENT_TYPE },
     });
+  }
+
+  // Like the outline, the latest reading wins: a book read again without OCR
+  // (its pages turned out to carry text after all) must not keep laying the
+  // old lines over pages that now draw their own.
+  if (ocr) {
+    await bucket.put(ocrObjectKey(fileHash), JSON.stringify(ocr), {
+      httpMetadata: { contentType: OCR_CONTENT_TYPE },
+    });
+  } else {
+    await bucket.delete(ocrObjectKey(fileHash));
   }
 
   if (dropboxId) {
@@ -203,16 +254,17 @@ async function storePdf(
     }
 
     // Refresh the metadata: the caller just re-extracted it, so it supersedes
-    // whatever was stored before. Selections, chats and the reader's place stay
-    // attached to the id — the columns set here are listed one by one so that
-    // re-opening a book never costs the reader their place in it.
+    // whatever was stored before. Selections, chats, the reader's place, the
+    // title they gave the book and the way its pages turn stay attached to the
+    // id — the columns set here are listed one by one so that re-opening a book
+    // never costs the reader any of them.
     await d1Db
       .update(pdfs)
       .set({
         fileName,
         fullText,
         pageCount,
-        outline: outlineJson,
+        ...(outlineJson === null ? {} : { outline: outlineJson }),
         updatedAt: idClock.now(),
         // Only ever set here, never cleared: re-uploading a book from disk
         // does not make the Dropbox file stop being it.
@@ -227,6 +279,8 @@ async function storePdf(
       pageCount,
       fullText,
       readingState: readingStateOf(existing),
+      title: existing.title,
+      pageDirection: readPageDirection(existing.pageDirection),
     };
   }
 
@@ -249,7 +303,16 @@ async function storePdf(
     updatedAt: now,
   });
 
-  return { id, fileName, format, pageCount, fullText, readingState: null };
+  return {
+    id,
+    fileName,
+    format,
+    pageCount,
+    fullText,
+    readingState: null,
+    title: null,
+    pageDirection: "ltr",
+  };
 }
 
 /**
@@ -319,6 +382,53 @@ async function writeReadingState(
 }
 
 /**
+ * Give a book the title the reader chose, or — with null — take it away so the
+ * book is called by its file name again.
+ *
+ * `updatedAt` is left alone for the same reason as with the reading place: the
+ * shelf is ordered by it, and renaming a book is not opening it.
+ */
+export function renameBook(
+  db: D1Database,
+  pdfId: string,
+  title: string | null,
+): ResultAsync<BookRenamed, ServiceError> {
+  return ResultAsync.fromPromise(
+    drizzle(db)
+      .update(pdfs)
+      .set({ title })
+      .where(eq(pdfs.id, pdfId))
+      .returning({ id: pdfs.id, title: pdfs.title })
+      .get(),
+    storageFailure,
+  ).andThen((renamed) => (renamed ? ok(renamed) : err(notFound())));
+}
+
+/**
+ * Turn the book's pages the other way.
+ *
+ * Like the reader's place, `updatedAt` is left alone: choosing how a book
+ * turns is not opening it again, and the shelf is ordered by that column.
+ */
+export function savePageDirection(
+  db: D1Database,
+  pdfId: string,
+  pageDirection: PageDirection,
+): ResultAsync<PageDirection, ServiceError> {
+  return ResultAsync.fromPromise(
+    drizzle(db)
+      .update(pdfs)
+      .set({ pageDirection })
+      .where(eq(pdfs.id, pdfId))
+      .returning({ pageDirection: pdfs.pageDirection })
+      .all(),
+    storageFailure,
+  ).andThen((updated) =>
+    updated.length > 0 ? ok(readPageDirection(updated[0].pageDirection)) : err(notFound()),
+  );
+}
+
+/**
  * Delete a book together with everything it owns: its selections and chat
  * messages (via the schema's ON DELETE CASCADE) and its R2 objects.
  * D1 is cleared first — if the R2 cleanup then fails, only an unreachable
@@ -347,7 +457,7 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
 
   await d1Db.delete(pdfs).where(eq(pdfs.id, pdfId));
   // The key the book was stored under, which carries its format's extension
-  await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash)]);
+  await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash), ocrObjectKey(pdf.fileHash)]);
 
   return true;
 }
@@ -498,9 +608,12 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
   // Asked for together: the highlights and the cover do not depend on each
   // other, and awaiting them in turn made opening a book wait out two round
   // trips where one would do.
-  const [selRows, thumbnail] = await Promise.all([
+  // The OCR head joins them for the same reason: alongside, it costs the
+  // opening of a book no round trip of its own.
+  const [selRows, thumbnail, ocr] = await Promise.all([
     d1Db.select().from(selections).where(eq(selections.pdfId, pdfId)).all(),
     bucket.head(thumbnailObjectKey(pdf.fileHash)),
+    bucket.head(ocrObjectKey(pdf.fileHash)),
   ]);
 
   return {
@@ -510,7 +623,10 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
     pageCount: pdf.pageCount,
     hasThumbnail: thumbnail !== null,
     hasOutline: pdf.outline !== null,
+    hasOcr: ocr !== null,
     readingState: readingStateOf(pdf),
+    title: pdf.title,
+    pageDirection: readPageDirection(pdf.pageDirection),
     selections: selRows.map((s) => ({
       id: s.id,
       selectedText: s.selectedText,

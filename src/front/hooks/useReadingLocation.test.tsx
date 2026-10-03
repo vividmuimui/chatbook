@@ -36,12 +36,15 @@ function highlight(id: string, selectedText: string, pageNumber: number): Select
 }
 
 const BOOK: BookDetail = {
+  title: null,
   id: PDF_ID,
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
+  pageDirection: "ltr",
+  hasOcr: false,
   selections: [highlight("a1", A_PASSAGE, 12), highlight("a2", "V8 isolate", 30)],
   readingState: null,
 };

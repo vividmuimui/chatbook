@@ -71,13 +71,13 @@ commit 済みの `worker-configuration.d.ts` は `.dev.vars.example` の並び�
 現在 17 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
 このどれかに当てはまるはずで、当てはまらないなら書き方を疑うこと:
 
-| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                    |
-| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（章の `ResizeObserver` と、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
-| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                           |
-| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込みと、章の先頭・リンク先・引用箇所へのスクロール）                                                                                                                                                                                                                                               |
-| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                    |
+| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                                            |
+| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（ペインと章の `ResizeObserver`、章の画像の `load`、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
+| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                                                   |
+| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込み。画面をめくるのは DOM への書き込みではなく `translateX` の描画）                                                                                                                                                                                                                                                      |
+| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                                            |
 
 **画面幅の購読には `useEffect` を使わない**。`useIsNarrow`（`src/front/hooks/useIsNarrow.ts`）が
 `useSyncExternalStore` で `matchMedia` を購読する。購読するのは幅そのものではなく
@@ -178,6 +178,11 @@ vp build   # dist/chatbook/wrangler.json を作り直す。これを飛ばすと
 vp exec wrangler d1 migrations apply chatbook-db --remote
 ```
 
+**OCR（テキストの無い PDF）はマイグレーションを要さない**——行は R2 の `ocr/<sha256>.json` に
+置き、有無も R2 の head で見る（下記「テキストの無い PDF（OCR）」）。そのぶんデプロイには
+`public/tesseract/`（約 17MB の静的アセット）が乗るので、`pnpm install` を済ませた（`postinstall`
+が複製した）チェックアウトから `pnpm run deploy` すること。
+
 秘密は 4 つ（Dropbox を使うならさらに 3 つ。下記「Dropbox 連携」）、`wrangler secret put <名前>` で入れる（`.dev.vars` はローカル専用でデプロイには
 乗らない）: `LLM_API_KEY` / `AUTH_USERNAME` / `AUTH_PASSWORD` / `AUTH_SESSION_SECRET`。
 接続先とモデル（`LLM_BASE_URL` / `LLM_MODEL` / `LLM_WEB_SEARCH_SUPPORTED`）は秘密ではないので、
@@ -199,19 +204,21 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<worker 名>.<アカウント>.
 pdf.js は workerd 上で動かない（native canvas を要求して落ちる）。そのため:
 
 - **テキスト抽出・表紙生成・描画はすべてクライアント**（`src/front/lib/pdfLoader.ts`）
+- **テキストの無い PDF（スキャンした本）の OCR もクライアント**（tesseract.js を Web Worker
+  で。下記「テキストの無い PDF（OCR）」）
 - クライアントが抽出済みの `fullText` / `pageCount` / 表紙 webp / 目次（トップレベル章の
-  JSON、無い本は省略）を **multipart** で
+  JSON、無い本は省略）/ OCR の行（OCR した本だけ。JSON のファイル）を **multipart** で
   `POST /api/pdf/open` に送り、Worker は保存だけを担う
 
 サーバ側で PDF を解析しようとしないこと。
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`                                   |
-| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                         |
+| 置き場所          | 内容                                                                                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                        |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                            |
 
 **チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
 必ず持ち、`selection_id` を持つのはハイライトの会話だけ。本そのものへの質問（要約・章ごとの
@@ -223,9 +230,14 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 本の会話は構造的に混ざらない。
 
 同一性は **内容の SHA-256** で判定する。同じ本を開き直すと同じ `pdfs.id` を返しつつ、
-`fileName` / `fullText` / `pageCount` / `outline` を最新の抽出結果で**上書き**する
+`fileName` / `fullText` / `pageCount` / `outline` / OCR の行を最新の抽出結果で**上書き**する
 (`src/server/services/pdfService.ts` の `openPdf`)。ここを「既存レコードをそのまま返す」に
-戻すと、古いメタデータが残り続ける不具合になる。
+戻すと、古いメタデータが残り続ける不具合になる。**`outline` だけは、抽出が目次を持って
+こなかったときに保存済みのものを残す**——同じバイト列なので、保存済みの目次は前回の抽出が
+読めたもの（今回読めなかっただけ）か、しおりの無い PDF に AI が作ったもの（下記「目次の無い
+PDF に AI で目次を作る」。費用を払って作った）のどちらかで、どちらも消す理由が無い。
+読者が付けたもの——読書位置・題名（`title`）・ページめくりの向き（`page_direction`）——は
+列挙から外してあるので、開き直しても残る。
 
 #### Dropbox 連携
 
@@ -295,7 +307,11 @@ immutable` と R2 の `httpEtag` を返し、`If-None-Match` は `onlyIf` で R2
   を経る往復ぶん、download の開始が遅れる
 - **応答に使わない列を select しない**。`/file` が要るのは `filePath` と `fileName` だけで、
   行ごと引くと `full_text`（実書籍で 213KB）まで D1 から読む。`readPdf` のハイライトと表紙の
-  head は互いに独立なので `Promise.all` で並べる
+  head は互いに独立なので `Promise.all` で並べる（OCR の行の有無を見る head もそこに並ぶ）
+- **OCR の行（`GET /pdf/:pdfId/ocr`）は OCR した本でしか取りに行かない**。本の `hasOcr` が
+  立っているときだけ `useOcrText` が SWR のキーを作るので、テキストのある本は 1 往復も
+  増えない。`/file` と同じく `immutable` + ETag で、アップロード直後は `useOpenPdfBook` が
+  キャッシュに先に置く（下記「テキストの無い PDF（OCR）」）
 
 **効かなかったもの**: `pdf.worker`（gzip 486KB）の先読み。`modulepreload` は destination が
 script なので worker が同じファイルをもう一度落とし、`rel="preload" as="worker"` は Chromium
@@ -306,7 +322,7 @@ script なので worker が同じファイルをもう一度落とし、`rel="pr
 
 front と server が交わす形は `src/shared/schemas/` に zod スキーマとして 1 箇所だけ置き、
 型は `z.infer` で導出する（`error.ts` / `book.ts` / `bookSearch.ts` / `config.ts` / `selection.ts` /
-`citation.ts` / `chat.ts` / `sse.ts`）。front・server どちらにも同じ概念の型を書かないこと。
+`citation.ts` / `chat.ts` / `sse.ts` / `ocr.ts`）。front・server どちらにも同じ概念の型を書かないこと。
 
 - **サーバの受け口**は `src/server/routes/validation.ts` の `validate(target, schema)`
   （`@hono/zod-validator` のラッパ）を通す。素の `zValidator` は zod のレポートをそのまま
@@ -360,7 +376,9 @@ union + `satisfies` で固定する。
   （`useHighlights` の `updateHighlight`）・ハイライトの削除（`useHighlights`）・
   チャット履歴の取得（`AppPage`）・読書位置の保存（`useReadingStateSync`）・
   ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
-  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 9 つ。
+  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・
+  本の題名の変更（`ShelfPage` → `BookTitleDialog`）・ページめくりの向きの保存
+  （`usePageDirection`）・目次の生成（`useReaderOutline`）の 12 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -399,13 +417,18 @@ union + `satisfies` で固定する。
 | 失敗                                         | 受け皿                                                | 出る場所                                                                             |
 | -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                     |
+| 追加する本の OCR（中止は失敗に数えない）     | `ShelfPage` の `actionError`（`importFailed`）        | 本棚上部の赤い枠                                                                     |
+| OCR の行の取得                               | `useOcrText` の `error`                               | ビューア上部（ページは描く。文字が選べないことを言う）                               |
 | Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
 | Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
 | Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
+| 本の題名の変更                               | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
 | 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
 | PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
 | ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
 | 目次の取得                                   | `usePdfOutline` の `error`                            | 目次パネル                                                                           |
+| 目次の生成（AI）                             | `useReaderOutline` の `generation.error`              | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
+| ページめくりの向きの保存                     | `usePageDirection` の `error`                         | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
 | ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
 | ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                          | 編集欄の中（開いたまま。打ったメモも残る）                                           |
 | ハイライトの削除                             | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
@@ -422,7 +445,7 @@ union + `satisfies` で固定する。
 
 #### 意図的に握りつぶす
 
-次の 12 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
+次の 13 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
 いれば出す）。いずれも理由をコメントに書いてあり、**理由を書かずに握りつぶしを増やさない
 こと**:
 
@@ -440,6 +463,7 @@ union + `satisfies` で固定する。
 | `useReadingStateSync.ts` の離脱時の flush                          | 送る先の画面がもう無い（本棚へ戻る・タブを閉じる）                                                               |
 | `HighlightListPanel.tsx` の削除失敗（一覧を離れていたとき）        | 出す場所がもう無い（チャットを開くと一覧ごと畳まれる）。消えなかったハイライトはそこに在るので、戻れば試し直せる |
 | `useServerConfig.ts` の取得失敗                                    | Web 検索は「あり」と仮定して進む。送ってもサーバが落とす                                                         |
+| `pdfOcr.ts` の Tesseract の後始末（`terminate`）2 箇所             | 捨てる Worker を止め損ねても、本（または読者が頼んだ中止）はそれに左右されない                                   |
 
 **報告しないためではなく報告する主体が別**という catch が 2 つある。`SelectionPopover` の
 `onSubmit` / `onMark` を囲むもの（`runStore`。質問とマークの失敗は `useAskAboutSelection` が
@@ -462,7 +486,8 @@ union + `satisfies` で固定する。
 ### pdf.js のランタイムアセット
 
 `scripts/copy-pdfjs-assets.mjs`（`postinstall` で実行）が `cmaps` と `standard_fonts` を
-`public/pdfjs/` に複製する。`src/front/lib/pdfjsConfig.ts` の `PDFJS_ASSET_OPTIONS` で
+`public/pdfjs/` に複製する（同じ `postinstall` で `scripts/copy-tesseract-assets.mjs` が OCR の
+アセットを `public/tesseract/` に複製する。下記「テキストの無い PDF（OCR）」）。`src/front/lib/pdfjsConfig.ts` の `PDFJS_ASSET_OPTIONS` で
 `cMapUrl` / `standardFontDataUrl` を渡す。
 
 **`cMapUrl` が欠けると、出版された日本語 PDF が白紙になる**——CID-keyed フォントを描くには
@@ -495,6 +520,112 @@ be iterated…」**（ネイティブの iterator を消してから本を開く
 あるので、消さずに走る他の E2E では配線の欠落が隠れる）。**legacy ビルドの選択だけは
 どのランナーも守れない**——jsdom は Node が、E2E は desktop Chromium が新しい ECMAScript API
 を持つため、既定ビルドへ戻しても素通しする。そこは古い端末の実機だけが検出する。
+
+### テキストの無い PDF（OCR）
+
+スキャンした本はページが文字の画像で、pdf.js はテキストを 1 文字も読めない。以前は `fullText` が
+空のままサーバの 400 で拒まれていた。今は**取り込み時にブラウザ内の Tesseract（tesseract.js、
+日本語＋英語）で文字を起こし**、起こした文字を `fullText` に、行ごとの箱を R2 に置く。サーバは
+形式を区別しないので、チャットの抜粋・出典・`/locate`・本文検索はそのまま動く。
+
+| 何を                                                      | どこが                                                                                 |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| OCR が要るか・行の正規化・箱の換算・text content への変換 | `src/front/lib/ocrText.ts`（純関数。`ocrText.test.ts`）                                |
+| ページを 1 枚ずつ描いて読む・進捗・中止                   | `src/front/lib/pdfOcr.ts` の `readPagesByOcr`（エンジンは `OcrEngine` で注入）         |
+| Tesseract の起動（動的 import）                           | `src/front/lib/tesseractEngine.ts`                                                     |
+| 取り込みへの組み込み                                      | `pdfLoader.ts` の `extractPdfData`（`ExtractOptions`）→ `useOpenPdfBook` → `ShelfPage` |
+| 保存・配信                                                | `routes/pdf.ts` の `POST /pdf/open`（`ocr` フィールド）と `GET /pdf/:pdfId/ocr`        |
+| front と server が交わす形                                | `src/shared/schemas/ocr.ts`（`ocrTextSchema`）                                         |
+| ページへの重ね方                                          | `PdfViewer` が `useOcrText` で読み、`PdfPage` の `ocrLines` へ渡す                     |
+| アセットの複製                                            | `scripts/copy-tesseract-assets.mjs`（`postinstall`）                                   |
+
+- **判定はページの非空白文字数**（`pagesNeedingOcr`）。`MIN_PAGE_TEXT_CHARS` = 8 未満のページを
+  「文字が無い」とし、**それが全ページの過半数のときだけ** OCR する。そのとき読むのは文字の無い
+  ページだけで、pdf.js が読めるページは自分のテキストのまま。0 ではなく 8 なのは、スキャン本には
+  ノンブルやスキャナが残したゴミ文字だけのページがあるため。過半数なのは、図版ページが数枚ある
+  普通の本を数分の OCR に巻き込まないため（図版ページは選ぶ文字が無いので失うものも無い）
+- **OCR しても全ページが空なら取り込みを止める**（`NOTHING_TO_READ`。「このPDFからは文字を
+  読み取れませんでした」）。サーバの 400（`Missing fullText`）は残っていて、読者がそれを見る
+  ことは無い
+- **1 ページずつ描いて読み、canvas を空にしてから次へ**（`readPagesByOcr`）。倍率は
+  `OCR_RENDER_SCALE` = 2（10pt の本文が約 28px になり、日本語のモデルがよく読む大きさ）で、
+  長辺を `MAX_OCR_RENDER_SIDE` = 3000px で頭打ちにする（ポスター大のページで数百 MB の canvas を
+  作らない）。canvas は `width = height = 0` にして画素を手放し、`page.cleanup()` を呼ぶ
+- **行単位で保存する**（単語単位ではない）。保存する箱はスケール 1 の viewport 座標（左上原点、
+  `/Rotate` 適用後）で、ページをどの大きさで描いても同じ数値で重なる。行の文字は
+  `normalizeOcrLine` が整える——**Tesseract は日本語の 1 文字ごとに空白を入れる**ので、和文の
+  隣の空白を落とす（引用やコピーが「日 本 語」になるのを防ぐ。英単語の間は 1 つに畳んで残す）。
+  ページの本文は行を `\n` で繋ぐ
+- **ページへの重ね方は pdf.js 公式の `TextLayer` に任せる**（`ocrTextContent` が OCR の行を
+  pdf.js の text content の形に着せ替え、`PdfPage` はそれを `getTextContent()` の代わりに
+  渡す）。自前で span を並べないので、`.textLayer` の CSS 契約（`--font-height` / `--scale-x`）・
+  `data-page-number` / `data-text-item-index` の付与・`endOfContent` のガード・
+  `pdfTextMatcher` / `locateQuoteInSpans` がそのまま効く。各行の transform は
+  スケール 1 の viewport の逆行列で**ページ自身の空間**に戻す（TextLayer はページ空間で配置し、
+  回転はコンテナに CSS で掛けるため）。行の幅は箱の幅を `width` に渡し、TextLayer が span を
+  その幅に伸ばす（代わりのフォント `sans-serif` の字幅に引きずられない）。ベースラインは
+  `OCR_ASCENT` = 0.8（pdf.js 自身の既定値）で置くので、span の上端は箱の上端から行の高さの
+  1 割程度ずれうる
+- **割り切り**: 選択の粒度は行の中で文字幅が均等という近似（`--scale-x` で伸ばすだけ）。和文は
+  ほぼ等幅なので合うが、欧文の行は語の途中で数文字ずれうる。**縦書きは読めない**（`jpn` の横書き
+  モデルだけを使い、`jpn_vert` は持たない）。手書き・低解像度のスキャンの精度は Tesseract 次第
+- **アセットはすべて自前で配る**（tesseract.js の既定は jsdelivr）。`postinstall` が
+  `public/tesseract/`（gitignore 済み）へ複製する: Worker（`worker.min.js`）、コアは LSTM 版の
+  3 つ（`tesseract-core-{,simd-,relaxedsimd-}lstm.wasm.js`。ブラウザの WebAssembly 対応で
+  Worker が 1 つ選ぶ）、言語モデルは `@tesseract.js-data/{jpn,eng}` の `4.0.0_best_int`
+  （gzip で 2MB と 3MB）。理由は 3 つ——**本の読み取りが第三者の CDN の稼働に左右されない**、
+  **Worker・コア・モデルの版がビルドしたものと必ず揃う**、**E2E がネットワーク無しで本物の OCR を
+  回せる**。代償はデプロイする静的アセットが約 17MB 増えること（OCR する本を足すときにしか
+  取りに来ない。Workers の 1 ファイル 25MiB 上限の内側）。float 版のモデル（16MB / 11MB）は
+  印刷された本では読みが変わらないので配らない。モデルは Tesseract 自身が IndexedDB に
+  キャッシュする。CSP は張っていないので制約は無い（張るなら `worker-src blob:` と
+  `wasm-unsafe-eval` が要る——Worker は blob から `importScripts` で起動する）
+- **tesseract.js は `tesseractEngine.ts` の中で動的 import する**。OCR する本を足さない読者は
+  ライブラリ（17KB のチャンク）すら読まない
+- **進捗と中止**: 本棚の覆いに `recognizing` の段階が加わり「文字を読み取り中 12/200 ページ」と
+  数える（エンジンの読み込み中は 0/N。最後のページを読み終えたら「本を読み取り中...」へ戻す——その先に中止で止まるものは無い）。この段階の間だけ覆いに「中止」ボタンが出て、押すと
+  `AbortController` が `readPagesByOcr` を止める——読みかけのページも待たない
+  （`untilAborted`）。Tesseract の Worker は `terminate` し、エンジンの起動中に中止したら
+  起動し終えたところで止める。中止は `AbortError` として `useOpenPdfBook` の結果に載り、
+  `ShelfPage` の `importFailed` は**名前で中止を見分けて何も言わない**（読者が頼んだことなので）。
+  アップロードは始まっていないので何も保存されない。`asError` が `DOMException` の名前を保つのは
+  この見分けのため
+- **保存は R2 の `ocr/<sha256>.json`**（D1 ではない。1 冊で 1MB 程度になり、読むのはビューア
+  だけでクエリはしない）。`POST /pdf/open` の任意の `ocr` フィールド（JSON のファイル）を
+  `ocrTextSchema` で検証して書き、**壊れていれば 400**（`Invalid OCR text`。文字の選べない
+  スキャン本を黙って作らない）。**同じ本を OCR 無しで取り込み直したら消す**（他のメタデータと
+  同じく最新の抽出が勝つ）。本の削除でも消す
+- **D1 に列は足していない**（マイグレーション無し）。本が OCR の行を持つかは `readPdf` が R2 の
+  head で見て `hasOcr` として返す（表紙の head と同じ `Promise.all` に並ぶので往復は増えない）。
+  アップロード直後の先充填は抽出結果から正確に立てる
+- **ビューアは `hasOcr` のときだけ `GET /pdf/:pdfId/ocr` を読む**（`useOcrText`。
+  `useSWRImmutable`）。行は本のハッシュで保存され同じバイト列のアップロードしか書かないので、
+  `/file` と同じ `private, max-age=31536000, immutable` + ETag（`onlyIf` で 304）。
+  **アップロード直後は `useOpenPdfBook` が `ocrKey(id)` に先に置く**ので取りに行かない。
+  行が届く前に描いたページはテキストレイヤーが空のまま描かれ、届いたら描き直す（`ocrLines` が
+  `PdfPage` の effect の依存に入っている）。取得に失敗したらビューア上部に出す——ページは
+  描けるので読めるが、選択も印も効かない
+- **既に取り込まれたテキストの無い本は無い**前提（以前は 400 で取り込めなかった）。後追いで
+  OCR する口は作っていない
+- **同じスキャン本を取り込み直すと OCR もやり直す**（数分）。取り込み済みかをサーバに先に聞く
+  口は無い
+
+守っているテストは次のとおり:
+
+| 何を                                                   | どのテスト                                                                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 判定・正規化・箱の換算・text content（回転を含む）     | `src/front/lib/ocrText.test.ts`                                                                                                             |
+| 1 ページずつ・進捗・canvas の解放・中止・起動前の中止  | `src/front/lib/pdfOcr.test.ts`（偽のドキュメントと偽のエンジン）                                                                            |
+| `ocr` フィールドの送り方・先充填・中止と進捗の受け渡し | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                                   |
+| 覆いの「文字を読み取り中 N/M ページ」・中止            | `src/front/pages/ShelfPage.test.tsx`                                                                                                        |
+| 取得失敗の表示・テキストのある本では取りに行かない     | `src/front/components/PdfViewer/PdfViewer.test.tsx`                                                                                         |
+| 保存・`hasOcr`・キャッシュ・strip・上書き・400・削除   | `test/worker/pdf.test.ts` の `OCR text of a book without its own`                                                                           |
+| 本物の Tesseract で読み、検索の印がその行に付く        | `e2e/chatbook.spec.ts`「a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page」（desktop） |
+
+E2E は行の位置も見る——検索の印が行と同じ高さにあることと、1 行目の span がページ画像の
+インクの位置（左 140px・上 160px / 1240×1754px）に重なること。`PdfPage` で `ocrLines` を
+無視させると page 1 の span が現れず落ちることを確かめてある。**実際のスキャン本（数百ページ、
+傾き・裏写り・縦書き混じり）での精度と所要時間は測っていない**。
 
 ### テキスト選択とハイライト
 
@@ -551,14 +682,16 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 `/locate` を PDF と同じ仕組みのまま使う。`fullText` は章ごとの本文を `\f` で繋いだもので、
 サーバは形式を区別せずに抜粋と出典を扱う。
 
-| 何を                                       | どこが                                                                                              |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| 形式の判定（バイト列の先頭 `PK\x03\x04`）  | サーバ `pdfService.ts` の `bookFormatOf`、クライアント `lib/bookLoader.ts` の `isEpubFile`          |
-| zip の展開・spine・目次（nav / NCX）・表紙 | `src/front/lib/epub.ts`（`fflate`）                                                                 |
-| 章の無害化と本文の抽出                     | `src/front/lib/epubContent.ts` の `renderChapter` / `chapterPlainText`                              |
-| 取り込み（`ExtractedPdfData` を作る）      | `src/front/lib/epubLoader.ts`。`useOpenPdfBook` の既定の抽出は `extractBookData` で形式を振り分ける |
-| 表示                                       | `src/front/components/EpubViewer/EpubViewer.tsx` と `hooks/useEpubDocument.ts`                      |
-| 文字位置 ⇔ `Range`、引用の照合             | `src/front/lib/epubTextRange.ts`                                                                    |
+| 何を                                       | どこが                                                                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| 形式の判定（バイト列の先頭 `PK\x03\x04`）  | サーバ `pdfService.ts` の `bookFormatOf`、クライアント `lib/bookLoader.ts` の `isEpubFile`           |
+| zip の展開・spine・目次（nav / NCX）・表紙 | `src/front/lib/epub.ts`（`fflate`）                                                                  |
+| 章の無害化と本文の抽出                     | `src/front/lib/epubContent.ts` の `renderChapter` / `chapterPlainText`                               |
+| 取り込み（`ExtractedPdfData` を作る）      | `src/front/lib/epubLoader.ts`。`useOpenPdfBook` の既定の抽出は `extractBookData` で形式を振り分ける  |
+| 表示                                       | `src/front/components/EpubViewer/EpubViewer.tsx` と `hooks/useEpubDocument.ts`                       |
+| 文字位置 ⇔ `Range`、引用の照合             | `src/front/lib/epubTextRange.ts`                                                                     |
+| 画面への割り付けとめくりの算術（純関数）   | `src/front/lib/epubPaging.ts`（文字位置 ⇔ 画面は `epubTextRange.ts`）                                |
+| 今の画面とめくり                           | `src/front/atoms/epubAtom.ts`（`epubScreenAtom` / `turnEpubAtom`）、`EpubViewer/EpubPageStepper.tsx` |
 
 - **形式はファイル名ではなくバイト列で決める**。`pdfs.format`（`0008_add_book_format.sql`。
   既定は `'pdf'`）に保存し、R2 のキーの拡張子と `/file` の `Content-Type` もそれに従う。
@@ -580,17 +713,100 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 - **ハイライトは矩形ではなく章本文の文字オフセットで保存する**（`positionData.textRange`。
   章要素の `textContent` に対する `[start, end)`）。章は幅で折り返しが変わるので、保存時の
   矩形はすぐにずれる。`EpubViewer` は描くたびに `rangeOfTextOffsets` → `selectionOnPage`
-  で矩形を測り直す（章の `ResizeObserver` が `drawnSize` を変えると再計測。E2E の
-  「…its highlight follows the text as the pane changes width」が見張る）。`rects` は質問を
+  で矩形を測り直す（ペインと章の `ResizeObserver` が `drawnSize` を変えると再計測。E2E の
+  「…its highlight follows the text as the pane changes width」がスプリッターでペインを狭めて
+  見張る——広いペインは見開きになり 1 段の幅がほとんど変わらないので、パネルを畳む方向では
+  行が組み変わらない）。`rects` は質問を
   書いている間の仮表示と、`textRange` の無い行のためにだけ残る
 - **引用の印は `locateQuoteInSpans` をそのまま使う**。章のテキストノードを pdf.js の
-  テキスト項目に見立てる（`rangeOfQuote`）。章はページより長いので、印を付けたら見える位置まで
-  スクロールする。一覧から開いたハイライトも同じ
+  テキスト項目に見立てる（`rangeOfQuote`）。章は 1 画面に収まらないので、印を付けたら印のある
+  画面へめくる（下記「画面ごとにめくる」）。一覧から開いたハイライト・本文検索の結果・章の中への
+  リンクも同じ
 - **表紙は manifest の `cover-image`（無ければ `<meta name="cover">`）**を 240px の webp に
   する。描けなければ PDF の表紙と同じ理由で握りつぶす（`epubLoader.ts` の
   `renderEpubCover`）。目次が読めない EPUB は目次なしとして開く（`epub.ts` の `openEpub`）
-- **EPUB に無いもの**: 見開き、ピンチ・ズーム、スワイプ・端タップのページ送り。章は縦に
-  スクロールして読み、章の移動はキー・目次・下部の `PageStepper`（狭い画面は `PageToolbar`）
+- **EPUB に無いもの**: ピンチ・ズーム（中央のダブルタップも何もしない）、章の中の位置の保存
+  （リロードと別端末では章の先頭に戻る。下記）、右開き（めくる向きの写像は 1 箇所にまとめて
+  あるが、配線していない）
+
+#### 画面ごとにめくる
+
+Kindle と同じく、章を**ペインの大きさの画面に割って 1 画面ずつめくる**。割り付けはブラウザに
+任せる——章を CSS の段組み（`index.css` の `.epubColumns`。高さはペインいっぱい、
+`column-fill: auto`）で組むと、収まらない分が右へ段として並ぶので、それを `overflow: clip` の
+紙（`<article>`）で切り抜き、中の箱（`data-page-container`）を `translateX` で 1 画面ずつ送る。
+**画面はクライアントだけの概念**で、サーバ・抜粋・引用・読書位置・目次・`pageNumber`・`?page=` は
+どれも今までどおり「章 = 1 ページ」のまま。
+
+- **1 画面 = 段 1 つと段間 1 つ**。段の間隔は余白（`--epub-page-margin`）の 2 倍、章の両端にも
+  余白を 1 つずつ取るので、どの画面も左右に同じ余白を持ち、1 回のめくりはちょうど画面の幅になる。
+  画面の幅は `pagedLayout`（`epubPaging.ts`）が決め、**最大 672px**（`MAX_SCREEN_WIDTH_PX`。
+  スクロールで読んでいた頃の `max-w-2xl`）。**ペインに 440px（`SPREAD_MIN_SCREEN_WIDTH_PX`）の
+  画面が 2 つ入るなら見開き**で、段を 2 つ並べて 1 画面と数える。PDF の見開きと同じく判定は
+  ペインの実測だけで、パネルの開閉は見ない（desktop の 1280px でチャットを畳むと見開きになる）
+- **画面の数は段組みの `scrollWidth` から数える**（`screenCount`）。段は章の箱の外へはみ出して
+  並ぶので、`scrollWidth` が全段の幅になる。章の画像が届くと段が組み直されるので、`load` を
+  capture で拾って数え直す。**画像は 1 画面の高さを超えない**（`--epub-column-height`）——
+  超えると 2 画面に切れる
+- **今の画面は `epubScreenAtom`**（`{ page, screen, count }`）。`page` はどの章について数えたかで、
+  **今の章を名指していなければ先頭の画面として読む**（`shownScreen`）。目次・引用・URL・本文検索
+  など章を動かす口は `currentPageAtom` だけを書けばよく、画面を 0 に戻す書き込みを足す必要が無い。
+  両方を書くのはめくり（`turnEpubAtom`）だけで、前の章へ戻るめくりは `screen: "last"` を書いて
+  章の最後の画面に着地させる。保存も URL も持たない（本ごとのストアに載るだけ）
+- **めくりの算術は `turnEpub` 1 つ**——次の画面、章の最後なら次の章の最初、前の画面、章の最初
+  なら前の章の最後、本の両端では動かない。キー・端のタップとクリック・スワイプ・下部の
+  `EpubPageStepper`（狭い画面は `PageToolbar` の `stepper`）が全部 `turnEpubAtom` を通る。
+  `←` / `→`・`h` / `l`・emacs の `C-b` / `C-f` は画面をめくり、**`↑` / `↓`・`j` / `k` も
+  前後の画面へめくる**（emacs の `C-n` / `C-p` も。スクロールするものが無いため）。`gg` / `G`
+  （emacs の `M-<` / `M->`）と目次は章の先頭へ
+- **めくりの向きは PDF と同じ本の設定（`book.pageDirection`）で、左右を前後に読み替えるのも PDF と
+  同じ `turnToward`（`touchNavigation.ts`）**。`EpubViewer` は `book` から向きを読み、端のタップと
+  スワイプは向きを `resolveTapZone` / `resolveSwipe` に渡す。**キーは `useKeyboardShortcuts` に
+  向きを渡し、返ってくる `nextPage` / `prevPage` をそのまま前後として使う**——方向キーと `h` / `l` は
+  向きで読み替え済み、emacs の `C-f` / `C-b` はもともと左右を名指さない。ここで左右に読み直すと
+  右開きで二重に反転し、`C-f` が戻る。`EpubPageStepper` は `AppPage`（狭い画面）と `EpubViewer`
+  （広い画面）が `direction` を渡す。**画面の並びそのものは右開きでも左から右**——本文は横書き
+  なので、列を右から並べ替えるのは縦書きに対応するときの話。jsdom の「turns on with ← in a book
+  that opens on the right」「turns on with emacs C-f whichever way the book opens」が見張る
+- **端のタップは PDF と同じ規則**——押した時点で送れるか（ポップオーバーが無く選択が畳まれて
+  いる）を控え、12px / 500ms 以内、2 打目以降・ボタンとリンクの上では送らない。中央は何もしない。
+  スワイプも PDF と同じ `resolveSwipe`（React の `onTouchStart` / `onTouchEnd`。止めるべき既定が
+  無いので passive でよい）
+- **読んでいる場所は画面番号ではなく章本文の文字位置で持つ**（`EpubViewer` の
+  `readingOffsetRef`）。めくったら画面の最初の文字の位置（`textOffsetOfScreen`）、引用・
+  ハイライトへ移ったらその passage の始まりを控え、**ペインの幅・高さ・見開き・書体・画像で
+  組み直したら、その文字のある画面へ戻す**（`screenOfTextOffset`）。組み直しの間は控えた位置を
+  更新しない——毎回「画面の先頭」に取り直すと、幅を変えるたびに少しずつ前へずれていく。
+  E2E の「an EPUB stays on the words being read when the pane changes width」が見張る
+- **どの経路で画面が変わったかは `placedRef`（前回の割り付け）と比べて決める**——章が替わった
+  （リンクのアンカー → `"last"` → 頼まれた画面 → 先頭）、組み直した（文字位置の画面）、それ以外
+  （atom が頼んだ画面）。どれも `useLayoutEffect` なので、読者は途中の画面を見ない
+- **ハイライト・選択・印の矩形は送る箱（`data-page-container`）基準**で、オーバーレイも同じ箱に
+  載っているので、どの画面を出していても語に張り付く。矩形の x から画面を引くのが
+  `screenOfX`（`x ÷ 画面の幅`）。浮かぶ質問ボックスは今の画面の内側に収める
+- **章の中の位置は保存しない**——`readingState` は章番号のまま（列を足さない）。リロード・
+  本棚から開き直す・別端末では**章の先頭の画面に戻る**。章は数画面〜十数画面なので許容している
+- **画面番号は表示だけ**（`EpubPageStepper` の 2 段目、`3 / 12`。1 段目は `2 / 3 章`）。見開きでは
+  2 段で 1 画面と数えるので、同じ章でも幅で総数が変わる
+
+守っているテストは次のとおり:
+
+| 何を                                                    | どのテスト                                                                             |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 画面の幅・見開き・数・めくりの算術・左右の写像          | `src/front/lib/epubPaging.test.ts`                                                     |
+| 文字位置 ⇔ 画面                                         | `epubTextRange.test.ts`「textOffsetOfScreen / screenOfTextOffset」                     |
+| atom のめくり（章をまたぐ・`"last"`・他の口で動いた章） | `src/front/atoms/epubAtom.test.ts`                                                     |
+| 表示と山括弧                                            | `EpubPageStepper.test.tsx`                                                             |
+| キーと端のタップの配線（jsdom は 1 章 1 画面）          | `EpubViewer.test.tsx`                                                                  |
+| 実際にめくれる・章をまたぐ・戻ると章の最後              | `e2e/chatbook.spec.ts`「an EPUB turns a screen at a time…」                            |
+| 幅を変えても同じ語の画面にいる                          | 同「an EPUB stays on the words being read when the pane changes width」                |
+| リンク先・検索結果の画面へめくる                        | 同「an EPUB added from the shelf…」（`toBeInViewport`）と「searching an EPUB's text…」 |
+| 指の端タップとスワイプ                                  | `e2e/mobile.spec.ts`「turns an EPUB a screen at a time at the edges and with a swipe」 |
+
+**E2E で「見えている」を言うときは `toBeVisible` ではなく `toBeInViewport`**——隣の画面の段も
+描かれていて、紙に切り抜かれているだけなので、`toBeVisible` は別の画面にある語でも通る。
+**fixture の第 2 章と第 3 章は数画面ぶんの埋め草の段落を持つ**（`testEpubManifest.ts` の
+`filler`）。第 1 章は短いまま（選択とハイライトの E2E がその最初の段落を使う）。
 
 #### 表示の設定（Kindle の「Aa」）
 
@@ -600,32 +816,33 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 `book.format === "epub"` のときだけ `AppPage` が出す。狭い画面でもヘッダーに置く（ヘッダーは
 電話でも常に画面にあり、アイコン 2 つ分の幅はある）。
 
-| 何を                                         | どこが                                                                                            |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| 段階の値・既定値・スキーマ・CSS 変数への写像 | `src/front/lib/epubTypography.ts`（`epubTypographyStyle` は純関数）                               |
-| 保存                                         | `settingsAtom.ts` の `epubTypographyAtom`（`chatbook:epub-typography`）                           |
-| 適用                                         | `EpubViewer` が `<article>` に CSS 変数を置き、`index.css` の `.epubPage` / `.epubChapter` が読む |
+| 何を                                         | どこが                                                                                               |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 段階の値・既定値・スキーマ・CSS 変数への写像 | `src/front/lib/epubTypography.ts`（`epubTypographyStyle` は純関数）                                  |
+| 保存                                         | `settingsAtom.ts` の `epubTypographyAtom`（`chatbook:epub-typography`）                              |
+| 適用                                         | `EpubViewer` が `<article>` に CSS 変数を置き、`index.css` の `.epubColumns` / `.epubChapter` が読む |
 
 - **本をまたいで残る読者の好み**なので、倍率と違って本ごとには持たない。壊れた値は
   `validatedStorage` が既定へ落とすが、**スキーマはフィールドごとに `.catch` する**——
   1 項目だけ範囲外の値（段階を減らした後の古い値など）で、ほかの選択まで失わないため。
   オブジェクトでないものは丸ごと既定値になる
-- **既定値は設定ができる前の見た目そのもの**（17px・1.9・左揃え・`.epubPage` の余白は
+- **既定値は設定ができる前の見た目そのもの**（17px・1.9・左揃え・余白は
   電話 20px / `md` 以上 40px）。**ゴシックの先頭は `ui-sans-serif, system-ui`**——日本語の
   ゴシックを先頭にすると欧文の字幅が変わって行の折り返しが動き、幅でのリフローを見る E2E
   （「…its highlight follows the text as the pane changes width」）が行数の前提ごと落ちた。
   明朝は和文フォントを先頭に置く（欧文セリフが先だと仮名がシステムのゴシックに落ちる）。
   Web フォントは読み込まない
-- **余白は `max-w-2xl` の内側**に取る。広げても本文の行が短くなるだけで、ページは広がらない
-- **設定はハイライトと引用の印の再計測のきっかけに入る**（`EpubViewer` の 2 つの
-  `useLayoutEffect` の依存に `typography`）。文字の大きさや行間は章の高さを変えるので
-  `ResizeObserver` でも気付くが、**両端揃えや同じ字幅のフォントへの切り替えは箱の寸法を
-  変えずに文字だけを動かす**ので、observer は何も聞かない。jsdom の「measures its
-  highlights again when the reader changes the type, even where the box keeps its size」が
-  唯一の見張り（E2E の文字を大きくするテストは observer 経由でも通る）
-- **設定を変えても読んでいた辺りに留まる**。スクロール位置を章の何割まで読んだかで控え
-  （`onScroll`）、設定が変わったらその割合へ戻す。行の位置までは合わない（割合なので、
-  章の先頭へ戻されない程度）
+- **設定はハイライトと引用の印の再計測と、画面の割り付け直しのきっかけに入る**（`EpubViewer`
+  の `useLayoutEffect` の依存に `typography`）。**段組みでは章の箱の寸法は画面が決める**ので、
+  文字を大きくしても行間を広げても箱は変わらず（段が増えるだけ）、`ResizeObserver` は何も
+  聞かない。jsdom の「measures its highlights again when the reader changes the type, even
+  where the box keeps its size」と、E2E の「an EPUB is drawn larger on the type settings…」が
+  これを見張る
+- **設定を変えても読んでいた語の画面に留まる**。書体を変えると章は組み直され、画面の数も
+  変わるが、読んでいた場所は画面番号ではなく章本文の文字位置で控えてあるので、その文字の
+  ある画面へ戻る（上記「画面ごとにめくる」。幅を変えたときと同じ仕組み）
+- **余白は画面ごとの左右の余白**で、段の間隔（余白の 2 倍）と章の両端の余白になる
+  （`index.css` の `.epubColumns`）。広げても画面は広がらず、1 行が短くなる
 
 ### チャットのストリーミング
 
@@ -799,10 +1016,11 @@ HTML はそこを通せない。
 書かせる」の `MERMAID_RULE` / `TABLE_RULE` / `CITATION_RULES` が区間の区切りで、テストが
 その 2 つの区間の中身を固定している。
 
-| モード      | エンドポイント                                                              |
-| ----------- | --------------------------------------------------------------------------- |
-| 通常        | `<LLM_BASE_URL>/chat/completions`（OpenAI SDK 経由）                        |
-| Web 検索 ON | `<LLM_BASE_URL>/responses` に `tools: [{ type: "web_search" }]`（生 fetch） |
+| モード             | エンドポイント                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| 通常               | `<LLM_BASE_URL>/chat/completions`（OpenAI SDK 経由）                                  |
+| Web 検索 ON        | `<LLM_BASE_URL>/responses` に `tools: [{ type: "web_search" }]`（生 fetch）           |
+| 目次の生成（下記） | `<LLM_BASE_URL>/chat/completions`（`completeChat`。ストリームしない・SDK の再試行 0） |
 
 `/v1` を含めるかはプロバイダの流儀次第（既定の DeepSeek は付けない）。**`LLM_BASE_URL` に
 末尾スラッシュを付けると Web 検索だけが壊れる**——通常モードは SDK が正規化するが、
@@ -814,12 +1032,12 @@ HTML はそこを通せない。
 DeepSeek に向く**。`vars` を足すと `worker-configuration.d.ts` が変わるので、
 `vp exec wrangler types` で再生成して commit する。
 
-| 変数                       | 空 / 未設定のとき                                          |
-| -------------------------- | ---------------------------------------------------------- |
-| `LLM_API_KEY`              | チャットが 500（`CONFIG_ERROR` / `"LLM_API_KEY not set"`） |
-| `LLM_BASE_URL`             | `https://api.deepseek.com`                                 |
-| `LLM_MODEL`                | `deepseek-v4-flash`                                        |
-| `LLM_WEB_SEARCH_SUPPORTED` | 対応しているものとして扱う（`"false"` / `"0"` だけが否定） |
+| 変数                       | 空 / 未設定のとき                                                      |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `LLM_API_KEY`              | チャットと目次の生成が 500（`CONFIG_ERROR` / `"LLM_API_KEY not set"`） |
+| `LLM_BASE_URL`             | `https://api.deepseek.com`                                             |
+| `LLM_MODEL`                | `deepseek-v4-flash`                                                    |
+| `LLM_WEB_SEARCH_SUPPORTED` | 対応しているものとして扱う（`"false"` / `"0"` だけが否定）             |
 
 **Web 検索の可否はプロバイダの性質であって読者の設定ではない。** 読者のトグル
 （`useWebSearchAtom`、既定 ON）は localStorage にあるので、プロバイダを替えても消えない。
@@ -901,8 +1119,8 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 `--- HIGHLIGHTED PASSAGE ---` のブロックごと出さない（無いハイライトを探させない）。
 
 目次はクライアント（`pdfLoader` → `pdfOutline.ts` の `toStoredOutline`）がアップロード時に
-トップレベル章だけを送り、再アップロードで他のメタデータと同様に**上書き**される（目次の
-無い抽出は NULL に戻す）。**既存の本（列が NULL）は窓で動くが、リーダーで開けば後追いで
+トップレベル章だけを送り、再アップロードで他のメタデータと同様に**上書き**される（ただし
+目次の無い抽出は保存済みの目次を消さない。上記「ストレージの分担」）。**既存の本（列が NULL）は窓で動くが、リーダーで開けば後追いで
 章が入る**——表紙の後追い保存と同じ形で、`usePdfDocument` の `storeOutlineIfMissing` が、
 開いているドキュメントから抽出した目次を `PUT /api/pdf/:pdfId/outline` に書く（本が目次を
 持つかは `GET /api/pdf/:pdfId` の `hasOutline` が言う。アップロード直後のキャッシュ先充填も
@@ -920,6 +1138,58 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 全文を載せていた頃は 200 ページ級で最初のトークンまで 10 秒前後かかった。抜粋でも最初の
 トークンまで数秒待つことはあるので、ストリーミングが壊れているのと区別すること
 （`read()` が複数回に分かれるかで判別できる）。
+
+#### 目次の無い PDF に AI で目次を作る
+
+しおり（PDF の outline）を持たない本——スキャンした本や、書き出し時に落ちた本——には、
+目次パネルの「この本には目次がありません」の下に**「AIで目次を作る」**が出る。押すと
+`POST /api/pdf/:pdfId/outline/generate`（`routes/pdf.ts`）が LLM に章立てを尋ね、
+**既存の目次と同じ形（`BookOutline`）で `pdfs.outline` に書く**。以後は PDF のしおりから
+抽出した目次と区別しない——チャットの抜粋（`selectExcerpt`）も範囲メニュー
+（`/chapters`）も同じ列を読む。
+
+| 何を                                   | どこが                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 送る中身・返答の検証と正規化（純関数） | `src/server/services/outlineGeneration.ts`（`buildOutlineMessages` / `readGeneratedOutline`） |
+| LLM の呼び出し（非ストリーム）         | `llmService.ts` の `completeChat`                                                             |
+| 受け口・409 / 502 の判定・保存         | `routes/pdf.ts` の `POST /pdf/:pdfId/outline/generate`                                        |
+| 目次パネルへの表示とボタンの配線       | `src/front/hooks/useReaderOutline.ts` → `PdfOutline` の `generation`                          |
+
+- **モデルに見せるのはページごとの先頭だけ**（`pageHeads`。`\f` で割ったページを空白を
+  畳んで 1 行にし、`p.N: …` と番号を振る。既定 200 文字、全体で 60,000 文字に収まるよう
+  長い本ほど 1 ページの取り分を減らす。下限 40 文字）。章は始まるページの頭に名乗るので
+  それで足り、全文を送ると 1 冊で数十万トークンになる。空のページは行ごと落とすが番号は
+  詰めない
+- **プロンプトはチャットの `buildSystemPrompt` とは別物**（上記の区間の制約は関係しない）。
+  JSON（`{"chapters":[{"title","page"}]}`）だけを返せと言うが、`response_format` は使わない
+  ——OpenAI 互換の前提に含めない。代わりに**読み手が寛容**で、コードフェンスや前後の文に
+  包まれた JSON・裸の配列も読む（`jsonIn`）
+- **正規化**: タイトルを trim して空なら落とし、`MAX_OUTLINE_TITLE_LENGTH` で切る。ページは
+  丸めて **1..`page_count` にクランプ**し、昇順に並べ、**同じページの 2 つ目以降は捨てる**
+  （章は始まるページで切られるので、同じページの 2 章は 1 章に 2 つの名前があるだけ）。
+  `MAX_OUTLINE_CHAPTERS` まで。何も残らなければ「目次ではない」扱い
+- **失敗の言い分け**: キーが無い → 500 `CONFIG_ERROR`、本が無い → 404、**既に目次がある →
+  409 `OUTLINE_EXISTS`（上書きしない。LLM も呼ばない）**、プロバイダが拒否・不通 → 502
+  `AI_API_ERROR`、返答が目次として読めない → 502 `AI_RESPONSE_INVALID`。どの失敗でも
+  何も保存しない。**SDK の自動再試行は切ってある**（`maxRetries: 0`）——ボタンを押した読者を
+  3 回分待たせるより、失敗を言って押し直してもらう
+- **画面側は PDF 自身のしおりが優先**（`useReaderOutline`）。しおりが空のときだけ、本が
+  `hasOutline` を言っていれば `/chapters`（`useChapters`）を読んで `chaptersAsOutline`
+  （`pdfOutline.ts`。先頭の無題区間を除いたトップレベルだけ）で目次パネルに出す。
+  `hasOutline` が false なら尋ねずに「目次がありません」とボタンを出す。本がまだ届いて
+  いなければ「読み込み中」のまま（ボタンを一瞬見せない）
+- **生成が成功したら 2 つのキャッシュを動かす**——`chaptersKey` は再取得（区間を解くのは
+  サーバ）、`bookKey` は `hasOutline: true` を書くだけ。これで目次パネルとチャットの範囲
+  メニューが同時に章を持ち、`usePdfDocument` の後追い保存も空撃ちしない
+- **EPUB には出さない**（`PdfViewer` だけが配線する。EPUB は自分の目次を持つ）
+
+守っているのは worker の `test/worker/outlineGeneration.test.ts`（msw で `https://llm.test` の
+chat completions を止める。保存・`/chapters` への反映・409・502 の 2 種・404・`CONFIG_ERROR`・
+再試行しないこと）、jsdom の `outlineGeneration.test.ts`（送る中身と正規化）、
+`useReaderOutline.test.tsx`（しおり優先・保存済みの章の表示・生成後の反映・失敗）、
+`PdfOutline.test.tsx`（ボタン・生成中・失敗表示）、`pdfOutline.test.ts` の `chaptersAsOutline`。
+**実際のモデルが良い章立てを返すかはどのテストも見ていない**（E2E は実キーが要るので無い）。
+手で見るなら、メインクローンの `.dev.vars` の実キーで、しおりの無い PDF を開いて押す。
 
 ### 状態管理とルーティング
 
@@ -973,6 +1243,10 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
   `importing`（`ShelfPage` の state。タイルの `disabled`・ドラッグとドロップの無視・
   この覆いの 3 つが読む）は `reading` / `uploading` + 割合 / `storing` の 3 状態で、
   文言は `importWording` が作る——「本を読み取り中...」「アップロード中 45%」「保存中...」。
+  （Dropbox の本は手前に `downloading`、テキストの無い PDF は `reading` と `uploading` の間に
+  `recognizing`「文字を読み取り中 12/200 ページ」が入る。**「中止」ボタンが出るのは
+  `recognizing` の間だけ**——数分かかりうるのはそこだけで、止まる口を持つのもそこだけ。
+  上記「テキストの無い PDF（OCR）」）
   **`uploading` → `storing` は割合が 1 に達したことから `ShelfPage` が自分で決める**
   （送り終えたことを報せる合図は無い）。**ブラウザが本体の大きさを言わないときは割合が
   出ない**ので、その環境では覆いが直前の文言のまま送信が終わるのを待つ。
@@ -990,13 +1264,14 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 
 守っているテストは次のとおり:
 
-| 何を                                             | どのテスト                                                                                   |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                           |
-| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                    |
-| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                              |
-| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                         |
-| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」 |
+| 何を                                             | どのテスト                                                                                                                    |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                                                            |
+| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                     |
+| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                                                               |
+| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                                                          |
+| OCR の段階の覆いと中止                           | 同上（「counts the pages up…」「takes the cancel button away…」「stops reading a book by OCR…」「offers no way to cancel…」） |
+| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」                                  |
 
 **E2E にドロップのテストは無い**（Playwright からファイルのドラッグを合成できない）。
 ドロップの経路を守っているのは jsdom だけ。
@@ -1007,10 +1282,67 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 未読み込みファイルを区別しない）。計算は `src/front/lib/shelfGroups.ts` の純関数
 （`groupShelf` / `splitHidden`）で、サーバには持たない。**同名の判定はファイル名から
 `.pdf` / `.epub` を除き、Unicode を NFC にそろえ、大文字小文字を無視したもの**——Mac の
-Dropbox が濃点を分解形で返すことがあるため。項目の中では取り込み済みが先、PDF が EPUB より
-先で、カードと題名は先頭のファイルを開き、2 つ以上あるときだけ形式ごとのチップが
-それぞれを開く。**1 つだけの項目も形式を言う**——題名の下の説明の先頭に押せないバッジ
+Dropbox が濃点を分解形で返すことがあるため（読者が題名を変えた本は変えた題名で比べる。
+下記「題名は読者が変えられる」）。項目の中では**優先する形式が先、同じ形式の中では
+取り込み済みが Dropbox の未読み込みより先**で、カードと題名は先頭のファイルを開き、2 つ以上
+あるときだけ形式ごとのチップがそれぞれを開く。**1 つだけの項目も形式を言う**——題名の下の説明の先頭に押せないバッジ
 （`FormatBadge`）を置く。チップが無いと、それが PDF か EPUB かを読者が知る手立てが無いため。**削除は項目の取り込み済みの本をすべて**消す（確認文が「PDF・EPUB」と言う）。
+
+**優先する形式は読者が選ぶ**（検索欄の隣の「優先する形式」の `<select>`。PDF / EPUB、
+既定は PDF）。本をまたぐ読者の好みなので `settingsAtom.ts` の `preferredFormatAtom`
+（`chatbook:preferred-format`。`validatedStorage` で、形式でない値は PDF に落ちる）が
+localStorage に持ち、`groupShelf` の第 3 引数に渡る。並びは `shelfGroups.ts` の `memberOrder`
+が決め、**優先する形式は「取り込み済み」に勝つ**——EPUB を選んだ読者が PDF だけ取り込んで
+いる題名を開くと、Dropbox から EPUB を取得して開く（取得は 1 度きりで、以後は取り込み済み）。
+取り込み済みを先にすると、ちょうど別の形式が Dropbox に現れた題名でだけ設定が効かず、
+選んでいない形式が開く。**この規則は既定（PDF）でも効く**ので、取り込み済みが EPUB だけで
+PDF が Dropbox にある題名は、設定ができる前（EPUB が開いた）と違い PDF を取得して開く。
+置き場所をヘッダーにしないのは検索欄と同じ理由（狭い画面のヘッダーはボタンで埋まっている）で、
+狭い画面では検索欄の下に折り返す。**PDF / EPUB の 2 ボタンにしない**——チップの名前
+（「… を PDF で開く」）が部分一致で当たる。表紙と進み具合は項目内の順に依らない
+（`coverOf` は表紙のある最初の本、`groupProgress` は一番進んだ本）。
+
+**題名は読者が変えられる**。`pdfs.title`（`migrations/0011_add_book_title.sql`。nullable）
+に持ち、**`null` はファイル名から作る従来の題名**。画面に出す題名は
+`src/front/lib/bookTitle.ts` の `bookTitle(book)`（`title ?? titleOf(fileName)`）1 箇所が
+決める——本棚・リーダーのヘッダー・削除の確認文がこれを読む（リーダーのヘッダーは以前
+拡張子付きのファイル名を出していたが、今は本棚と同じ題名）。
+
+- **受け口は `PATCH /api/pdf/:pdfId`**（`{ title }`。`renameBookRequestSchema`）。前後の
+  空白を除き、**空・空白だけ・`null` は `null`（元に戻す）**、200 文字
+  （`MAX_BOOK_TITLE_LENGTH`。ダイアログの入力欄も `maxLength` で同じ値）を超えると 400、
+  無い本は 404。応答は `{ id, title }`。**`updatedAt` は動かさない**（本棚の並びはそれで
+  決まり、題名を変えることは本を開くことではない）
+- **`GET /api/pdfs`・`GET /api/pdf/:pdfId`・`POST /api/pdf/open` の応答すべてに `title`
+  が載る**。アップロードの応答に要るのは `useOpenPdfBook` のキャッシュ先充填のため——
+  題名を変えた本を同じファイルからもう一度足したとき、リーダーにファイル名の題名が出ないように。
+  **`storePdf` の上書きは `title` を列挙しない**ので、再アップロードで題名は消えない
+- **口は本棚の項目の「✎」**（`aria-label` は「〈題名〉 の題名を変更」。「非表示」「削除」
+  「開く」と部分一致で当たらない名前）。取り込み済みの本がある項目にだけ出す（Dropbox の
+  未読み込みファイルの名前はファイルシステムのもの）。ダイアログは
+  `src/front/components/BookTitleDialog.tsx`。**項目のすべての本に同じ題名を付ける**——
+  1 つだけ変えると項目が 2 つに割れる（次項）。順に送り、最初の拒否で止める
+- **同名でまとめる判定は変えた題名で行う**。読者に見えている名前はそれで、読者が同じ題名を
+  付けた 2 冊は、ファイル名がどうであれ読者にとって 1 冊。**ただし、変える前の名前のままの
+  ファイルは変えた本の項目についていく**（`groupShelf` の `renamedFrom`）——Dropbox の
+  未読み込みファイルは読者のファイルシステムの名前で、題名の変更はそれに触れない。ついて
+  いかせないと、PDF の題名を変えたとたんに同じ本の EPUB が古い名前で別の項目に出る。
+  題名の付いていない本（後から Dropbox から取り込んだ EPUB など）も同じ扱い。項目の題名は
+  読者が書いた題名が優先
+- **成功したら 2 つのキャッシュを書き換える**（取り直さない）。本棚（`/api/pdfs`）と、
+  リーダーが読む `bookKey(id)`（キャッシュに無ければ何もしない）。失敗はダイアログの中に
+  出し、ダイアログは打った題名のまま開いている（下記の失敗の表）
+- **マイグレーションは先に当てる**。`readPdf` / `storePdf` は `pdfs` の全列を読むので、未適用の
+  D1 では本を開く経路と本の追加が 500 になり、本棚の一覧も `title` を select するので 500 になる。
+  nullable な列の追加なので旧コードには無害
+
+守っているのは `shelfGroups.test.ts`（優先する形式の並び・変えた題名でのまとめ方）、
+`bookTitle.test.ts`、`ShelfPage.test.tsx` の「the preferred format」と
+「renaming a book」、`AppPage.test.tsx`「heads the reader with the title…」、
+`useOpenPdfBook.test.tsx`「keeps the title…」、`test/worker/pdf.test.ts` の
+`PATCH /api/pdf/:pdfId`、desktop の E2E「a title given on the shelf is what the shelf and
+the reader say after a reload」（fixture ではなく専用の本を使う——fixture の題名は他の
+テストが名指しているので、失敗して題名が残ると全件を巻き込む）。
 
 **非表示は `hidden_books`（`migrations/0009_add_hidden_books.sql`）にサーバで持つ**——
 端末をまたいで同じ本棚にするため。キーは取り込み済みの本なら `pdfs.id`、未読み込みの
@@ -1092,7 +1424,7 @@ Dropbox から現れたら、読者がまだ判断していないファイルな
 | 入力                           | どう分けるか                                                                                                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ピンチ・スワイプ               | `touchstart` / `gesturestart` の購読だけ。指のときしか発火しない                                                                                                      |
-| 左右タップでのページ送り       | 分けない（マウスのクリックでも送る）                                                                                                                                  |
+| 左右タップでのページ送り       | 分けない（マウスのクリックでも送る）。どちらの端が次かは本の向きで決まる（下記「ページめくりの向きは本ごとに持つ」）                                                  |
 | 中央のダブルタップでの拡大     | `pointerType !== "mouse"` のときだけ（マウスには Ctrl+ホイールがある）                                                                                                |
 | 選択の確定                     | 分けない。常に `useSettledSelection`（`src/front/hooks/useSettledSelection.ts`。`selectionchange` が止まり、**かつ**ポインタが離れてから `SELECTION_SETTLE_MS` 待つ） |
 | 選択したあとに何を出すか       | 指なら `SelectionActionBar`、マウスなら入力欄（狭い画面はマウスでもバー。320px の入力欄が収まらないため）                                                             |
@@ -1220,15 +1552,64 @@ E2E の 1 つのアサーションだけ**——縮小側のテストが「左�
 `nextZoom`、指と Safari の `pinchZoom`、ダブルタップのリテラル、そして localStorage を読み戻す
 `settingsAtom.ts` の validator の 4 つ。倍率の書き手を足すときはここを通すこと。
 
-**現在ページが常に左**（`visiblePages`）。引用リンクやハイライトで p.7 へ飛べば [7|8] になり、
-名指されたページが必ず左に来る。最終ページに相方が無ければ 1 枚だけ描く。
+**現在ページが常に先に読む側**（`visiblePages`。左開きの本なら左、右開きの本なら右）。
+引用リンクやハイライトで p.7 へ飛べば [7|8]（右開きなら [8|7]）になり、名指されたページが
+必ず読み始めの側に来る。最終ページに相方が無ければ 1 枚だけ描く。`visiblePages` が返すのは
+**画面の左から右の順**なので、右開きでは番号が降順に並ぶ。`PageStepper` の「7-8 / 12」は
+画面の順ではなく本の数え方で書く。
 
 **ページ送りは出ている枚数だけ動く**（`turnTo`。端のクリック・スワイプ・`←` / `→`・`h` / `l`・
 `PageStepper` が全部ここを通る唯一の算術）。**送り先が本の終わりを越えるなら動かない**——
 12 ページの本の [11|12] からの送りは 13 ページ目を指すので、そこが本の終わり。**ただし余った
 1 ページは「終わり」ではない**——[10|11]（リンクや目次で飛ぶと起こる）からの送りは 12 ページ目に
 着き、読者がまだ見ていないその 1 枚を単独で出す。ここを見開き単位で止めると、最後の 1 ページが
-どの操作からも届かなくなる。`G`（最終ページ）は最後の見開きの左（`lastSpreadStart`）へ着地する。
+どの操作からも届かなくなる。`G`（最終ページ）は最後の見開きの読み始めの側（`lastSpreadStart`）へ着地する。
+
+#### ページめくりの向きは本ごとに持つ
+
+縦書きの日本語の本や漫画は右から左へ読む（右開き）。**向きは本ごとの値**で、D1 の
+`pdfs.page_direction`（`'ltr'` / `'rtl'`、既定 `'ltr'`。`migrations/0012_add_page_direction.sql`）
+に置き、`GET /api/pdf/:pdfId` と `POST /api/pdf/open` の応答の `pageDirection` に載る。変えるのは
+`PUT /api/pdf/:pdfId/page-direction`（`{ pageDirection }`。`updatedAt` は動かさない。本棚の並びが
+変わるので）。PDF は自分の向きを言わないので、ファイルから推測はしない。
+
+**変わるのは画面の左右と前後の対応だけ**で、**「次のページ」が何ページかは変わらない**
+（`turnTo` は向きを知らない）。左右→前後の写像は `src/front/lib/touchNavigation.ts` の
+**`turnToward(side, direction)` 1 箇所**で、次を全部ここに通す:
+
+| 入力                        | 右開きでは                                                     | 純関数                                            |
+| --------------------------- | -------------------------------------------------------------- | ------------------------------------------------- |
+| 端のタップ・クリック        | 左端が次、右端が前                                             | `resolveTapZone(x, direction)`                    |
+| スワイプ                    | 指を右へ動かすと次（紙と同じく、左にある次のページを引き込む） | `resolveSwipe(swipe, direction)`                  |
+| `←` / `→`・vim の `h` / `l` | `←` / `h` が次                                                 | `resolveAction(mode, stroke, pending, direction)` |
+| emacs の `C-f` / `C-b`      | **変えない**（forward / back は画面の左右を指さない）          | 同上                                              |
+| 見開きの並び                | 現在ページが右、次のページが左                                 | `visiblePages(…, direction)`                      |
+| `PageStepper` の前後ボタン  | 左のシェブロンが「次のページ」（aria-label は前後のまま）      | `turnToward` を直接                               |
+| 設定メニューのキー一覧      | 「←/→ 次 / 前のページ」「h 次のページ」                        | `keybindingHelp(mode, direction)`                 |
+
+- **向きは props で配る**（`book.pageDirection` → `PdfViewer` / `PageToolbar` / `PageStepper`）。
+  SWR の本が正で、atom に写さない（上記「`useEffect` の扱い」の「写し」）。キーボードは
+  `useKeyboardShortcuts(onAction, direction)`、スワイプは購読の外にある `directionRef` で読む
+- **変える口はリーダーの ⚙（`SettingsMenu`）の「ページめくり」**（左開き / 右開き）。値は本の
+  ものなので、メニューは `pdfId` を受け取ったときだけこの欄を出す。保存は `usePageDirection`
+  （`resultFetcher`）で、**サーバが受け取ってから** `bookKey` のキャッシュに書く（楽観的に
+  書かない。拒否されたらページが読者の目の前で逆に戻ることになる）
+- **形式を問わず選べる**。EPUB の画面めくりも同じ純関数（`turnToward` / `resolveTapZone` /
+  `resolveSwipe`）に `book.pageDirection` を渡して従う（上記「EPUB は章をページとして読む」の
+  めくりの向きの箇条）。EPUB で変わるのは入力の左右だけで、画面の並びは左から右のまま
+- **向きは読書位置（`readingState`）ではない**。端末ごとの値でも開閉でもなく本の性質なので、
+  `PUT /reading-state` とは別の口で、`useReadingStateSync` は触らない
+
+守っているのは jsdom の `touchNavigation.test.ts` / `spread.test.ts` / `keybindings.test.ts`
+（写像そのもの）、`PageStepper.test.tsx`（ボタンの並び）、`useKeyboardShortcuts.test.tsx` と
+`PdfViewer.test.tsx` の「turns on with ← in a book that opens on the right」（配線）、
+`usePageDirection.test.tsx` と `SettingsMenu.test.tsx`（保存と失敗表示）、worker の
+`PUT /api/pdf/:pdfId/page-direction`。画面に出る結果は E2E の 3 本——desktop の
+「a book turned to open on the right goes on from its left edge…」（端クリックとリロード後）と
+「lays a spread of a book that opens on the right out from the right…」（見開きの並びと `←`）、
+tablet の「turns a book that opens on the right on from the left…」（タップ・スワイプ・
+ステッパー）。`pnpm run test:e2e -g "open on the right|opens on the right"` で 3 本まとめて走る。
+**3 spec の `openTestBook` は向きも左開きに戻す**（同じ本を共有するため）。
 
 **判定に要るページの素の寸法は `usePageBaseSize` が取る**（`getViewport({scale: 1})`）。
 描かれた大きさから逆算できないのは、描かれた大きさこそがこの判定の結果だから。
@@ -1704,7 +2085,7 @@ SWR の使い方で押さえるところ:
   `atomFamily` を使わないのは非推奨で本を開くたびに警告を出すため
 - **テストの差し替え口は 2 つある**。取得そのものを差し替えるなら DI 引数——
   `useBook(pdfId, loadBook)` / `useHighlights(pdfId, loadBook, deleteHighlight, updateSelection)` /
-  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/
+  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/ `extractPdfData(file, { createOcrEngine })`（OCR のエンジン。テストは `pdfOcr.ts` の `OcrEngine` を偽物で満たす）/
   `usePdfDocument(pdfId, book, fetchFn, buildDocument)`（**アップロードの手渡しだけは DI
   ではない**——モジュールの 1 枠なので、テストは `rememberUploadedFile` で置き
   `forgetUploadedFile` で片付ける。SWR の既定キャッシュと同じ扱い）/
@@ -1718,8 +2099,10 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
   クロージャで、割合が 1 に達したら `storing` へ切り替える写像を持つのはそこ 1 箇所。
   **アップロードだけは `fetch` ではなく XHR なので、`vi.stubGlobal("fetch", ...)` では
   止められない**——`src/test/fakeUpload.ts` の `fakeUpload()` が作った `request` を返す関数を
-  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める）/
-  `PdfViewer({ measureSelection, saveSelection })` /
+  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める。`extract` は
+  `(file, { signal, onOcrProgress })` を受け取るので、偽の `extract` がそれを呼んで OCR の
+  進捗と中止を演じる）/
+  `PdfViewer({ measureSelection, saveSelection, loadOcrText })`（`loadOcrText` は `useOcrText(pdfId, hasOcr, load)` へ渡る）/
   `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights })` がその口。`measureSelection` は
   ポップオーバーを開く唯一の入口で、**実 DOM 選択と pdf.js が描いたページを両方要求する
   経路（質問・保存失敗の表示・二重送信の防止）を jsdom で動かすための seam**。
@@ -1746,6 +2129,10 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
 | 復元（本の到着待ち）                    | `src/front/hooks/useReadingLocation.ts` の `pendingRestore`                                                                                                                         |
 | 保存・読み出しの service                | `src/server/services/pdfService.ts` の `saveReadingState` / `getPdf`                                                                                                                |
 | front と server が交わす形              | `src/shared/schemas/book.ts`。読み出しは `readingStateSchema`、書き込みは `saveReadingStateRequestSchema`（開閉の 2 つと `bookChat` が optional）、応答は `readingStateSavedSchema` |
+
+**EPUB の「ページ」は章**で、章の中のどの画面にいたかは運ばない（上記「画面ごとにめくる」）。
+画面の割り付けは窓と書体で変わるので、保存した画面番号は別の端末では別の語を指すうえ、
+文字位置を足すには `readingState` に列が要る。戻るのは章の先頭の画面。
 
 **`bookChat` は場所の側**（`selectionId` と同じ種類）。`true` なら開いていたのは本そのものの
 会話で、**同時に立つのは 2 つのうち片方だけ**。狭い画面でも送る——あちらに畳んでおく第 2 の
@@ -1829,13 +2216,16 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 
 **マイグレーションを当ててから動かす**。`readPdf` / `storePdf` は drizzle が `pdfs` の全列を
 明示列挙するので、`0002_add_reading_state.sql` / `0003_add_reading_state_chat_panel.sql` /
-`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` / `0008_add_book_format.sql` が未適用の D1 に新しいコードを
+`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` / `0008_add_book_format.sql` /
+`0012_add_page_direction.sql` が未適用の D1 に新しいコードを
 載せると本を開く経路ごと 500 になる（列を絞って読む本棚一覧だけは生き残る。
 `saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `bookChat` は省略なら
 `set` にも現れない。チャットは `outline` 列を select するので `0004` 未適用では 500）。
 **`0010_add_selection_note.sql`（`selections.note`）も同じ**——`readPdf` はハイライトを
 `selections` の全列で読むので、未適用の D1 では本を開く経路ごと 500、ハイライトの作成・変更・
 検索も 500 になる。nullable な列の追加なので旧コードには無害で、先に当てればよい。
+**`0011_add_book_title.sql`（`pdfs.title`）も同じ**——未適用の D1 では本を開く経路・本の追加・
+本棚の一覧（これは `title` を select する）が 500 になる。nullable な列の追加で、先に当てればよい。
 ローカルは `pnpm run db:migrate:local`、リモートは
 `vp build` → `wrangler d1 migrations apply chatbook-db --remote` → `pnpm run deploy` の順。
 **列の追加は旧コードに無害なので、先に当てるのが常に安全——ただし `0005_book_chat.sql` だけは
@@ -1844,6 +2234,8 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 デプロイされ終わる」までで、その間に届いた回答が 1 件保存できなくなる（`CHAT_SAVE_FAILED` の帯が
 出る。データは失われない）。順番は変えられない——先にコードを出すと `pdf_id` 列が無くて同じ
 ように落ちる。E2E は Playwright が起動時に適用するので影響を受けない。
+OCR の `hasOcr` は列ではなく R2 の head なので、ここに足すマイグレーションは無い（上記
+「テキストの無い PDF（OCR）」）。
 
 キーバインド（Vim / Emacs）は `src/front/lib/keybindings.ts` の `resolveAction` に
 DOM 非依存の純粋関数として実装。`gg` や `C-c t` の2ストロークは `pending` プレフィックスで表現し、
@@ -1857,7 +2249,11 @@ vim の `/` は本文検索を開く（`openSearch`。上記「本文の検索�
 戻せば「なし」を選んだ読者からキーボードが消える）。**修飾キーが付いていたら渡さない**——
 とくに Shift + 方向キーは文字の選択を伸ばす操作で、ポップオーバーが読者に頼んでいるものそのもの。
 設定メニューのヘルプも `ARROW_KEYBINDING_HELP` を全モード共通で先頭に出し、モード別の
-`KEYBINDING_HELP` をその下に continue する（方向キーを 3 モード分書き写さないため）。
+`KEYBINDING_HELP` をその下に continue する（方向キーを 3 モード分書き写さないため）。組み立てる
+のは `keybindingHelp(mode, direction)` で、右開きの本では `←` / `h` を「次」と書き換える。
+**`←` / `→` と vim の `h` / `l` は画面の左右を指すので、どのページへ行くかは本の向きで決まる**
+（右開きでは `←` が次。上記「ページめくりの向きは本ごとに持つ」）。emacs の `C-f` / `C-b` は
+前後を指すので向きによらない。
 **拡大中でもページを送る**——タップとスワイプは `ENLARGED_ABOVE` 超で送らないが、キーボードは
 `h` / `l` を含めてその規約の外にある（拡大中に動かしたいのは `↑` / `↓` が担う）。
 
@@ -2021,7 +2417,7 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   経路。パネルの開閉はどう開いてもサーバから来る——ただし狭い画面は復元しないので `mobile`
   には効かない）。各 spec が
   持つ `openTestBook`（`chatbook.spec.ts` / `tablet.spec.ts` / `mobile.spec.ts` に別々の実装が
-  ある。共有していない）が開始前に selection を全削除し、読書位置をページ 1・両パネル開に
+  ある。共有していない）が開始前に selection を全削除し、ページめくりの向きを左開きに、読書位置をページ 1・両パネル開に
   戻す。**畳んだ状態から始めたいテストは URL ではなくサーバへ書いてから本を開き直す**
   （`chatbook.spec.ts` の `foldChatPane` → `page.goto`。復元は本の到着ごとに 1 回だけなので、
   `openTestBook` で本を開いたあとに書いただけでは畳まれない）
@@ -2034,7 +2430,9 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   `node --experimental-strip-types e2e/fixtures/generateTestEpub.ts`）。全エントリの日付を固定して
   いるので、manifest を変えない限り差分は出ない。**同梱の CSS は本文を赤くする**——読者の書体で
   描いていること（出版社の CSS を読まないこと）を E2E がそこで見ている。ファイル名を
-  `test-book` にしないこと（本棚で PDF の fixture と同じ名前になり、カードを名指せなくなる）
+  `test-book` にしないこと（本棚で PDF の fixture と同じ名前になり、カードを名指せなくなる）。
+  **第 2 章と第 3 章は埋め草の段落で数画面ぶんある**（画面をめくる E2E と、第 1 章からの
+  リンク先・本文検索の結果が章の先頭の画面に無いことのため）。埋め草に検索語を混ぜないこと
 - **テスト用 PDF はコードから生成し、生成物をコミットしてある**（`e2e/fixtures/test-book.pdf`）。
   ページ数・目次のネストとページ・図版ページ・各ページの本文は
   `e2e/fixtures/testBookManifest.ts` にあり（`PAGE_COUNT` は現在 12）、spec もそこを読むので
@@ -2044,6 +2442,15 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   章より先に節のページを置くと生成が落ちる、表紙に空白を入れると span が増えて選択テストの
   前提が崩れる、といった制約がそこにある。フォントは `e2e/fixtures/.cache/` へ自動ダウンロード
   （gitignore 済み）。同じ pdfkit・同じフォントなら出力はバイト単位で再現する
+- **テキストの無い（画像だけの）fixture がある**（`e2e/fixtures/scanned-book.pdf`。中身は
+  `e2e/fixtures/scannedBookManifest.ts`、作り直しは `node e2e/fixtures/generateScannedBook.ts`）。
+  各ページの行を HTML で組み、E2E が入れてある Chromium で撮った PNG をページ全面に貼るだけで、
+  テキスト演算子は 1 つも書かない——pdf.js が 1 文字も読めないスキャン本と同じ形。**グリフは
+  生成した機械のフォント**（和文は Hiragino / Noto CJK）なので、別の機械で作り直すと画素が
+  変わりうる（読むのは OCR だけなので、検索語が読める限り問題ない）。検索語は英語の 1 語
+  （`SCANNED_SEARCH_WORD`）で、2 ページ目にしか無い。**E2E はここで本物の Tesseract を回す**
+  （アセットは自前配信なのでネットワークは要らない。手元では 2 ページで数秒）。ファイル名を
+  `test-book` にしないこと（本棚で同じ題名にまとまる）
 - **CMap を要求する 2 冊目の fixture がある**（`e2e/fixtures/cid-font-book.pdf`。
   `e2e/chatbook.spec.ts` の `a book with CID-keyed fonts renders without asking for a CMap`
   が `CID_FONT_BOOK` として読む）。`test-book.pdf` は使うグリフをすべて埋め込むので

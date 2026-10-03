@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { PdfOutline } from "./PdfOutline";
 
 const OUTLINE = [
@@ -113,5 +114,73 @@ describe("PdfOutline", () => {
     render(<PdfOutline outline={[]} error={null} currentPage={1} onJump={() => {}} />);
 
     expect(screen.getByText("この本には目次がありません")).toBeInTheDocument();
+  });
+});
+
+describe("PdfOutline for a book without a table of contents", () => {
+  it("offers to have one made", async () => {
+    const onGenerate = vi.fn();
+    render(
+      <PdfOutline
+        outline={[]}
+        error={null}
+        currentPage={1}
+        onJump={() => {}}
+        generation={{ onGenerate, generating: false, error: null }}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "AIで目次を作る" }));
+
+    expect(onGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it is making one, and will not be asked twice meanwhile", () => {
+    render(
+      <PdfOutline
+        outline={[]}
+        error={null}
+        currentPage={1}
+        onJump={() => {}}
+        generation={{ onGenerate: () => {}, generating: true, error: null }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "目次を作成中..." })).toBeDisabled();
+  });
+
+  it("says why none could be made, and leaves the offer up to try again", () => {
+    render(
+      <PdfOutline
+        outline={[]}
+        error={null}
+        currentPage={1}
+        onJump={() => {}}
+        generation={{
+          onGenerate: () => {},
+          generating: false,
+          error: "The model could not be reached",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /^目次を作成できませんでした: The model could not be reached$/,
+    );
+    expect(screen.getByRole("button", { name: "AIで目次を作る" })).toBeEnabled();
+  });
+
+  it("offers nothing to make where the book has a table of contents", () => {
+    render(
+      <PdfOutline
+        outline={OUTLINE}
+        error={null}
+        currentPage={1}
+        onJump={() => {}}
+        generation={{ onGenerate: () => {}, generating: false, error: null }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "AIで目次を作る" })).not.toBeInTheDocument();
   });
 });
