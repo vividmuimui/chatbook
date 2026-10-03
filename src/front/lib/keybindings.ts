@@ -1,3 +1,6 @@
+import type { PageDirection } from "../../shared/schemas/book";
+import { turnToward, type ScreenSide } from "./touchNavigation";
+
 export type KeybindingMode = "none" | "vim" | "emacs";
 
 export type ViewerAction =
@@ -40,6 +43,11 @@ function isAlt(stroke: KeyStroke, key: string): boolean {
   return stroke.altKey && !stroke.ctrlKey && !stroke.metaKey && stroke.key === key;
 }
 
+/** The page turn toward a side of the screen, as the action that makes it. */
+function pageToward(side: ScreenSide, direction: PageDirection): ViewerAction {
+  return turnToward(side, direction) === "next" ? "nextPage" : "prevPage";
+}
+
 /**
  * The arrow keys, which belong to every mode — including "none".
  *
@@ -47,15 +55,18 @@ function isAlt(stroke: KeyStroke, key: string): boolean {
  * are resolved before the mode is consulted. `shiftKey` counts as a modifier
  * here: shift with an arrow extends a text selection, and taking that would
  * cost the reader the very thing the popover asks them to pick.
+ *
+ * ← and → point at a side of the screen, so which page they turn to follows
+ * the way the book opens: in one that opens on the right, ← is the next page.
  */
-function resolveArrows(stroke: KeyStroke): ViewerAction | null {
+function resolveArrows(stroke: KeyStroke, direction: PageDirection): ViewerAction | null {
   if (!isPlain(stroke) || stroke.shiftKey) return null;
 
   switch (stroke.key) {
     case "ArrowRight":
-      return "nextPage";
+      return pageToward("right", direction);
     case "ArrowLeft":
-      return "prevPage";
+      return pageToward("left", direction);
     case "ArrowDown":
       return "scrollDown";
     case "ArrowUp":
@@ -65,7 +76,15 @@ function resolveArrows(stroke: KeyStroke): ViewerAction | null {
   }
 }
 
-function resolveVim(stroke: KeyStroke, pending: string | null): ResolveResult {
+/**
+ * vim's own keys. h and l are vim's left and right, so they turn toward those
+ * sides of the screen just as the arrows do.
+ */
+function resolveVim(
+  stroke: KeyStroke,
+  pending: string | null,
+  direction: PageDirection,
+): ResolveResult {
   if (pending === "g") {
     if (isPlain(stroke) && stroke.key === "g") return { action: "firstPage", pending: null };
     // Fall through so the stroke still gets its own chance to match
@@ -75,9 +94,9 @@ function resolveVim(stroke: KeyStroke, pending: string | null): ResolveResult {
 
   switch (stroke.key) {
     case "l":
-      return { action: "nextPage", pending: null };
+      return { action: pageToward("right", direction), pending: null };
     case "h":
-      return { action: "prevPage", pending: null };
+      return { action: pageToward("left", direction), pending: null };
     case "j":
       return { action: "scrollDown", pending: null };
     case "k":
@@ -107,7 +126,8 @@ function resolveEmacs(stroke: KeyStroke, pending: string | null): ResolveResult 
 
   // As in emacs itself, where C-f / C-b move by character and C-n / C-p by
   // line: the page is what the character is here, and scrolling what the line
-  // is.
+  // is. Forward and back name no side of the screen, so they keep their
+  // meaning whichever way the book opens.
   if (isCtrl(stroke, "f")) return { action: "nextPage", pending: null };
   if (isCtrl(stroke, "b")) return { action: "prevPage", pending: null };
   if (isCtrl(stroke, "n")) return { action: "scrollDown", pending: null };
@@ -128,18 +148,22 @@ function resolveEmacs(stroke: KeyStroke, pending: string | null): ResolveResult 
  *
  * The arrows are answered first, whatever the mode, and an arrow drops any
  * pending prefix along with it: it did not complete the sequence.
+ *
+ * `direction` is the way the open book's pages turn. It decides only the keys
+ * that point at a side of the screen (←/→, vim's h/l).
  */
 export function resolveAction(
   mode: KeybindingMode,
   stroke: KeyStroke,
   pending: string | null,
+  direction: PageDirection = "ltr",
 ): ResolveResult {
-  const arrow = resolveArrows(stroke);
+  const arrow = resolveArrows(stroke, direction);
   if (arrow) return { action: arrow, pending: null };
 
   switch (mode) {
     case "vim":
-      return resolveVim(stroke, pending);
+      return resolveVim(stroke, pending, direction);
     case "emacs":
       return resolveEmacs(stroke, pending);
     case "none":
@@ -179,3 +203,32 @@ export const KEYBINDING_HELP: Record<Exclude<KeybindingMode, "none">, [string, s
     ["M->", "最後のページ"],
   ],
 };
+
+/**
+ * The keys the settings menu lists, worded for the book that is open: in one
+ * that opens on the right, ← and h turn to the next page, and the list says
+ * so rather than describing a book the reader is not reading.
+ *
+ * The arrows first because they hold in every mode, the chosen mode's own
+ * keys under them — including when that choice is to have none.
+ */
+export function keybindingHelp(
+  mode: KeybindingMode,
+  direction: PageDirection = "ltr",
+): [string, string][] {
+  const help = [...ARROW_KEYBINDING_HELP, ...(mode === "none" ? [] : KEYBINDING_HELP[mode])];
+  if (direction === "ltr") return help;
+
+  return help.map(([keys, description]): [string, string] => {
+    switch (keys) {
+      case "←/→":
+        return [keys, "次 / 前のページ"];
+      case "l":
+        return [keys, "前のページ"];
+      case "h":
+        return [keys, "次のページ"];
+      default:
+        return [keys, description];
+    }
+  });
+}

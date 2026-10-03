@@ -5,9 +5,11 @@ import { ResultAsync, err, ok } from "neverthrow";
 import { pdfs, selections } from "../db/schema";
 import {
   bookFormatSchema,
+  pageDirectionSchema,
   type BookFormat,
   type BookOutline,
   type BookRenamed,
+  type PageDirection,
   type BookSummary,
   type PdfMetadata,
   type ReadingState,
@@ -70,6 +72,16 @@ export function bookFormatOf(bytes: ArrayBuffer): BookFormat {
 export function readFormat(stored: string): BookFormat {
   const parsed = bookFormatSchema.safeParse(stored);
   return parsed.success ? parsed.data : "pdf";
+}
+
+/**
+ * A stored page direction, read as forgivingly as the format: anything but the
+ * two the endpoint writes turns the way every book turned before there was a
+ * choice.
+ */
+export function readPageDirection(stored: string): PageDirection {
+  const parsed = pageDirectionSchema.safeParse(stored);
+  return parsed.success ? parsed.data : "ltr";
 }
 
 /**
@@ -177,7 +189,10 @@ async function storePdf(
   const objectKey = bookObjectKey(fileHash, format);
   const httpMetadata = { contentType: BOOK_CONTENT_TYPES[format] };
   // Stored like the rest of the metadata: whatever the caller just extracted
-  // wins, and a book whose PDF ships no outline goes back to NULL.
+  // wins. An upload that extracted none leaves a stored outline alone, though
+  // (below): the bytes are the same ones it came from, so it was either read
+  // from them on an earlier upload this one failed to repeat, or made by the
+  // model for a PDF that has none — and paid for.
   const outlineJson = outline ? JSON.stringify(outline) : null;
 
   if (thumbnail) {
@@ -205,17 +220,17 @@ async function storePdf(
     }
 
     // Refresh the metadata: the caller just re-extracted it, so it supersedes
-    // whatever was stored before. Selections, chats, the reader's place and the
-    // title they gave the book stay attached to the id — the columns set here
-    // are listed one by one so that re-opening a book never costs the reader
-    // their place in it, or the name they gave it.
+    // whatever was stored before. Selections, chats, the reader's place, the
+    // title they gave the book and the way its pages turn stay attached to the
+    // id — the columns set here are listed one by one so that re-opening a book
+    // never costs the reader any of them.
     await d1Db
       .update(pdfs)
       .set({
         fileName,
         fullText,
         pageCount,
-        outline: outlineJson,
+        ...(outlineJson === null ? {} : { outline: outlineJson }),
         updatedAt: idClock.now(),
         // Only ever set here, never cleared: re-uploading a book from disk
         // does not make the Dropbox file stop being it.
@@ -231,6 +246,7 @@ async function storePdf(
       fullText,
       readingState: readingStateOf(existing),
       title: existing.title,
+      pageDirection: readPageDirection(existing.pageDirection),
     };
   }
 
@@ -253,7 +269,16 @@ async function storePdf(
     updatedAt: now,
   });
 
-  return { id, fileName, format, pageCount, fullText, readingState: null, title: null };
+  return {
+    id,
+    fileName,
+    format,
+    pageCount,
+    fullText,
+    readingState: null,
+    title: null,
+    pageDirection: "ltr",
+  };
 }
 
 /**
@@ -343,6 +368,30 @@ export function renameBook(
       .get(),
     storageFailure,
   ).andThen((renamed) => (renamed ? ok(renamed) : err(notFound())));
+}
+
+/**
+ * Turn the book's pages the other way.
+ *
+ * Like the reader's place, `updatedAt` is left alone: choosing how a book
+ * turns is not opening it again, and the shelf is ordered by that column.
+ */
+export function savePageDirection(
+  db: D1Database,
+  pdfId: string,
+  pageDirection: PageDirection,
+): ResultAsync<PageDirection, ServiceError> {
+  return ResultAsync.fromPromise(
+    drizzle(db)
+      .update(pdfs)
+      .set({ pageDirection })
+      .where(eq(pdfs.id, pdfId))
+      .returning({ pageDirection: pdfs.pageDirection })
+      .all(),
+    storageFailure,
+  ).andThen((updated) =>
+    updated.length > 0 ? ok(readPageDirection(updated[0].pageDirection)) : err(notFound()),
+  );
 }
 
 /**
@@ -539,6 +588,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
     hasOutline: pdf.outline !== null,
     readingState: readingStateOf(pdf),
     title: pdf.title,
+    pageDirection: readPageDirection(pdf.pageDirection),
     selections: selRows.map((s) => ({
       id: s.id,
       selectedText: s.selectedText,

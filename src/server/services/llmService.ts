@@ -207,6 +207,32 @@ Service bindings connect two Workers directly[3].
 }
 
 /**
+ * One answer from the configured provider's Chat Completions endpoint, whole
+ * rather than streamed: for work the reader waits on as one thing (the table
+ * of contents), where tokens arriving one by one would have nowhere to go.
+ *
+ * Throws when the provider refuses or cannot be reached; what that means to
+ * the reader is the caller's to say. An answer with no text in it comes back
+ * as the empty string, which the caller's own reading of it refuses.
+ */
+export async function completeChat(config: LlmConfig, messages: LlmMessage[]): Promise<string> {
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    // The SDK retries a refusal on its own, and a reader waiting on a button
+    // is better told it failed than kept waiting through three attempts.
+    maxRetries: 0,
+  });
+
+  const completion = await client.chat.completions.create({
+    model: config.model,
+    messages,
+    stream: false,
+  });
+  return completion.choices[0]?.message?.content ?? "";
+}
+
+/**
  * Stream a chat completion from the configured provider (Chat Completions endpoint).
  */
 export async function streamChatCompletion(

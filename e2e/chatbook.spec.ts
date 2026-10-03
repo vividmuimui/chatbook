@@ -143,11 +143,12 @@ async function openTestBook(page: Page): Promise<string> {
   await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
 
   const pdfId = new URL(page.url()).pathname.split("/").pop()!;
-  const { selections, readingState } = (await (
+  const { selections, readingState, pageDirection } = (await (
     await page.request.get(`/api/pdf/${pdfId}`)
   ).json()) as {
     selections: { id: string }[];
     readingState: StoredPlace;
+    pageDirection: "ltr" | "rtl";
   };
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
@@ -170,9 +171,15 @@ async function openTestBook(page: Page): Promise<string> {
     },
   });
 
+  // The way the pages turn is the book's too, and a test that turned it to
+  // open on the right would otherwise hand every later one a mirrored reader.
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "ltr" },
+  });
+
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
-  if (selections.length > 0 || resumedElsewhere(readingState)) {
+  if (selections.length > 0 || resumedElsewhere(readingState) || pageDirection !== "ltr") {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // A tap or a drag needs the page itself to have been drawn, not merely the
@@ -680,6 +687,34 @@ test("turns both pages of a spread at once, and stops at the last one", async ({
   await expect(page).toHaveURL(new RegExp(`[?&]page=${PAGE_COUNT - 3}(&|$)`));
   await expect(drawnPage(page, PAGE_COUNT - 3).first()).toBeVisible();
   await expect(drawnPage(page, PAGE_COUNT - 2).first()).toBeVisible();
+});
+
+test("lays a spread of a book that opens on the right out from the right, and ← turns it on", async ({
+  page,
+}) => {
+  const pdfId = await openTestBook(page);
+  await foldChatPane(page, pdfId);
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "rtl" },
+  });
+  await page.goto(`/books/${pdfId}?page=3`);
+  await expect(drawnPage(page, 3).first()).toBeVisible({ timeout: 60000 });
+  await expect(drawnPage(page, 4).first()).toBeVisible();
+
+  // Named left to right on the screen: the page the reader is on, 3, is the
+  // right hand one, and 4 — the next — is beside it on the left.
+  const spread = await pagesAgainstPane(page, [4, 3]);
+  expect(spread.count).toBe(2);
+  expect(spread.laidOutRightOf).toBeGreaterThan(0);
+  expect(spread.topsApart).toBeLessThan(1);
+  expect(spread.overflows).toBeLessThanOrEqual(0);
+
+  await page.keyboard.press("ArrowLeft");
+
+  await expect(page).toHaveURL(/[?&]page=5(&|$)/);
+  await expect(drawnPage(page, 5).first()).toBeVisible();
+  await expect(drawnPage(page, 6).first()).toBeVisible();
+  expect((await pagesAgainstPane(page, [6, 5])).laidOutRightOf).toBeGreaterThan(0);
 });
 
 /**
@@ -2224,6 +2259,44 @@ test("turns the page on a click at the edge, but not on a drag that selected tex
     timeout: 10000,
   });
   await expect(drawnPage(page, 1).first()).toBeVisible();
+});
+
+test("a book turned to open on the right goes on from its left edge, and still does after a reload", async ({
+  page,
+}) => {
+  // A book set vertically in Japanese — or a manga — is read from the right,
+  // and its next page is on the left. The choice is the book's, so it comes
+  // back with the book rather than with the browser.
+  await openTestBook(page);
+  await page.getByRole("button", { name: "設定" }).click();
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().includes("/page-direction") &&
+      response.request().method() === "PUT" &&
+      response.ok(),
+  );
+  await page.getByRole("radio", { name: "右開き" }).click();
+  await saved;
+  await expect(page.getByRole("radio", { name: "右開き" })).toBeChecked();
+  await page.keyboard.press("Escape");
+
+  const pane = page.locator("main .overflow-auto").first();
+  const box = (await pane.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.1, box.y + box.height / 2);
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+
+  await page.reload();
+  await expect(drawnPage(page, 2).first()).toBeVisible({ timeout: 60000 });
+  const reloaded = (await pane.boundingBox())!;
+
+  await page.mouse.click(reloaded.x + reloaded.width * 0.1, reloaded.y + reloaded.height / 2);
+  await expect(drawnPage(page, 3).first()).toBeVisible();
+  // ...and the right edge, which used to go on, goes back
+  await page.mouse.click(reloaded.x + reloaded.width * 0.9, reloaded.y + reloaded.height / 2);
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("radio", { name: "右開き" })).toBeChecked();
 });
 
 test("the click that puts the question box away does not also turn the page", async ({ page }) => {

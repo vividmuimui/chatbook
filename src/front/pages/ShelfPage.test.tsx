@@ -113,6 +113,7 @@ const STORED_BOOK = {
   fullText: "エッジはサーバーレス実行基盤です。",
   readingState: null,
   title: null,
+  pageDirection: "ltr",
 };
 
 /** Hands the hidden input a file, the way clicking the tile ends up doing. */
@@ -1127,6 +1128,7 @@ describe("ShelfPage: renaming a book", () => {
       selections: [],
       readingState: null,
       title: null,
+      pageDirection: "ltr",
     };
     renderShelf({
       loadBooks: async () => [book()],

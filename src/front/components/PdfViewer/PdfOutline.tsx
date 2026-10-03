@@ -1,4 +1,5 @@
 import type { OutlineEntry } from "../../hooks/usePdfOutline";
+import type { OutlineGeneration } from "../../hooks/useReaderOutline";
 
 interface PdfOutlineProps {
   outline: OutlineEntry[] | null;
@@ -6,6 +7,11 @@ interface PdfOutlineProps {
   error: string | null;
   currentPage: number;
   onJump: (pageNumber: number) => void;
+  /**
+   * Having the model make a table of contents, offered under "none" where the
+   * book has none. Left out, nothing is offered.
+   */
+  generation?: OutlineGeneration;
 }
 
 /**
@@ -86,7 +92,7 @@ function OutlineItem({
   );
 }
 
-export function PdfOutline({ outline, error, currentPage, onJump }: PdfOutlineProps) {
+export function PdfOutline({ outline, error, currentPage, onJump, generation }: PdfOutlineProps) {
   const activeEntry = outline ? findActiveEntry(outline, currentPage) : null;
 
   return (
@@ -110,6 +116,27 @@ export function PdfOutline({ outline, error, currentPage, onJump }: PdfOutlinePr
 
       {outline?.length === 0 && (
         <p className="p-3 text-xs text-gray-400">この本には目次がありません</p>
+      )}
+
+      {/* Under the "none" it answers: a scanned or exported PDF often ships no
+          bookmarks, and the chapters are what both this panel and the chat's
+          scope menu are cut by. Left up after a failure, which says why. */}
+      {outline?.length === 0 && generation && (
+        <div className="px-3 pb-3">
+          <button
+            type="button"
+            onClick={() => void generation.onGenerate()}
+            disabled={generation.generating}
+            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 cursor-pointer disabled:cursor-default disabled:opacity-60"
+          >
+            {generation.generating ? "目次を作成中..." : "AIで目次を作る"}
+          </button>
+          {generation.error !== null && (
+            <p role="alert" className="pt-2 text-xs text-red-600">
+              目次を作成できませんでした: {generation.error}
+            </p>
+          )}
+        </div>
       )}
 
       {outline && outline.length > 0 && (

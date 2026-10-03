@@ -145,6 +145,7 @@ const BOOK: BookDetail = {
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
+  pageDirection: "ltr",
   selections: [],
   readingState: null,
 };

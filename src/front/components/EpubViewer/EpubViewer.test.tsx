@@ -22,6 +22,7 @@ const BOOK: BookDetail = {
   pageCount: 2,
   hasThumbnail: false,
   hasOutline: true,
+  pageDirection: "ltr",
   selections: [],
   readingState: null,
 };

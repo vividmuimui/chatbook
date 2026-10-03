@@ -34,6 +34,7 @@ function book(id: string, selections: SelectionHighlight[]): BookDetail {
     pageCount: 209,
     hasThumbnail: true,
     hasOutline: true,
+    pageDirection: "ltr",
     selections,
     readingState: null,
   };

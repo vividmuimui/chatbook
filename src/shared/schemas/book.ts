@@ -20,6 +20,29 @@ export type BookFormat = z.infer<typeof bookFormatSchema>;
  */
 const bookTitleSchema = z.string().nullable();
 
+/**
+ * Which way a book's pages turn.
+ *
+ * `ltr` opens on the left and is read left to right — a book set horizontally,
+ * and every book stored before there was a choice. `rtl` opens on the right: a
+ * book set vertically in Japanese, or a manga, whose next page is on the left.
+ * It is the reader's to choose, book by book; a PDF does not say.
+ *
+ * What it changes is only where "previous" and "next" are on the screen. What
+ * a turn means — which page comes next — is the same both ways.
+ */
+export const pageDirectionSchema = z.enum(["ltr", "rtl"]);
+
+export type PageDirection = z.infer<typeof pageDirectionSchema>;
+
+/** What a device sends to turn a book the other way. */
+export const savePageDirectionRequestSchema = z.object({ pageDirection: pageDirectionSchema });
+
+export type SavePageDirectionRequest = z.infer<typeof savePageDirectionRequestSchema>;
+
+/** The direction as the server now holds it. */
+export const pageDirectionSavedSchema = z.object({ pageDirection: pageDirectionSchema });
+
 /** A book as the shelf shows it. */
 export const bookSummarySchema = z.object({
   id: z.string(),
@@ -146,6 +169,9 @@ export const pdfMetadataSchema = z.object({
   // Also carried for the seed: re-opening a renamed book from its file keeps
   // the name the reader gave it, and the seed must not show the file's.
   title: bookTitleSchema,
+  // Likewise: a right-opening book added again would otherwise open turning
+  // the wrong way until the book was read back.
+  pageDirection: pageDirectionSchema,
 });
 
 export type PdfMetadata = z.infer<typeof pdfMetadataSchema>;
@@ -164,6 +190,7 @@ export const bookDetailSchema = z.object({
   selections: z.array(selectionHighlightSchema),
   readingState: readingStateSchema.nullable(),
   title: bookTitleSchema,
+  pageDirection: pageDirectionSchema,
 });
 
 export type BookDetail = z.infer<typeof bookDetailSchema>;
@@ -225,3 +252,8 @@ export type RenameBookRequest = z.input<typeof renameBookRequestSchema>;
 export const bookRenamedSchema = z.object({ id: z.string(), title: bookTitleSchema });
 
 export type BookRenamed = z.infer<typeof bookRenamedSchema>;
+
+/** What asking the model for a table of contents stored. */
+export const generatedOutlineSchema = z.object({ outline: bookOutlineSchema });
+
+export type GeneratedOutline = z.infer<typeof generatedOutlineSchema>;

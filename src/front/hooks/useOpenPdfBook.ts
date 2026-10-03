@@ -98,6 +98,7 @@ export function useOpenPdfBook(
           readingState: result.readingState,
           // A book renamed before keeps its name through being added again.
           title: result.title,
+          pageDirection: result.pageDirection,
         };
         // The same reasoning as the cache seed, for the bytes rather than the
         // book: the viewer this navigates to would otherwise ask the API for

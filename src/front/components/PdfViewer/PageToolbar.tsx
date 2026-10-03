@@ -2,6 +2,7 @@ import { useAtom } from "jotai";
 import { outlineOpenAtom } from "../../atoms/pdfAtom";
 import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { PageStepper } from "./PageStepper";
+import type { PageDirection } from "../../../shared/schemas/book";
 
 /** Apple and Android both put the floor for a tappable control here. */
 const TAP_TARGET = "h-11 min-w-11";
@@ -12,6 +13,8 @@ interface PageToolbarProps {
   highlightCount: number;
   chatOpen: boolean;
   onToggleChat: () => void;
+  /** Which way the book's pages turn, which puts the step on to one side. */
+  direction?: PageDirection;
 }
 
 /**
@@ -32,6 +35,7 @@ export function PageToolbar({
   highlightCount,
   chatOpen,
   onToggleChat,
+  direction = "ltr",
 }: PageToolbarProps) {
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const [searchOpen, setSearchOpen] = useAtom(bookSearchOpenAtom);
@@ -70,7 +74,7 @@ export function PageToolbar({
         検索
       </button>
 
-      <PageStepper pageCount={pageCount} />
+      <PageStepper pageCount={pageCount} direction={direction} />
 
       <button
         type="button"

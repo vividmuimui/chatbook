@@ -9,6 +9,7 @@ import {
   listPdfs,
   deletePdf,
   saveReadingState,
+  savePageDirection,
   searchSelections,
   findInBook,
   updateSelection,
@@ -21,7 +22,8 @@ import {
   type IdClock,
 } from "../services/pdfService";
 
-import { buildSystemPrompt, resolveLlmConfig } from "../services/llmService";
+import { buildSystemPrompt, completeChat, resolveLlmConfig } from "../services/llmService";
+import { buildOutlineMessages, readGeneratedOutline } from "../services/outlineGeneration";
 import { findPageNumber, readCitations } from "../services/chatService";
 import { streamChatReply, type SaveAnswer } from "../services/chatStream";
 import {
@@ -29,6 +31,7 @@ import {
   locateQuerySchema,
   renameBookRequestSchema,
   saveReadingStateRequestSchema,
+  savePageDirectionRequestSchema,
   type BookOutline,
 } from "../../shared/schemas/book";
 import {
@@ -483,6 +486,102 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return c.json({ stored: true });
       })
+      // A table of contents for a PDF that came without one, asked of the
+      // model from the head of each page. Only ever written where there is
+      // none: a book's own outline is what its author wrote, and one made
+      // here earlier was paid for. Answers with what was stored.
+      .post("/pdf/:pdfId/outline/generate", async (c) => {
+        const llmConfig = resolveLlmConfig(c.env);
+        if (!llmConfig.apiKey) {
+          return c.json(
+            {
+              error: { code: "CONFIG_ERROR" satisfies ErrorCode, message: "LLM_API_KEY not set" },
+            },
+            500,
+          );
+        }
+
+        const d1Db = drizzle(c.env.DB);
+        const pdf = await d1Db
+          .select({
+            id: pdfs.id,
+            fullText: pdfs.fullText,
+            pageCount: pdfs.pageCount,
+            outline: pdfs.outline,
+          })
+          .from(pdfs)
+          .where(eq(pdfs.id, c.req.param("pdfId")))
+          .get();
+        if (!pdf) {
+          return c.json({ error: PDF_NOT_FOUND }, 404);
+        }
+        if (pdf.outline !== null) {
+          return c.json(
+            {
+              error: {
+                code: "OUTLINE_EXISTS" satisfies ErrorCode,
+                message: "This book already has an outline",
+              },
+            },
+            409,
+          );
+        }
+
+        const reply = await ResultAsync.fromPromise(
+          completeChat(llmConfig, buildOutlineMessages(pdf.fullText, pdf.pageCount)),
+          (cause) => cause,
+        );
+        if (reply.isErr()) {
+          console.error("Outline generation failed:", reply.error);
+          return c.json(
+            {
+              error: {
+                code: "AI_API_ERROR" satisfies ErrorCode,
+                message: "The model could not be reached",
+              },
+            },
+            502,
+          );
+        }
+
+        const outline = readGeneratedOutline(reply.value, pdf.pageCount);
+        if (!outline) {
+          console.error("Outline generation answered with no outline:", reply.value.slice(0, 500));
+          return c.json(
+            {
+              error: {
+                code: "AI_RESPONSE_INVALID" satisfies ErrorCode,
+                message: "The model did not answer with a table of contents",
+              },
+            },
+            502,
+          );
+        }
+
+        await d1Db
+          .update(pdfs)
+          .set({ outline: JSON.stringify(outline) })
+          .where(eq(pdfs.id, pdf.id));
+
+        return c.json({ outline });
+      })
+      // Which way the book's pages turn, chosen by the reader for this book.
+      .put(
+        "/pdf/:pdfId/page-direction",
+        validate("json", savePageDirectionRequestSchema),
+        async (c) => {
+          const saved = await savePageDirection(
+            c.env.DB,
+            c.req.param("pdfId"),
+            c.req.valid("json").pageDirection,
+          );
+
+          return saved.match(
+            (pageDirection) => c.json({ pageDirection }),
+            (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+          );
+        },
+      )
       // The chapters a question can be aimed at, each with the pages it covers.
       // Worked out here rather than by the reader, so that what the menu offers
       // and what an excerpt is cut by come from one outline. The page count is
