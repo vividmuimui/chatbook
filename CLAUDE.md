@@ -759,10 +759,15 @@ Kindle と同じく、章を**ペインの大きさの画面に割って 1 画�
   `←` / `→`・`h` / `l`・emacs の `C-b` / `C-f` は画面をめくり、**`↑` / `↓`・`j` / `k` も
   前後の画面へめくる**（emacs の `C-n` / `C-p` も。スクロールするものが無いため）。`gg` / `G`
   （emacs の `M-<` / `M->`）と目次は章の先頭へ
-- **左右を前後に読み替えるのは `turnForSide(side, direction)` 1 箇所**（`epubPaging.ts`）。
-  端のタップ・スワイプ（どちらも `touchNavigation.ts` の左開きの答えを `sideOfLtrTurn` で左右に
-  戻してから通す）・方向キーと `h` / `l`・`EpubPageStepper` の山括弧がここを通る。`EpubViewer`
-  と `EpubPageStepper` は `direction`（既定 `"ltr"`）を prop で受けるが、**今は誰も渡していない**
+- **めくりの向きは PDF と同じ本の設定（`book.pageDirection`）で、左右を前後に読み替えるのも PDF と
+  同じ `turnToward`（`touchNavigation.ts`）**。`EpubViewer` は `book` から向きを読み、端のタップと
+  スワイプは向きを `resolveTapZone` / `resolveSwipe` に渡す。**キーは `useKeyboardShortcuts` に
+  向きを渡し、返ってくる `nextPage` / `prevPage` をそのまま前後として使う**——方向キーと `h` / `l` は
+  向きで読み替え済み、emacs の `C-f` / `C-b` はもともと左右を名指さない。ここで左右に読み直すと
+  右開きで二重に反転し、`C-f` が戻る。`EpubPageStepper` は `AppPage`（狭い画面）と `EpubViewer`
+  （広い画面）が `direction` を渡す。**画面の並びそのものは右開きでも左から右**——本文は横書き
+  なので、列を右から並べ替えるのは縦書きに対応するときの話。jsdom の「turns on with ← in a book
+  that opens on the right」「turns on with emacs C-f whichever way the book opens」が見張る
 - **端のタップは PDF と同じ規則**——押した時点で送れるか（ポップオーバーが無く選択が畳まれて
   いる）を控え、12px / 500ms 以内、2 打目以降・ボタンとリンクの上では送らない。中央は何もしない。
   スワイプも PDF と同じ `resolveSwipe`（React の `onTouchStart` / `onTouchEnd`。止めるべき既定が
@@ -1589,10 +1594,9 @@ E2E の 1 つのアサーションだけ**——縮小側のテストが「左�
   ものなので、メニューは `pdfId` を受け取ったときだけこの欄を出す。保存は `usePageDirection`
   （`resultFetcher`）で、**サーバが受け取ってから** `bookKey` のキャッシュに書く（楽観的に
   書かない。拒否されたらページが読者の目の前で逆に戻ることになる）
-- **形式を問わず選べる**。EPUB は今は章の縦スクロールなので向きは何も変えないが、値は
-  保存されている。**EPUB をページめくり式にするときは、上の純関数（`turnToward` /
-  `resolveTapZone` / `resolveSwipe` / `visiblePages`）に `book.pageDirection` を渡すだけで
-  よいように作ってある**
+- **形式を問わず選べる**。EPUB の画面めくりも同じ純関数（`turnToward` / `resolveTapZone` /
+  `resolveSwipe`）に `book.pageDirection` を渡して従う（上記「EPUB は章をページとして読む」の
+  めくりの向きの箇条）。EPUB で変わるのは入力の左右だけで、画面の並びは左から右のまま
 - **向きは読書位置（`readingState`）ではない**。端末ごとの値でも開閉でもなく本の性質なので、
   `PUT /reading-state` とは別の口で、`useReadingStateSync` は触らない
 

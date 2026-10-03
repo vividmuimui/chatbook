@@ -7,7 +7,7 @@ import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
 import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
 import { epubTypographyStyle } from "../../lib/epubTypography";
-import type { BookDetail } from "../../../shared/schemas/book";
+import type { BookDetail, PageDirection } from "../../../shared/schemas/book";
 import type { HighlightColor, PositionData } from "../../../shared/schemas/selection";
 import { PdfOutline } from "../PdfViewer/PdfOutline";
 import { EpubPageStepper } from "./EpubPageStepper";
@@ -34,14 +34,7 @@ import {
   textOffsetOfScreen,
   textOffsetsOf,
 } from "../../lib/epubTextRange";
-import {
-  pagedLayout,
-  screenCount,
-  screenOfX,
-  sideOfLtrTurn,
-  turnForSide,
-  type ReadingDirection,
-} from "../../lib/epubPaging";
+import { pagedLayout, screenCount, screenOfX } from "../../lib/epubPaging";
 import { resolveSwipe, resolveTapZone, type PageTurn } from "../../lib/touchNavigation";
 import type { ViewerAction } from "../../lib/keybindings";
 
@@ -57,12 +50,6 @@ interface EpubViewerProps {
   measureSelection?: MeasureSelection;
   /** Stores the highlight; injectable so a failed save can be tested. */
   saveSelection?: SaveSelection;
-  /**
-   * Which way the book opens. Every left and right — the edges, a swipe, the
-   * arrow keys, the chevrons — is read as back or on through `turnForSide`
-   * with this, and nowhere else.
-   */
-  direction?: ReadingDirection;
 }
 
 /** Marks the box a chapter and the overlays laid over it share, as `PdfViewer` marks a page. */
@@ -149,8 +136,12 @@ export function EpubViewer({
   onSelectionClick,
   measureSelection = measureEpubSelection,
   saveSelection,
-  direction = "ltr",
 }: EpubViewerProps) {
+  // Which way the book opens, as the reader chose it for this book: every left
+  // and right of the screen — the edges, a swipe, the chevrons — is read as
+  // back or on through `turnToward` (`touchNavigation.ts`) with this. The keyboard hears it too, but
+  // in `useKeyboardShortcuts`, whose arrows already come back as on and back.
+  const direction: PageDirection = book?.pageDirection ?? "ltr";
   const [currentPage, setCurrentPage] = useAtom(currentPageAtom);
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const [epubScreen, setEpubScreen] = useAtom(epubScreenAtom);
@@ -457,14 +448,15 @@ export function EpubViewer({
   const handleShortcut = useCallback(
     (action: ViewerAction) => {
       switch (action) {
-        // The arrows and h / l are a side of the screen; ↓ / ↑ and j / k are
-        // on and back whichever way the book opens, since a screen read a
-        // screen at a time has nothing in it to scroll.
+        // On and back already: the arrows and h / l were read as a side of the
+        // screen against the book's direction by `useKeyboardShortcuts`, and
+        // emacs's C-f / C-b never named a side. ↓ / ↑ and j / k turn too, since
+        // a screen read a screen at a time has nothing in it to scroll.
         case "nextPage":
-          turn(turnForSide("right", direction));
+          turn("next");
           break;
         case "prevPage":
-          turn(turnForSide("left", direction));
+          turn("prev");
           break;
         case "scrollDown":
           turn("next");
@@ -486,9 +478,9 @@ export function EpubViewer({
           break;
       }
     },
-    [turn, direction, openChapter, pageCount, setOutlineOpen, setBookSearchOpen],
+    [turn, openChapter, pageCount, setOutlineOpen, setBookSearchOpen],
   );
-  useKeyboardShortcuts(handleShortcut);
+  useKeyboardShortcuts(handleShortcut, direction);
 
   const handleOutlineJump = useCallback(
     (pageNumber: number) => {
@@ -570,9 +562,9 @@ export function EpubViewer({
 
       const frame = event.currentTarget.getBoundingClientRect();
       if (frame.width <= 0) return;
-      const zone = resolveTapZone((event.clientX - frame.left) / frame.width);
+      const zone = resolveTapZone((event.clientX - frame.left) / frame.width, direction);
       if (zone === "zoom") return;
-      turn(turnForSide(sideOfLtrTurn(zone), direction));
+      turn(zone);
     },
     [turn, direction],
   );
@@ -594,12 +586,15 @@ export function EpubViewer({
       touchRef.current = null;
       const last = event.changedTouches[0];
       if (!start || !last || !turnable()) return;
-      const swiped = resolveSwipe({
-        dx: last.clientX - start.x,
-        dy: last.clientY - start.y,
-        durationMs: event.timeStamp - start.at,
-      });
-      if (swiped) turn(turnForSide(sideOfLtrTurn(swiped), direction));
+      const swiped = resolveSwipe(
+        {
+          dx: last.clientX - start.x,
+          dy: last.clientY - start.y,
+          durationMs: event.timeStamp - start.at,
+        },
+        direction,
+      );
+      if (swiped) turn(swiped);
     },
     [turnable, turn, direction],
   );

@@ -1,7 +1,9 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { currentPageAtom } from "../../atoms/pdfAtom";
 import { epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
-import { turnEpub, turnForSide, type ReadingDirection } from "../../lib/epubPaging";
+import { turnEpub } from "../../lib/epubPaging";
+import { turnToward, type ScreenSide } from "../../lib/touchNavigation";
+import type { PageDirection } from "../../../shared/schemas/book";
 import { ChevronIcon } from "../PdfViewer/PageStepper";
 
 /** Apple and Android both put the floor for a tappable control here. */
@@ -10,7 +12,7 @@ const TAP_TARGET = "h-11 min-w-11";
 interface EpubPageStepperProps {
   pageCount: number;
   /** Which way the book opens, which decides which chevron is on. */
-  direction?: ReadingDirection;
+  direction?: PageDirection;
 }
 
 /**
@@ -27,8 +29,8 @@ export function EpubPageStepper({ pageCount, direction = "ltr" }: EpubPageSteppe
   const turn = useSetAtom(turnEpubAtom);
   const { screen, count } = shownScreen(at, page);
 
-  const chevron = (side: "left" | "right") => {
-    const way = turnForSide(side, direction);
+  const chevron = (side: ScreenSide) => {
+    const way = turnToward(side, direction);
     return (
       <button
         type="button"

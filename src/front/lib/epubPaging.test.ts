@@ -7,7 +7,6 @@ import {
   screenCount,
   screenOfX,
   turnEpub,
-  turnForSide,
 } from "./epubPaging";
 
 describe("pagedLayout", () => {
@@ -107,22 +106,6 @@ describe("turnEpub", () => {
   it("goes nowhere past either end of the book", () => {
     expect(turnEpub({ page: 1, screen: 0, count: 4 }, "prev", CHAPTERS)).toBeNull();
     expect(turnEpub({ page: 3, screen: 3, count: 4 }, "next", CHAPTERS)).toBeNull();
-  });
-});
-
-describe("turnForSide", () => {
-  it("reads the right as on and the left as back in a book that opens to the left", () => {
-    expect(turnForSide("right", "ltr")).toBe("next");
-    expect(turnForSide("left", "ltr")).toBe("prev");
-  });
-
-  it("reads them the other way round in a book that opens to the right", () => {
-    expect(turnForSide("right", "rtl")).toBe("prev");
-    expect(turnForSide("left", "rtl")).toBe("next");
-  });
-
-  it("opens to the left unless told otherwise", () => {
-    expect(turnForSide("right")).toBe("next");
   });
 });
 

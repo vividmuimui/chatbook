@@ -9,7 +9,7 @@ import { SwrTestCache } from "../../../test/swrTestCache";
 import { buildEpub } from "../../../test/epubFixture";
 import { bookKey } from "../../hooks/useBook";
 import { currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
-import { epubTypographyAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, keybindingModeAtom } from "../../atoms/settingsAtom";
 import { DEFAULT_EPUB_TYPOGRAPHY } from "../../lib/epubTypography";
 import type { SaveSelection, SelectionDraft } from "../../hooks/useAskAboutSelection";
 import type { BookDetail } from "../../../shared/schemas/book";
@@ -148,6 +148,34 @@ describe("EpubViewer", () => {
     await userEvent.keyboard("{ArrowLeft}");
     expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();
     expect(store.get(currentPageAtom)).toBe(1);
+  });
+
+  // The direction is the book's, handed down with it, and the keyboard hears it
+  // once: the arrows already come back from it as on and back.
+  it("turns on with ← in a book that opens on the right", async () => {
+    vi.stubGlobal("fetch", serving());
+    const store = renderViewer({ book: { ...BOOK, pageDirection: "rtl" } });
+    await screen.findByRole("heading", { name: "第1章" });
+
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(2);
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();
+  });
+
+  it("turns on with emacs C-f whichever way the book opens", async () => {
+    vi.stubGlobal("fetch", serving());
+    const store = createStore();
+    store.set(keybindingModeAtom, "emacs");
+    renderViewer({ store, book: { ...BOOK, pageDirection: "rtl" } });
+    await screen.findByRole("heading", { name: "第1章" });
+
+    await userEvent.keyboard("{Control>}f{/Control}");
+
+    expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(2);
   });
 
   // A screen read a screen at a time has nothing in it to scroll

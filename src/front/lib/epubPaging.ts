@@ -29,11 +29,6 @@ export const MAX_SCREEN_WIDTH_PX = 672;
  */
 export const SPREAD_MIN_SCREEN_WIDTH_PX = 440;
 
-/** Which way the book opens, which is which way the screens run. */
-export type ReadingDirection = "ltr" | "rtl";
-
-export type ScreenSide = "left" | "right";
-
 export interface PagedLayout {
   /** Screens side by side: 2 is a spread. */
   columns: 1 | 2;
@@ -104,27 +99,6 @@ export function turnEpub(
   if (at.screen > 0) return { page: at.page, screen: at.screen - 1 };
   if (at.page > 1) return { page: at.page - 1, screen: "last" };
   return null;
-}
-
-/**
- * Which way a side of the screen turns: the one place a left or a right — an
- * edge tapped, a swipe, an arrow key, a chevron — is read as back or on.
- *
- * A book that opens to the right (vertical Japanese, manga) reads on to the
- * left.
- */
-export function turnForSide(side: ScreenSide, direction: ReadingDirection = "ltr"): PageTurn {
-  const onward: ScreenSide = direction === "rtl" ? "left" : "right";
-  return side === onward ? "next" : "prev";
-}
-
-/**
- * The side of the screen a turn was asked for on, by a reading of the gesture
- * that takes the book to open to the left — what `resolveTapZone` and
- * `resolveSwipe` give back.
- */
-export function sideOfLtrTurn(turn: PageTurn): ScreenSide {
-  return turn === "next" ? "right" : "left";
 }
 
 /**

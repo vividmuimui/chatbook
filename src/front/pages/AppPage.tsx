@@ -474,7 +474,9 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
           chatOpen={chatSheet !== "closed"}
           onToggleChat={() => setChatSheet(chatSheet === "closed" ? "half" : "closed")}
           stepper={
-            book.format === "epub" ? <EpubPageStepper pageCount={book.pageCount} /> : undefined
+            book.format === "epub" ? (
+              <EpubPageStepper pageCount={book.pageCount} direction={book.pageDirection} />
+            ) : undefined
           }
         />
       )}
