@@ -145,6 +145,32 @@ describe("ShelfPage", () => {
     );
   });
 
+  it.each(["grid", "compact"])(
+    "says which format a title held in one file is, in the %s layout too",
+    async (layout) => {
+      localStorage.setItem("chatbook:shelf-layout", JSON.stringify(layout));
+      try {
+        renderShelf({
+          loadBooks: async () => [
+            book({ id: "epub", fileName: "吾輩は猫である.epub", format: "epub", pageCount: 11 }),
+            book({ id: "pdf", fileName: "Rust 入門.pdf", pageCount: 209 }),
+          ],
+          loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+        });
+
+        expect(
+          await screen.findByRole("button", { name: "吾輩は猫である を開く" }),
+        ).toHaveTextContent("EPUB");
+        expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toHaveTextContent("PDF");
+        expect(
+          await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" }),
+        ).toHaveTextContent("PDF");
+      } finally {
+        localStorage.clear();
+      }
+    },
+  );
+
   it("opens the reader for the book whose card was clicked", async () => {
     renderShelf({ loadBooks: TWO_BOOKS });
 
