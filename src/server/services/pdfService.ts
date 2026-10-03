@@ -13,6 +13,8 @@ import {
   type SaveReadingStateRequest,
 } from "../../shared/schemas/book";
 import { positionDataSchema, type PositionData } from "../../shared/schemas/selection";
+import type { BookSearchResult } from "../../shared/schemas/bookSearch";
+import { findInBookText } from "./bookTextSearch";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
 
 /**
@@ -379,6 +381,24 @@ export function searchSelections(
   return ResultAsync.fromPromise(findSelections(db, pdfId, query), storageFailure).andThen(
     (found) => (found ? ok(found) : err(notFound())),
   );
+}
+
+/**
+ * Every place the reader's words are in the book's own text.
+ *
+ * Reads `full_text` and nothing else: it is the largest column a book has (a
+ * couple of hundred KB for a real one), and this is the one answer that needs
+ * all of it. The matching itself is `findInBookText`'s.
+ */
+export function findInBook(
+  db: D1Database,
+  pdfId: string,
+  query: string,
+): ResultAsync<BookSearchResult, ServiceError> {
+  return ResultAsync.fromPromise(
+    drizzle(db).select({ fullText: pdfs.fullText }).from(pdfs).where(eq(pdfs.id, pdfId)).get(),
+    storageFailure,
+  ).andThen((book) => (book ? ok(findInBookText(book.fullText, query)) : err(notFound())));
 }
 
 /**

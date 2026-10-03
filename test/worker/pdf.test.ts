@@ -1249,6 +1249,98 @@ describe("GET /api/pdf/:pdfId/search", () => {
   });
 });
 
+describe("GET /api/pdf/:pdfId/find", () => {
+  async function find(pdfId: string, q: string) {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}/find?q=${encodeURIComponent(q)}`);
+  }
+
+  it("answers with the page and the text around each place the words are in the book", async () => {
+    const book = await uploadBook({
+      tag: "find-pages",
+      fileName: "find-pages.pdf",
+      pages: ["Workers run at the edge", "nothing here", "the edge again"],
+    });
+
+    const response = await find(book.id, "EDGE");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({
+      matches: [
+        { pageNumber: 1, before: "Workers run at the ", match: "edge", after: "" },
+        { pageNumber: 3, before: "the ", match: "edge", after: " again" },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("finds a word the extraction broke across two lines", async () => {
+    const book = await uploadBook({
+      tag: "find-lines",
+      fileName: "find-lines.pdf",
+      pages: ["これは日本\n語の本です"],
+    });
+
+    const { matches } = (await (await find(book.id, "日本語")).json()) as {
+      matches: { match: string }[];
+    };
+
+    expect(matches.map((match) => match.match)).toStrictEqual(["日本\n語"]);
+  });
+
+  it("does not look through another book", async () => {
+    const book = await uploadBook({ tag: "find-scope-a", fileName: "a.pdf", pages: ["apple"] });
+    await uploadBook({ tag: "find-scope-b", fileName: "b.pdf", pages: ["banana"] });
+
+    expect(await (await find(book.id, "banana")).json()).toStrictEqual({
+      matches: [],
+      truncated: false,
+    });
+  });
+
+  it("does not search the highlights or their chats, which the list's search does", async () => {
+    // Its name is the one thing it shares with that search
+    const book = await uploadBook({ tag: "find-not-chat", fileName: "c.pdf", pages: ["plain"] });
+    await apiFetch(`https://example.com/api/pdf/${book.id}/selections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedText: "only in a highlight",
+        pageNumber: 1,
+        positionData: { rects: [] },
+      }),
+    });
+
+    expect((await (await find(book.id, "highlight")).json()) as unknown).toStrictEqual({
+      matches: [],
+      truncated: false,
+    });
+  });
+
+  it("refuses a search of a book that is not there", async () => {
+    const response = await find("no-such-book", "Workers");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
+    });
+  });
+
+  it.each([
+    ["empty", ""],
+    ["only spaces", "   "],
+    ["longer than 200 characters", "a".repeat(201)],
+  ])("refuses a query that is %s", async (_, q) => {
+    const book = await uploadBook({ tag: `find-bad-${q.length}`, fileName: "d.pdf" });
+
+    const response = await find(book.id, q);
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "VALIDATION_ERROR",
+    );
+  });
+});
+
 describe("GET /api/pdf/:pdfId highlight geometry", () => {
   it("still serves a book whose stored positionData cannot be read", async () => {
     const book = await uploadBook({ tag: "sel-unreadable", fileName: "sel-unreadable.pdf" });
