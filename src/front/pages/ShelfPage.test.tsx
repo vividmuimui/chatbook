@@ -446,6 +446,23 @@ describe("ShelfPage", () => {
     expect(screen.getByRole("status")).toHaveTextContent("文字を読み取り中 2/3 ページ");
   });
 
+  it("takes the cancel button away once the last page has been read", async () => {
+    // Past the last page nothing listens for it: a button left up would do nothing
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: (_file, { onOcrProgress }) => {
+        onOcrProgress?.({ done: 3, total: 3 });
+        return new Promise<ExtractedPdfData>(() => {});
+      },
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+
+    expect(await screen.findByText("本を読み取り中...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "中止" })).not.toBeInTheDocument();
+  });
+
   it("stops reading a book by OCR when the reader cancels, and stores nothing", async () => {
     const sending = fakeUpload();
     const { container } = renderShelf({

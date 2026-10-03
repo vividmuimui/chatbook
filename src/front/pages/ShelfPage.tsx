@@ -628,7 +628,14 @@ export function ShelfPage({
     cancelImport.current = controller;
     return {
       signal: controller.signal,
-      onOcrProgress: (progress: OcrProgress) => setImporting({ phase: "recognizing", ...progress }),
+      // The last page read is the end of OCR, and of anything "中止" could
+      // stop: what follows — the cover, the outline — is the ordinary reading.
+      onOcrProgress: (progress: OcrProgress) =>
+        setImporting(
+          progress.done < progress.total
+            ? { phase: "recognizing", ...progress }
+            : { phase: "reading" },
+        ),
     };
   };
 

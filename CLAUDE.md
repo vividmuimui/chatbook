@@ -573,7 +573,7 @@ be iterated…」**（ネイティブの iterator を消してから本を開く
 - **tesseract.js は `tesseractEngine.ts` の中で動的 import する**。OCR する本を足さない読者は
   ライブラリ（17KB のチャンク）すら読まない
 - **進捗と中止**: 本棚の覆いに `recognizing` の段階が加わり「文字を読み取り中 12/200 ページ」と
-  数える（エンジンの読み込み中は 0/N）。この段階の間だけ覆いに「中止」ボタンが出て、押すと
+  数える（エンジンの読み込み中は 0/N。最後のページを読み終えたら「本を読み取り中...」へ戻す——その先に中止で止まるものは無い）。この段階の間だけ覆いに「中止」ボタンが出て、押すと
   `AbortController` が `readPagesByOcr` を止める——読みかけのページも待たない
   （`untilAborted`）。Tesseract の Worker は `terminate` し、エンジンの起動中に中止したら
   起動し終えたところで止める。中止は `AbortError` として `useOpenPdfBook` の結果に載り、
@@ -1115,14 +1115,14 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 
 守っているテストは次のとおり:
 
-| 何を                                             | どのテスト                                                                                   |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                           |
-| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                    |
-| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                              |
-| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                         |
-| OCR の段階の覆いと中止                           | 同上（「counts the pages up…」「stops reading a book by OCR…」「offers no way to cancel…」） |
-| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」 |
+| 何を                                             | どのテスト                                                                                                                    |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                                                            |
+| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                     |
+| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                                                               |
+| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                                                          |
+| OCR の段階の覆いと中止                           | 同上（「counts the pages up…」「takes the cancel button away…」「stops reading a book by OCR…」「offers no way to cancel…」） |
+| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」                                  |
 
 **E2E にドロップのテストは無い**（Playwright からファイルのドラッグを合成できない）。
 ドロップの経路を守っているのは jsdom だけ。
