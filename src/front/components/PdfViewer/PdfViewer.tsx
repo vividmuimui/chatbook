@@ -22,7 +22,7 @@ import { getSelectionFromTextLayer } from "../../lib/pdfTextMatcher";
 import { rangeWithinPage, selectionOnPage, type PageSelection } from "../../lib/selectionRects";
 import { citedPassageOnPage } from "../../lib/citedPassage";
 import { usePdfDocument } from "../../hooks/usePdfDocument";
-import { usePdfOutline } from "../../hooks/usePdfOutline";
+import { useReaderOutline } from "../../hooks/useReaderOutline";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useWebSearchAtom, zoomAtomFor } from "../../atoms/settingsAtom";
 import { nextZoom } from "../../lib/pageScale";
@@ -239,7 +239,7 @@ export function PdfViewer({
    */
   const offerFirst = isNarrow || chosenByFinger;
   const { pdfDocument, error: documentError } = usePdfDocument(pdfId, book);
-  const { outline, error: outlineError } = usePdfOutline(pdfDocument);
+  const { outline, error: outlineError, generation } = useReaderOutline(pdfId, pdfDocument);
   const { askAboutSelection, markSelection, saveError } = useAskAboutSelection(
     addHighlight,
     saveSelection,
@@ -831,6 +831,7 @@ export function PdfViewer({
                     error={outlineError}
                     currentPage={currentPage}
                     onJump={handleOutlineJump}
+                    generation={generation}
                   />
                 </div>
               </>
@@ -840,6 +841,7 @@ export function PdfViewer({
                 error={outlineError}
                 currentPage={currentPage}
                 onJump={handleOutlineJump}
+                generation={generation}
               />
             ))}
 
