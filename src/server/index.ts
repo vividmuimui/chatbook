@@ -5,6 +5,7 @@ import { configRoute } from "./routes/config";
 import { dropboxRoute } from "./routes/dropbox";
 import { healthRoute } from "./routes/health";
 import { pdfRoute } from "./routes/pdf";
+import { shelfRoute } from "./routes/shelf";
 
 type Env = {
   Bindings: {
@@ -48,6 +49,7 @@ const app = new Hono<Env>()
   .route("/", healthRoute)
   .route("/", pdfRoute)
   .route("/", dropboxRoute)
+  .route("/", shelfRoute)
   .notFound((c) =>
     c.json(
       { error: { code: "ROUTE_NOT_FOUND" satisfies ErrorCode, message: "No such API endpoint" } },

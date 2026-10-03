@@ -39,6 +39,12 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+/** Shelf entries the reader put away: a book's id or a Dropbox file's id. */
+export const hiddenBooks = sqliteTable("hidden_books", {
+  key: text("key").primaryKey(),
+  hiddenAt: text("hidden_at").notNull(),
+});
+
 export const selections = sqliteTable("selections", {
   id: text("id").primaryKey(),
   pdfId: text("pdf_id")
