@@ -205,6 +205,7 @@ describe("POST /api/pdf/open", () => {
       pageCount: 1,
       fullText: "test content",
       readingState: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -280,6 +281,7 @@ describe("POST /api/pdf/open", () => {
       pageCount: 209,
       fullText: "fresh text",
       readingState: null,
+      pageDirection: "ltr",
     });
 
     // The refreshed values must be persisted, not just echoed back
@@ -293,6 +295,7 @@ describe("POST /api/pdf/open", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -402,10 +405,12 @@ describe("POST /api/pdf/open outline", () => {
     });
   });
 
-  it("clears the stored outline when the same book is re-opened without one", async () => {
-    // Same tag, same bytes, same row: the second upload is the re-open path,
-    // and like the rest of the metadata the outline follows the latest
-    // extraction — here, a client that read no table of contents.
+  it("keeps the stored outline when the same book is re-opened without one", async () => {
+    // Same tag, same bytes, same row: the second upload is the re-open path.
+    // The bytes are the ones the stored outline came from, so a client that
+    // read none this time either failed to read it or never could — in which
+    // case the outline is one the model made (`/outline/generate`), and was
+    // paid for.
     const { id } = await uploadBook({
       tag: "outline-reopen",
       fileName: "reopened.pdf",
@@ -419,7 +424,25 @@ describe("POST /api/pdf/open outline", () => {
     });
 
     expect(second.id).toBe(id);
-    expect(await storedOutline(id)).toBeNull();
+    expect(await storedOutline(id)).toBe(JSON.stringify(OUTLINE));
+  });
+
+  it("replaces the stored outline with the one a re-open extracted", async () => {
+    const replacement = [{ title: "序章", pageNumber: 1 }];
+    const { id } = await uploadBook({
+      tag: "outline-replace",
+      fileName: "replaced.pdf",
+      pages: ["p1", "p2", "p3"],
+      outline: OUTLINE,
+    });
+    await uploadBook({
+      tag: "outline-replace",
+      fileName: "replaced.pdf",
+      pages: ["p1", "p2", "p3"],
+      outline: replacement,
+    });
+
+    expect(await storedOutline(id)).toBe(JSON.stringify(replacement));
   });
 });
 
@@ -467,6 +490,7 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
       hasOutline: true,
       selections: [],
       readingState: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -535,6 +559,7 @@ describe("GET /api/pdf/:pdfId", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      pageDirection: "ltr",
     });
   });
 
@@ -1806,6 +1831,7 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 3,
       fullText: "本文",
       readingState: null,
+      pageDirection: "ltr",
     });
     expect(await storedBookRow("book-idclock-new")).toStrictEqual({
       id: "book-idclock-new",
@@ -1849,6 +1875,7 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 4,
       fullText: "再抽出した本文",
       readingState: null,
+      pageDirection: "ltr",
     });
     expect(await storedBookRow("book-idclock-reopen")).toStrictEqual({
       id: "book-idclock-reopen",
@@ -1985,5 +2012,75 @@ describe("EPUB books", () => {
       }),
     });
     expect(response.status).toBe(400);
+  });
+});
+
+describe("PUT /api/pdf/:pdfId/page-direction", () => {
+  async function putDirection(pdfId: string, body: unknown) {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}/page-direction`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("turns a book the other way and hands the direction to whoever opens it next", async () => {
+    const { id } = await uploadBook({ tag: "direction-rtl", fileName: "manga.pdf" });
+
+    const response = await putDirection(id, { pageDirection: "rtl" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({ pageDirection: "rtl" });
+    const book = (await (await apiFetch(`https://example.com/api/pdf/${id}`)).json()) as {
+      pageDirection: string;
+    };
+    expect(book.pageDirection).toBe("rtl");
+  });
+
+  it("keeps the direction when the same book is added again", async () => {
+    const { id } = await uploadBook({ tag: "direction-reopen", fileName: "tategaki.pdf" });
+    await putDirection(id, { pageDirection: "rtl" });
+
+    const reopened = await uploadBook({ tag: "direction-reopen", fileName: "tategaki.pdf" });
+
+    expect(reopened).toMatchObject({ id, pageDirection: "rtl" });
+    const book = (await (await apiFetch(`https://example.com/api/pdf/${id}`)).json()) as {
+      pageDirection: string;
+    };
+    expect(book.pageDirection).toBe("rtl");
+  });
+
+  it("leaves the shelf's order alone", async () => {
+    const { id } = await uploadBook({ tag: "direction-order", fileName: "order.pdf" });
+    const before = (await env.DB.prepare("SELECT updated_at FROM pdfs WHERE id = ?")
+      .bind(id)
+      .first()) as { updated_at: string };
+
+    await putDirection(id, { pageDirection: "rtl" });
+
+    const after = (await env.DB.prepare("SELECT updated_at FROM pdfs WHERE id = ?")
+      .bind(id)
+      .first()) as { updated_at: string };
+    expect(after.updated_at).toBe(before.updated_at);
+  });
+
+  it("refuses a direction that is neither of the two", async () => {
+    const { id } = await uploadBook({ tag: "direction-bad", fileName: "bad.pdf" });
+
+    const response = await putDirection(id, { pageDirection: "ttb" });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "VALIDATION_ERROR", message: "Invalid request body: pageDirection" },
+    });
+  });
+
+  it("returns 404 for a book that is not on the shelf", async () => {
+    const response = await putDirection("no-such-book", { pageDirection: "rtl" });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
+    });
   });
 });

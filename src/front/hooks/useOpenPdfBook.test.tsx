@@ -53,11 +53,13 @@ async function openAPdf(
   {
     refuse = false,
     readingState = SAVED_PLACE,
+    pageDirection = "ltr",
     onProgress = () => {},
     outline = null,
   }: {
     refuse?: boolean;
     readingState?: BookDetail["readingState"];
+    pageDirection?: BookDetail["pageDirection"];
     onProgress?: (ratio: number) => void;
     outline?: ExtractedPdfData["outline"];
   } = {},
@@ -103,6 +105,7 @@ async function openAPdf(
       pageCount: PAGE_COUNT,
       fullText: FULL_TEXT,
       readingState,
+      pageDirection,
     });
   }
 
@@ -120,7 +123,7 @@ describe("useOpenPdfBook", () => {
   it("files the uploaded book, with the place it was left at, under the key the reader opens it by", async () => {
     // The seed is what the reader opens: dropping the place here would send a
     // book that was read on another device back to page 1.
-    const { cache, outcome } = await openAPdf(COVER, { outline: OUTLINE });
+    const { cache, outcome } = await openAPdf(COVER, { outline: OUTLINE, pageDirection: "rtl" });
 
     expect(outcome._unsafeUnwrap()).toBe(PDF_ID);
     expect(cache.get(bookKey(PDF_ID))?.data).toStrictEqual({
@@ -134,6 +137,9 @@ describe("useOpenPdfBook", () => {
       hasOutline: true,
       selections: [],
       readingState: SAVED_PLACE,
+      // Likewise the way its pages turn: a right-opening book added again
+      // must not open turning left until the book is read back.
+      pageDirection: "rtl",
     } satisfies BookDetail);
   });
 
@@ -150,6 +156,7 @@ describe("useOpenPdfBook", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      pageDirection: "ltr",
     } satisfies BookDetail);
   });
 

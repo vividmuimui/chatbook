@@ -96,6 +96,7 @@ export function useOpenPdfBook(
           // The place travels with the upload's answer, so a book that was read
           // on another device opens where it was left rather than at page 1.
           readingState: result.readingState,
+          pageDirection: result.pageDirection,
         };
         // The same reasoning as the cache seed, for the bytes rather than the
         // book: the viewer this navigates to would otherwise ask the API for

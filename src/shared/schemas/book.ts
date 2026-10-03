@@ -13,6 +13,29 @@ export const bookFormatSchema = z.enum(["pdf", "epub"]);
 
 export type BookFormat = z.infer<typeof bookFormatSchema>;
 
+/**
+ * Which way a book's pages turn.
+ *
+ * `ltr` opens on the left and is read left to right — a book set horizontally,
+ * and every book stored before there was a choice. `rtl` opens on the right: a
+ * book set vertically in Japanese, or a manga, whose next page is on the left.
+ * It is the reader's to choose, book by book; a PDF does not say.
+ *
+ * What it changes is only where "previous" and "next" are on the screen. What
+ * a turn means — which page comes next — is the same both ways.
+ */
+export const pageDirectionSchema = z.enum(["ltr", "rtl"]);
+
+export type PageDirection = z.infer<typeof pageDirectionSchema>;
+
+/** What a device sends to turn a book the other way. */
+export const savePageDirectionRequestSchema = z.object({ pageDirection: pageDirectionSchema });
+
+export type SavePageDirectionRequest = z.infer<typeof savePageDirectionRequestSchema>;
+
+/** The direction as the server now holds it. */
+export const pageDirectionSavedSchema = z.object({ pageDirection: pageDirectionSchema });
+
 /** A book as the shelf shows it. */
 export const bookSummarySchema = z.object({
   id: z.string(),
@@ -135,6 +158,9 @@ export const pdfMetadataSchema = z.object({
   // Carried here too: the picker seeds the cache from this answer, and a seed
   // without the place would open an already-read book at page 1.
   readingState: readingStateSchema.nullable(),
+  // Likewise: a right-opening book added again would otherwise open turning
+  // the wrong way until the book was read back.
+  pageDirection: pageDirectionSchema,
 });
 
 export type PdfMetadata = z.infer<typeof pdfMetadataSchema>;
@@ -152,6 +178,7 @@ export const bookDetailSchema = z.object({
   hasOutline: z.boolean(),
   selections: z.array(selectionHighlightSchema),
   readingState: readingStateSchema.nullable(),
+  pageDirection: pageDirectionSchema,
 });
 
 export type BookDetail = z.infer<typeof bookDetailSchema>;
@@ -189,3 +216,8 @@ export const bookDeletedSchema = z.object({ deleted: z.literal(true) });
 export const thumbnailStoredSchema = z.object({ stored: z.literal(true) });
 
 export const outlineStoredSchema = z.object({ stored: z.literal(true) });
+
+/** What asking the model for a table of contents stored. */
+export const generatedOutlineSchema = z.object({ outline: bookOutlineSchema });
+
+export type GeneratedOutline = z.infer<typeof generatedOutlineSchema>;

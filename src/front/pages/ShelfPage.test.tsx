@@ -98,6 +98,7 @@ const STORED_BOOK = {
   pageCount: 209,
   fullText: "エッジはサーバーレス実行基盤です。",
   readingState: null,
+  pageDirection: "ltr",
 };
 
 /** Hands the hidden input a file, the way clicking the tile ends up doing. */
