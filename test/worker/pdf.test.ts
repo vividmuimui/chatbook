@@ -635,6 +635,8 @@ describe("GET /api/pdfs", () => {
       pageCount: 1,
       updatedAt: expect.any(String),
       hasThumbnail: true,
+      // No Dropbox folder is chosen in this suite, so the book is R2's alone.
+      inDropbox: false,
     });
     expect(uncovered?.hasThumbnail).toBe(false);
   });

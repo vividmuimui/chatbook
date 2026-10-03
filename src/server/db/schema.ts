@@ -24,6 +24,16 @@ export const pdfs = sqliteTable("pdfs", {
   lastReadBookChat: integer("last_read_book_chat", { mode: "boolean" }),
   lastReadOutlineOpen: integer("last_read_outline_open", { mode: "boolean" }),
   lastReadChatPanelOpen: integer("last_read_chat_panel_open", { mode: "boolean" }),
+  // Dropbox's id for the file this book is ("id:..."). Null for books that live
+  // only in R2. When set, Dropbox holds the book and R2 is a copy of it that
+  // `/file` refills from Dropbox if it is gone.
+  dropboxId: text("dropbox_id").unique(),
+});
+
+/** Settings changed from the screen. One row per key (`dropbox_folder`). */
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
 });
 
 export const selections = sqliteTable("selections", {

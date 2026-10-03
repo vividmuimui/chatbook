@@ -27,6 +27,12 @@ export default defineConfig({
             AUTH_USERNAME: "test-user",
             AUTH_PASSWORD: "test-password",
             AUTH_SESSION_SECRET: "test-session-secret",
+            // Dropbox is reached only once a folder is chosen, so books in
+            // the other suites stay in R2 alone; `dropbox.test.ts` chooses one
+            // and answers Dropbox's hosts through MSW.
+            DROPBOX_APP_KEY: "test-app-key",
+            DROPBOX_APP_SECRET: "test-app-secret",
+            DROPBOX_REFRESH_TOKEN: "test-refresh-token",
           },
         },
       };

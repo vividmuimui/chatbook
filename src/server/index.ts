@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { ErrorCode } from "../shared/schemas/error";
 import { authRoute, requireSession } from "./routes/auth";
 import { configRoute } from "./routes/config";
+import { dropboxRoute } from "./routes/dropbox";
 import { healthRoute } from "./routes/health";
 import { pdfRoute } from "./routes/pdf";
 
@@ -17,6 +18,10 @@ type Env = {
     AUTH_USERNAME: string;
     AUTH_PASSWORD: string;
     AUTH_SESSION_SECRET: string;
+    // Optional: a deploy without them keeps its books in R2 alone (`dropboxCredentials`).
+    DROPBOX_APP_KEY?: string;
+    DROPBOX_APP_SECRET?: string;
+    DROPBOX_REFRESH_TOKEN?: string;
   };
 };
 
@@ -42,6 +47,7 @@ const app = new Hono<Env>()
   .route("/", configRoute)
   .route("/", healthRoute)
   .route("/", pdfRoute)
+  .route("/", dropboxRoute)
   .notFound((c) =>
     c.json(
       { error: { code: "ROUTE_NOT_FOUND" satisfies ErrorCode, message: "No such API endpoint" } },

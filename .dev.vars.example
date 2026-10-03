@@ -28,3 +28,11 @@ AUTH_PASSWORD=demo
 # 本番はランダムな長い値にすること。入れ替えると全端末がログアウトする
 # (端末を失くしたときの唯一の取り消し手段)。
 AUTH_SESSION_SECRET=local-development-only
+
+# Dropbox。3 つとも埋めると、本棚が設定したフォルダの PDF を並べ、
+# アップロードした本をそのフォルダへ書き込む。どれかが空なら Dropbox を使わず
+# これまでどおり R2 だけに置く。取得手順は README の「Dropbox と連携する」。
+# 使わないときも行ごと残して値だけ空にすること (worker-configuration.d.ts の差分になる)。
+DROPBOX_APP_KEY=
+DROPBOX_APP_SECRET=
+DROPBOX_REFRESH_TOKEN=

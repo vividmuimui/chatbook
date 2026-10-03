@@ -5,11 +5,19 @@ import useSWR from "swr";
 import type { ResultAsync } from "neverthrow";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { shelfLayoutAtom } from "../atoms/settingsAtom";
+import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
 import { pickDroppedPdf } from "../lib/droppedPdf";
+import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import { bookDeletedSchema, bookListSchema, type BookSummary } from "../../shared/schemas/book";
+import {
+  dropboxFolderListingSchema,
+  dropboxSettingsSchema,
+  type DropboxFile,
+  type DropboxFolderListing,
+} from "../../shared/schemas/dropbox";
 
 /** Cache key of the shelf, and the endpoint it is read from. */
 const SHELF_KEY = "/api/pdfs";
@@ -23,6 +31,21 @@ export type DeleteBook = (id: string) => ResultAsync<unknown, ApiError>;
 const requestBookDeletion: DeleteBook = (id) =>
   resultFetcher(`/api/pdf/${id}`, bookDeletedSchema, { method: "DELETE" });
 
+/**
+ * Cache key of the Dropbox folder's books that are not on the shelf yet. Read
+ * apart from the shelf so the books already on it never wait for Dropbox.
+ */
+const DROPBOX_KEY = "/api/dropbox/files";
+
+const fetchDropboxFolder = () => fetcher(DROPBOX_KEY, dropboxFolderListingSchema);
+
+const requestFolderSave: SaveDropboxFolder = (folder) =>
+  resultFetcher("/api/dropbox/settings", dropboxSettingsSchema, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder }),
+  });
+
 interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
@@ -30,6 +53,9 @@ interface ShelfPageProps {
   extract?: (file: File) => Promise<ExtractedPdfData>;
   /** The upload's own request; injectable so tests can drive its progress. */
   createUploadRequest?: () => XMLHttpRequest;
+  loadDropboxFolder?: () => Promise<DropboxFolderListing>;
+  saveDropboxFolder?: SaveDropboxFolder;
+  downloadDropbox?: DownloadDropboxFile;
 }
 
 /**
@@ -41,6 +67,7 @@ interface ShelfPageProps {
  * shelf that has hung.
  */
 type Importing =
+  | { phase: "downloading"; ratio: number }
   | { phase: "reading" }
   | { phase: "uploading"; ratio: number }
   | { phase: "storing" };
@@ -48,6 +75,8 @@ type Importing =
 /** What the reader is told while a book is on its way in. */
 function importWording(importing: Importing): string {
   switch (importing.phase) {
+    case "downloading":
+      return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
       return "PDFを読み取り中...";
     case "uploading":
@@ -170,6 +199,47 @@ function BookRow({
 }
 
 /**
+ * A PDF in the Dropbox folder that has not been opened here yet. It has no
+ * cover and no page count until it has been read, so it says where it is
+ * instead — and looks unlike the books, so it is not mistaken for one.
+ */
+function DropboxFileCard({
+  file,
+  onOpen,
+}: {
+  file: DropboxFile;
+  onOpen: (file: DropboxFile) => void;
+}) {
+  const title = bookTitle(file.name);
+  // The folder under the chosen one, or nothing for a file at its top.
+  const subfolder = file.path.slice(0, file.path.lastIndexOf("/"));
+
+  return (
+    <button
+      type="button"
+      aria-label={`${title} を Dropbox から開く`}
+      onClick={() => onOpen(file)}
+      className="group flex w-full flex-col text-left cursor-pointer focus:outline-none"
+    >
+      <div className="relative aspect-3/4 w-full overflow-hidden rounded-r-md rounded-l-sm border-l-4 border-sky-300 shadow-md transition-all group-hover:-translate-y-1 group-hover:shadow-xl group-focus-visible:ring-2 group-focus-visible:ring-blue-500">
+        <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-sky-500 to-blue-700 p-3">
+          <span className="line-clamp-5 text-center text-xs font-medium text-white/90">
+            {title}
+          </span>
+        </div>
+        <span className="absolute left-1.5 top-1.5 rounded bg-white/85 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+          Dropbox
+        </span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{title}</p>
+      <p className="truncate text-xs text-gray-500">
+        {subfolder ? `${subfolder} · ` : ""}未読み込み
+      </p>
+    </button>
+  );
+}
+
+/**
  * The way to add a book, sitting where books do.
  *
  * The input it drives carries no name of its own, so the button is what a
@@ -228,11 +298,21 @@ export function ShelfPage({
   deleteBook = requestBookDeletion,
   extract,
   createUploadRequest,
+  loadDropboxFolder = fetchDropboxFolder,
+  saveDropboxFolder = requestFolderSave,
+  downloadDropbox = downloadDropboxFile,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { data: books, error: loadError, mutate } = useSWR(SHELF_KEY, loadBooks);
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
+  const {
+    data: dropbox,
+    error: dropboxError,
+    mutate: mutateDropbox,
+  } = useSWR(DROPBOX_KEY, loadDropboxFolder);
+  const dropboxFiles = dropbox?.state === "ready" ? dropbox.files : [];
+  const [choosingFolder, setChoosingFolder] = useState(false);
   const [importing, setImporting] = useState<Importing | null>(null);
   const openFile = useOpenPdfBook(
     extract,
@@ -279,6 +359,31 @@ export function ShelfPage({
     );
   };
 
+  /**
+   * Brings a book in the Dropbox folder down, reads it, and opens it — the same
+   * way in as a file from disk once the bytes are here. The server takes the
+   * bytes from Dropbox itself, so the reader does not send them back up.
+   */
+  const handleDropboxFile = async (entry: DropboxFile) => {
+    if (importing) return;
+    setActionError(null);
+    setImporting({ phase: "downloading", ratio: 0 });
+
+    const outcome = await downloadDropbox(entry, (ratio) =>
+      setImporting({ phase: "downloading", ratio }),
+    ).andThen((file) => {
+      setImporting({ phase: "reading" });
+      return openFile(file, entry.dropboxId);
+    });
+    outcome.match(
+      (pdfId) => void openBook(pdfId),
+      (failure) => {
+        setImporting(null);
+        setActionError(`Dropboxの本を開けませんでした: ${failure.message}`);
+      },
+    );
+  };
+
   /** Whether this drag is carrying something the shelf could take in. */
   const carriesFiles = (e: React.DragEvent) => e.dataTransfer.types.includes("Files");
 
@@ -307,20 +412,35 @@ export function ShelfPage({
     // The server has already dropped it, so re-reading the shelf would only
     // confirm what this list can work out for itself.
     await mutate((current) => current?.filter((b) => b.id !== book.id), { revalidate: false });
+    // Its Dropbox file is still in the folder, and goes back to waiting there.
+    if (book.inDropbox) void mutateDropbox();
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="flex h-12 items-center border-b border-gray-200 bg-white px-4">
+      <header className="flex h-12 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4">
         <h1 className="text-lg font-bold text-gray-800">chatbook</h1>
-        <button
-          type="button"
-          aria-pressed={compact}
-          onClick={() => setLayout(compact ? "grid" : "compact")}
-          className="ml-auto rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
-        >
-          コンパクト表示
-        </button>
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          {/* Only where the deploy holds Dropbox credentials. A folder that
+              could not be read is still something to change from here. */}
+          {(dropboxError || (dropbox && dropbox.state !== "unavailable")) && (
+            <button
+              type="button"
+              onClick={() => setChoosingFolder(true)}
+              className="min-w-0 truncate rounded-md border border-gray-300 px-2.5 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-50"
+            >
+              {dropbox?.state === "ready" ? `Dropbox: ${dropbox.folder}` : "Dropboxフォルダを設定"}
+            </button>
+          )}
+          <button
+            type="button"
+            aria-pressed={compact}
+            onClick={() => setLayout(compact ? "grid" : "compact")}
+            className="shrink-0 rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
+          >
+            コンパクト表示
+          </button>
+        </div>
       </header>
 
       <main
@@ -350,10 +470,15 @@ export function ShelfPage({
         )}
 
         {error && <p className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-600">{error}</p>}
+        {dropboxError && (
+          <p className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-600">
+            Dropboxのフォルダを読めませんでした: {(dropboxError as Error).message}
+          </p>
+        )}
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
-        {books?.length === 0 && (
+        {books?.length === 0 && dropboxFiles.length === 0 && (
           <div className="pt-10 pb-8 text-center">
             <p className="text-lg font-medium text-gray-700">まだ本がありません</p>
             <p className="mt-1 text-sm text-gray-500">
@@ -383,6 +508,11 @@ export function ShelfPage({
               )}
             </li>
           ))}
+          {dropboxFiles.map((file) => (
+            <li key={file.dropboxId}>
+              <DropboxFileCard file={file} onOpen={handleDropboxFile} />
+            </li>
+          ))}
           <li>
             <AddBookTile
               onFileChosen={handleFile}
@@ -403,11 +533,28 @@ export function ShelfPage({
 
       {bookPendingDeletion && (
         <ConfirmDialog
-          message={`「${bookTitle(bookPendingDeletion.fileName)}」を削除しますか？ハイライトとチャット履歴も削除されます。`}
+          message={
+            `「${bookTitle(bookPendingDeletion.fileName)}」を削除しますか？ハイライトとチャット履歴も削除されます。` +
+            (bookPendingDeletion.inDropbox
+              ? "Dropbox のファイルは削除されず、未読み込みの本として本棚に残ります。"
+              : "")
+          }
           dialogLabel="本の削除"
           confirmLabel="削除する"
           onConfirm={() => removeBook(bookPendingDeletion)}
           onCancel={() => setBookPendingDeletion(null)}
+        />
+      )}
+
+      {choosingFolder && (
+        <DropboxFolderDialog
+          current={dropbox?.state === "ready" ? dropbox.folder : null}
+          save={saveDropboxFolder}
+          onSaved={() => {
+            setChoosingFolder(false);
+            void mutateDropbox();
+          }}
+          onCancel={() => setChoosingFolder(false)}
         />
       )}
     </div>

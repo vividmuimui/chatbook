@@ -2,11 +2,14 @@ import { describe, it, expect, afterEach, vi } from "vite-plus/test";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
-import { errAsync, okAsync } from "neverthrow";
+import { ResultAsync, errAsync, okAsync } from "neverthrow";
 import { ShelfPage, type DeleteBook } from "./ShelfPage";
 import { ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import type { BookSummary } from "../../shared/schemas/book";
+import type { DropboxFile, DropboxFolderListing } from "../../shared/schemas/dropbox";
+import type { DownloadDropboxFile } from "../lib/dropboxDownload";
+import type { SaveDropboxFolder } from "../components/DropboxFolderDialog";
 import { SwrTestCache } from "../../test/swrTestCache";
 import { fakeUpload } from "../../test/fakeUpload";
 
@@ -17,6 +20,7 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
     pageCount: 209,
     updatedAt: "2026-01-01T00:00:00Z",
     hasThumbnail: false,
+    inDropbox: false,
     ...overrides,
   };
 }
@@ -26,12 +30,21 @@ function renderShelf(props: {
   deleteBook?: DeleteBook;
   extract?: (file: File) => Promise<ExtractedPdfData>;
   createUploadRequest?: () => XMLHttpRequest;
+  loadDropboxFolder?: () => Promise<DropboxFolderListing>;
+  saveDropboxFolder?: SaveDropboxFolder;
+  downloadDropbox?: DownloadDropboxFile;
 }) {
+  // A deploy without Dropbox unless the test says otherwise, so the shelf
+  // never reaches for a real endpoint jsdom has no server behind.
+  const withDropbox = {
+    loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({ state: "unavailable" }),
+    ...props,
+  };
   return render(
     <SwrTestCache>
       <MemoryRouter>
         <Routes>
-          <Route path="/" element={<ShelfPage {...props} />} />
+          <Route path="/" element={<ShelfPage {...withDropbox} />} />
           <Route path="/books/:pdfId" element={<ReaderStub />} />
         </Routes>
       </MemoryRouter>
@@ -458,5 +471,195 @@ describe("ShelfPage", () => {
 
       expect(await screen.findByText("リーダー: book-1")).toBeInTheDocument();
     });
+  });
+});
+
+const DROPBOX_BOOK: DropboxFile = {
+  dropboxId: "id:zig",
+  name: "Zig 入門.pdf",
+  path: "/lang/Zig 入門.pdf",
+  size: 1000,
+};
+
+const FOLDER_WITH_ONE_BOOK = async (): Promise<DropboxFolderListing> => ({
+  state: "ready",
+  folder: "/Books",
+  files: [DROPBOX_BOOK],
+});
+
+/**
+ * A download the test steps through: it reports the shares it is told to,
+ * then hands back the file — or refuses.
+ */
+function steppedDownload() {
+  let settle: (file: File) => void = () => {};
+  let progress: (ratio: number) => void = () => {};
+  const asked: DropboxFile[] = [];
+  const download: DownloadDropboxFile = (file, onProgress) => {
+    asked.push(file);
+    progress = onProgress;
+    return ResultAsync.fromSafePromise(
+      new Promise<File>((resolve) => {
+        settle = resolve;
+      }),
+    );
+  };
+  return {
+    asked,
+    download,
+    reports: (ratio: number) => act(() => progress(ratio)),
+    finishes: () =>
+      act(() => settle(new File(["%PDF-1.7"], DROPBOX_BOOK.name, { type: "application/pdf" }))),
+  };
+}
+
+describe("ShelfPage with Dropbox", () => {
+  it("lines the folder's unread books up after the shelf's own", async () => {
+    renderShelf({ loadBooks: TWO_BOOKS, loadDropboxFolder: FOLDER_WITH_ONE_BOOK });
+
+    const card = await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" });
+    expect(card).toHaveTextContent("/lang · 未読み込み");
+
+    const cards = screen
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+    expect(cards.indexOf("Rust 入門 を開く")).toBeLessThan(
+      cards.indexOf("Zig 入門 を Dropbox から開く"),
+    );
+  });
+
+  it("does not call a shelf empty while the folder has books in it", async () => {
+    renderShelf({ loadBooks: async () => [], loadDropboxFolder: FOLDER_WITH_ONE_BOOK });
+
+    await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" });
+    expect(screen.queryByText("まだ本がありません")).not.toBeInTheDocument();
+  });
+
+  it("downloads, reads and stores a Dropbox book, then opens it", async () => {
+    const fetching = steppedDownload();
+    const sending = fakeUpload();
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+      downloadDropbox: fetching.download,
+      extract: readsFine,
+      createUploadRequest: () => sending.request,
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" }),
+    );
+    expect(fetching.asked).toStrictEqual([DROPBOX_BOOK]);
+    fetching.reports(0.45);
+    expect(screen.getByRole("status")).toHaveTextContent("Dropboxから取得中 45%");
+
+    fetching.finishes();
+    await waitFor(() => expect(sending.openedWith()).not.toBeNull());
+    // The server fetches the bytes from Dropbox itself; only the id goes up.
+    const body = sending.sentBody() as FormData;
+    expect(body.get("dropboxId")).toBe("id:zig");
+    expect(body.get("file")).toBeNull();
+
+    act(() => {
+      sending.answers(STORED_BOOK);
+    });
+    expect(await screen.findByText(`リーダー: ${STORED_ID}`)).toBeInTheDocument();
+  });
+
+  it("stays on the shelf and says why when the download fails", async () => {
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+      downloadDropbox: () => errAsync(new ApiError("Dropbox is down", "DROPBOX_ERROR", 502)),
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" }),
+    );
+
+    expect(
+      await screen.findByText("Dropboxの本を開けませんでした: Dropbox is down"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("says the folder could not be read without taking the shelf down", async () => {
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: async () => {
+        throw new Error("No folder at /Books in Dropbox");
+      },
+    });
+
+    expect(
+      await screen.findByText(
+        "Dropboxのフォルダを読めませんでした: No folder at /Books in Dropbox",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
+    // Still the way to fix it.
+    expect(screen.getByRole("button", { name: "Dropboxフォルダを設定" })).toBeInTheDocument();
+  });
+
+  it("offers no folder setting on a deploy without Dropbox", async () => {
+    renderShelf({ loadBooks: TWO_BOOKS });
+
+    await screen.findByRole("button", { name: "Rust 入門 を開く" });
+    expect(screen.queryByRole("button", { name: /Dropbox/ })).not.toBeInTheDocument();
+  });
+
+  it("saves the folder the reader types and reads it again", async () => {
+    const saved: string[] = [];
+    let listing: DropboxFolderListing = { state: "no-folder" };
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: async () => listing,
+      saveDropboxFolder: (folder) => {
+        saved.push(folder);
+        listing = { state: "ready", folder: "/Books", files: [DROPBOX_BOOK] };
+        return okAsync({ available: true, folder: "/Books" });
+      },
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Dropboxフォルダを設定" }));
+    await userEvent.type(screen.getByRole("textbox"), "/Books");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(saved).toStrictEqual(["/Books"]);
+    expect(await screen.findByRole("button", { name: "Dropbox: /Books" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and says so when Dropbox has no such folder", async () => {
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: async () => ({ state: "no-folder" }),
+      saveDropboxFolder: () => errAsync(new ApiError("No folder", "DROPBOX_FOLDER_NOT_FOUND", 400)),
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Dropboxフォルダを設定" }));
+    await userEvent.type(screen.getByRole("textbox"), "/Typo");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("Dropbox にそのフォルダがありません")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("tells the reader the Dropbox file stays when a Dropbox book is deleted", async () => {
+    renderShelf({
+      loadBooks: async () => [book({ inDropbox: true })],
+      deleteBook: recordingDeleter().deleteBook,
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Cloudflare Workers 入門 を削除" }),
+    );
+
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "Dropbox のファイルは削除されず、未読み込みの本として本棚に残ります。",
+    );
   });
 });
