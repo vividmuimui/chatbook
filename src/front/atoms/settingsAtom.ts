@@ -2,6 +2,11 @@ import { atomWithStorage, createJSONStorage } from "jotai/utils";
 import { z } from "zod";
 import type { KeybindingMode } from "../lib/keybindings";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/pageScale";
+import {
+  DEFAULT_EPUB_TYPOGRAPHY,
+  epubTypographySchema,
+  type EpubTypography,
+} from "../lib/epubTypography";
 
 const keybindingModeSchema = z.enum(["none", "vim", "emacs"]);
 
@@ -81,6 +86,21 @@ export const shelfLayoutAtom = atomWithStorage<ShelfLayout>(
   "chatbook:shelf-layout",
   "grid",
   validatedStorage(z.enum(["grid", "compact"])),
+  { getOnInit: true },
+);
+
+/**
+ * How the reader likes an EPUB drawn: type size, leading, alignment, face and
+ * margins, as a Kindle's 「Aa」 menu has them.
+ *
+ * Kept across books and sessions — it is the reader's taste, not a property of
+ * one book. Each field falls back to its own default (`epubTypographySchema`),
+ * so a value the schema no longer accepts costs that one choice, not all.
+ */
+export const epubTypographyAtom = atomWithStorage<EpubTypography>(
+  "chatbook:epub-typography",
+  DEFAULT_EPUB_TYPOGRAPHY,
+  validatedStorage(epubTypographySchema),
   { getOnInit: true },
 );
 
