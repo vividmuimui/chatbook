@@ -15,6 +15,7 @@ import {
 } from "../atoms/chatAtom";
 import { PdfViewer } from "../components/PdfViewer/PdfViewer";
 import { EpubViewer } from "../components/EpubViewer/EpubViewer";
+import { EpubTypographyMenu } from "../components/EpubViewer/EpubTypographyMenu";
 import { PageToolbar } from "../components/PdfViewer/PageToolbar";
 import { ChatArea } from "../components/ChatArea/ChatArea";
 import { ChatSheet } from "../components/ChatArea/ChatSheet";
@@ -282,6 +283,10 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
               )}
             </>
           )}
+          {/* In both layouts, beside the settings: the header is the one strip
+              a phone keeps on screen, and it has room for two icons. A PDF has
+              none — its type is part of its pages. */}
+          {book?.format === "epub" && <EpubTypographyMenu />}
           <SettingsMenu />
         </div>
       </header>
