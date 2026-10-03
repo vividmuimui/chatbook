@@ -1,4 +1,4 @@
-import { locateQuoteInSpans } from "./citedPassage";
+import { locateQuoteInSpans, type PassageContext } from "./citedPassage";
 
 /**
  * Where a passage sits in a drawn chapter, as offsets into its text.
@@ -80,11 +80,12 @@ export function rangeOfTextOffsets(root: Element, { start, end }: TextOffsets): 
  * Matched the way a PDF page is (`locateQuoteInSpans`), with the chapter's text
  * nodes standing in for pdf.js' text items.
  */
-export function rangeOfQuote(root: Element, quote: string): Range | null {
+export function rangeOfQuote(root: Element, quote: string, context?: PassageContext): Range | null {
   const nodes = textNodesOf(root);
   const location = locateQuoteInSpans(
     nodes.map((node) => node.data),
     quote,
+    context,
   );
   if (!location) return null;
 

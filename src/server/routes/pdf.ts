@@ -10,6 +10,7 @@ import {
   deletePdf,
   saveReadingState,
   searchSelections,
+  findInBook,
   thumbnailObjectKey,
   BOOK_CONTENT_TYPES,
   readFormat,
@@ -31,6 +32,7 @@ import {
   createSelectionRequestSchema,
   selectionSearchQuerySchema,
 } from "../../shared/schemas/selection";
+import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
 import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { storageFailure, type ServiceError } from "../services/serviceError";
@@ -580,6 +582,16 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return found.match(
           (selectionIds) => c.json({ selectionIds }),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
+      })
+      // Looks through the book's own text — its pages, or an EPUB's chapters —
+      // for the reader's words. Not `/search`, which is the highlight list's.
+      .get("/pdf/:pdfId/find", validate("query", bookSearchQuerySchema), async (c) => {
+        const found = await findInBook(c.env.DB, c.req.param("pdfId"), c.req.valid("query").q);
+
+        return found.match(
+          (result) => c.json(result),
           (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
         );
       })

@@ -7,7 +7,9 @@ export type ViewerAction =
   | "lastPage"
   | "scrollDown"
   | "scrollUp"
-  | "toggleOutline";
+  | "toggleOutline"
+  /** Puts the search through the book's text up, with its box ready to type in. */
+  | "openSearch";
 
 /** The parts of a KeyboardEvent the resolver needs, so it stays DOM-free. */
 export interface KeyStroke {
@@ -84,6 +86,10 @@ function resolveVim(stroke: KeyStroke, pending: string | null): ResolveResult {
       return { action: "toggleOutline", pending: null };
     case "G":
       return { action: "lastPage", pending: null };
+    // vim's own search. Only vim's: emacs' C-s is the browser's save, and
+    // taking a key the browser answers is not something to do unasked.
+    case "/":
+      return { action: "openSearch", pending: null };
     case "g":
       return { action: null, pending: "g" };
     default:
@@ -159,6 +165,7 @@ export const KEYBINDING_HELP: Record<Exclude<KeybindingMode, "none">, [string, s
     ["j", "下にスクロール"],
     ["k", "上にスクロール"],
     ["t", "目次の開閉"],
+    ["/", "本文を検索"],
     ["gg", "最初のページ"],
     ["G", "最後のページ"],
   ],

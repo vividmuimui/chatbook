@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
+import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
 import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail } from "../../../shared/schemas/book";
@@ -108,6 +109,7 @@ export function EpubViewer({
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const citedPassage = useAtomValue(citedPassageAtom);
   const setCitedPassage = useSetAtom(citedPassageAtom);
+  const setBookSearchOpen = useSetAtom(bookSearchOpenAtom);
   const activeSelection = useAtomValue(activeSelectionAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
   const typography = useAtomValue(epubTypographyAtom);
@@ -228,7 +230,7 @@ export function EpubViewer({
       setCitedPassage(null);
       return;
     }
-    const range = rangeOfQuote(chapterElement, citedPassage.text);
+    const range = rangeOfQuote(chapterElement, citedPassage.text, citedPassage.context);
     setCitedSelection(range ? selectionOnPage(range, page) : null);
   }, [citedPassage, chapterElement, currentPage, drawnSize, typography, setCitedPassage]);
 
@@ -293,9 +295,12 @@ export function EpubViewer({
         case "toggleOutline":
           setOutlineOpen((open) => !open);
           break;
+        case "openSearch":
+          setBookSearchOpen(true);
+          break;
       }
     },
-    [pageCount, setCurrentPage, setOutlineOpen],
+    [pageCount, setCurrentPage, setOutlineOpen, setBookSearchOpen],
   );
   useKeyboardShortcuts(handleShortcut);
 

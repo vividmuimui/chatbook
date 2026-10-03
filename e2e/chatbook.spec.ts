@@ -1241,6 +1241,51 @@ test("the outline lists chapters and jumps to the selected one", async ({ page }
   });
 });
 
+/** The top of the drawn line holding `text`, and of the search mark, in the window. */
+async function markAndLineTops(page: Page, text: string) {
+  return page.evaluate((wanted) => {
+    const mark = document.querySelector(".citedPassage")?.getBoundingClientRect();
+    const line = Array.from(document.querySelectorAll(".textLayer span"))
+      .find((span) => span.textContent?.includes(wanted))
+      ?.getBoundingClientRect();
+    return mark && line ? { mark: mark.top, line: line.top } : null;
+  }, text);
+}
+
+test("searching the book's text turns to the page a result is on and marks that occurrence", async ({
+  page,
+}) => {
+  await openTestBook(page);
+
+  // Every body line of a page opens with the same words, so the result the
+  // reader picks — not the first time they are on the page — is what is marked
+  const searchedPage = PAGE_COUNT - 1;
+  const { body } = pageText(searchedPage);
+  const [words] = body[0].split("。");
+
+  await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
+  const search = page.getByRole("region", { name: "本文の検索" });
+  await search.getByLabel("本文から探す語").fill(words);
+  await search.getByLabel("本文から探す語").press("Enter");
+
+  await expect(search.getByRole("status")).toHaveText(`${body.length}件`, { timeout: 30000 });
+  await search
+    .getByRole("button", { name: new RegExp(`^p\\.${searchedPage}`) })
+    .nth(2)
+    .click();
+
+  await expect(drawnPage(page, searchedPage).first()).toBeVisible({ timeout: 60000 });
+  await expect(page).toHaveURL(new RegExp(`[?&]page=${searchedPage}(&|$)`));
+  await expect(page.locator(".citedPassage").first()).toBeVisible({ timeout: 30000 });
+
+  const tops = await markAndLineTops(page, body[2].split("。")[1]);
+  expect(tops).not.toBeNull();
+  expect(Math.abs(tops!.mark - tops!.line)).toBeLessThan(6);
+
+  // Beside the page, the list stays for the next result
+  await expect(search).toBeVisible();
+});
+
 test("a folded outline stays folded through a reload", async ({ page }) => {
   // The outline is the book's own answer rather than part of the URL, so what
   // brings it back folded is the save landing before the reload.
@@ -1645,7 +1690,7 @@ test("searching the list narrows it to what the server matched", async ({ page }
   await chatPanel.getByLabel("ハイライトを検索").fill(wanted.slice(0, 6));
   await expect(chatPanel.getByText("ハイライト 2件", { exact: true })).toBeVisible();
 
-  await chatPanel.getByRole("button", { name: "検索" }).click();
+  await chatPanel.getByRole("button", { name: "検索", exact: true }).click();
 
   await expect(chatPanel.getByText("ハイライト 2件中 1件", { exact: true })).toBeVisible();
   await expect(chatPanel.getByText(wanted, { exact: true })).toBeVisible();
@@ -1653,7 +1698,7 @@ test("searching the list narrows it to what the server matched", async ({ page }
 
   // Emptying the box and searching again gives the whole list back
   await chatPanel.getByLabel("ハイライトを検索").fill("");
-  await chatPanel.getByRole("button", { name: "検索" }).click();
+  await chatPanel.getByRole("button", { name: "検索", exact: true }).click();
   await expect(chatPanel.getByText("ハイライト 2件", { exact: true })).toBeVisible();
   await expect(chatPanel.getByText(other, { exact: true })).toBeVisible();
 
@@ -2380,4 +2425,34 @@ test("an EPUB is drawn larger on the type settings, keeps its highlight on the t
   await page.reload();
   await expect(chapterHeading(page, 0)).toBeVisible();
   expect(await fontSize()).toBe(larger);
+});
+
+test("searching an EPUB's text opens the chapter a result is in and marks the words there", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+
+  const lastChapter = EPUB_CHAPTERS.length - 1;
+  const words = "オブジェクトストレージ";
+  expect(EPUB_CHAPTERS[lastChapter].paragraphs.join("")).toContain(words);
+
+  await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
+  const search = page.getByRole("region", { name: "本文の検索" });
+  await search.getByLabel("本文から探す語").fill(words);
+  await search.getByRole("button", { name: "本文を検索" }).click();
+
+  await expect(search.getByRole("status")).toHaveText("1件", { timeout: 30000 });
+  await search.getByRole("button", { name: new RegExp(`^p\\.${lastChapter + 1}`) }).click();
+
+  await expect(chapterHeading(page, lastChapter)).toBeVisible();
+  await expect(page.locator(".citedPassage").first()).toBeVisible();
+  // Over the words, not merely somewhere in the chapter
+  const covered = await page.evaluate((wanted) => {
+    const marked = document.querySelector(".citedPassage")!.getBoundingClientRect();
+    const paragraph = Array.from(document.querySelectorAll(".epubChapter p"))
+      .find((p) => p.textContent?.includes(wanted))!
+      .getBoundingClientRect();
+    return marked.top >= paragraph.top - 2 && marked.bottom <= paragraph.bottom + 2;
+  }, words);
+  expect(covered).toBe(true);
 });

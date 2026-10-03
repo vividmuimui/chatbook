@@ -65,6 +65,15 @@ describe("rangeOfQuote", () => {
     );
   });
 
+  it("finds the occurrence the text around it names, as a search hit carries", () => {
+    const root = chapter("<p>エッジで動く。</p><p>次もエッジで動く。</p>");
+
+    const range = rangeOfQuote(root, "エッジ", { before: "次も", after: "で動く" });
+
+    expect(range?.startContainer.parentElement?.textContent).toBe("次もエッジで動く。");
+    expect(range?.toString()).toBe("エッジ");
+  });
+
   it("finds nothing for a quote the chapter does not hold", () => {
     expect(rangeOfQuote(chapter("<p>本文</p>"), "どこにもない文")).toBeNull();
   });

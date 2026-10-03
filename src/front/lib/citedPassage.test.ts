@@ -2,6 +2,23 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import { citedPassageOnPage, locateQuoteInSpans } from "./citedPassage";
 
 describe("locateQuoteInSpans", () => {
+  // A word the reader searched for is on the page as often as it is written
+  // there; the text around the one they picked says which of them it was
+  it("marks the occurrence the surrounding text names, not the first one on the page", () => {
+    expect(
+      locateQuoteInSpans(["cat and cat", " and cat"], "cat", {
+        before: "cat and cat and ",
+        after: "",
+      }),
+    ).toStrictEqual({ startSpan: 1, startOffset: 5, endSpan: 1, endOffset: 8 });
+  });
+
+  it("falls back to the first occurrence when the surrounding text is not on the page", () => {
+    expect(locateQuoteInSpans(["cat and cat"], "cat", { before: "dog ", after: "" })).toStrictEqual(
+      { startSpan: 0, startOffset: 0, endSpan: 0, endOffset: 3 },
+    );
+  });
+
   it("locates a quote that sits inside a single text item", () => {
     expect(
       locateQuoteInSpans(["まえがき", "Workers はエッジで動きます。"], "エッジで動きます"),

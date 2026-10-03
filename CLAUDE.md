@@ -305,8 +305,8 @@ script なので worker が同じファイルをもう一度落とし、`rel="pr
 ### 外部入力のバリデーション（zod）
 
 front と server が交わす形は `src/shared/schemas/` に zod スキーマとして 1 箇所だけ置き、
-型は `z.infer` で導出する（`error.ts` / `book.ts` / `config.ts` / `selection.ts` / `citation.ts` /
-`chat.ts` / `sse.ts`）。front・server どちらにも同じ概念の型を書かないこと。
+型は `z.infer` で導出する（`error.ts` / `book.ts` / `bookSearch.ts` / `config.ts` / `selection.ts` /
+`citation.ts` / `chat.ts` / `sse.ts`）。front・server どちらにも同じ概念の型を書かないこと。
 
 - **サーバの受け口**は `src/server/routes/validation.ts` の `validate(target, schema)`
   （`@hono/zod-validator` のラッパ）を通す。素の `zValidator` は zod のレポートをそのまま
@@ -407,6 +407,7 @@ union + `satisfies` で固定する。
 | ハイライトの保存                           | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では質問の入力欄が開いたまま） |
 | ハイライトの削除                           | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                   |
 | ハイライトの検索                           | `useHighlightSearch` の `searchError`                 | 同じ枠。削除の失敗が出ている間はそちらが優先される                               |
+| 本文の検索                                 | `useBookTextSearch` の `searchError`                  | 本文検索パネルの入力行の下                                                       |
 | チャットの送信・履歴の取得                 | `chatErrorAtom`                                       | チャットパネル（狭い画面ではシート）                                             |
 | リンク先の passage が見つからない          | `useReadingLocation` の `passageMiss`                 | ヘッダ直下の帯                                                                   |
 | 読書位置の保存                             | `useReadingStateSync` の `saveError`                  | ヘッダ直下の帯                                                                   |
@@ -1068,7 +1069,7 @@ Dropbox から現れたら、読者がまだ判断していないファイルな
 | 目次は横に並ぶ（`PdfOutline` の `w-60`）                      | 左からのドロワー + 背後を覆う暗幕（タップで閉じる）。目次から飛んだときも閉じる                     |
 | PDF + チャットの 2 ペイン                                     | PDF 全幅の 1 カラム                                                                                 |
 | チャットは右のパネル（`chatPanelOpenAtom`）                   | 下から出るシート `ChatSheet`（`src/front/components/ChatArea/ChatSheet.tsx`）                       |
-| 目次とチャットの開閉はヘッダーの 2 つ                         | `PageToolbar` の両端（目次 / チャット）                                                             |
+| 目次とチャットの開閉はヘッダーの 2 つ（＋本文検索）           | `PageToolbar` の両端（目次・検索 / チャット）                                                       |
 | ページ送りは hover できない端末だけページの下（スクロール内） | `PageToolbar`（`components/PdfViewer/PageToolbar.tsx`。描くのは `AppPage`）。hover は問わず必ず出る |
 | マウスで選んだら浮遊ポップオーバー                            | 下端の `SelectionActionBar` →「AIに質問」で `SelectionPopover`（`floating={false}`）                |
 | ペイン境界のドラッグハンドルで幅を変える                      | ハンドルは出さない（分ける相手がいない）                                                            |
@@ -1472,6 +1473,58 @@ props のコンポーネントのまま**で、自分で持っているのは削
 読めない**ため（`.dev.vars` の節にある「60 秒のタイムアウトまで粘る」がこれ）。保存できないの
 は回答（assistant）の方で、そちらは実キーが要る。チャット本文の検索は worker テストが持つ。
 
+#### 本文の検索は `full_text` を引き、結果は引用と同じ印で示す
+
+ハイライト一覧の検索（上記）とは別物で、**本そのものの文章**（PDF のページ、EPUB の章）を探す。
+受け口は `GET /api/pdf/:pdfId/find?q=`（`/search` はハイライト一覧のもの。名前を混ぜないこと）。
+
+| 何を                                          | どこが                                                                                      |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 照合・ページ分割・スニペット（純関数）        | `src/server/services/bookTextSearch.ts` の `findInBookText`                                 |
+| 本を引いて照合に渡す service（`ResultAsync`） | `pdfService.ts` の `findInBook`（`full_text` だけを select する。無い本は 404）             |
+| front と server が交わす形                    | `src/shared/schemas/bookSearch.ts`（`q` は trim して 1〜200 文字、結果は 200 件で打ち切り） |
+| 入力と実行の分離・SWR                         | `src/front/hooks/useBookTextSearch.ts`（実行した語は `bookSearchTermAtom`）                 |
+| パネル（広い画面は横、狭い画面はドロワー）    | `src/front/components/PdfViewer/BookSearch.tsx`。置くのは `AppPage` の PDF ペインの左端     |
+| 開く口                                        | ヘッダーの「本文検索」、`PageToolbar` の「検索」（`aria-label` は「本文検索」）、vim の `/` |
+
+- **応答は一致ごとに `{ pageNumber, before, match, after }`** と `truncated`。`match` は検索語では
+  なく**本の綴りそのまま**（大文字小文字・改行を含む）で、印はこれで付ける。`before` / `after` は
+  同じページの前後 40 文字（`SNIPPET_CONTEXT_LENGTH`）で、空白の連続は 1 つに畳んである。
+  **一致はページをまたがない**（送り先のページが 1 つに決まらないため）。同じページでは重ならない
+- **照合の規則は 3 つ**: 両側を NFC にそろえる、長さの変わらない文字だけ小文字にそろえる（ASCII
+  を含む。伸びる文字はそのまま残して元の位置へ戻せるようにする）、**空白は改行も含めてすべて
+  落とす**。畳むだけでは足りない——pdf.js は版面の行末で改行を入れるので、日本語では語の途中で
+  切れる（「日本\n語」）。代償は「foo bar」が「foobar」にも当たること。印を付ける
+  `locateQuoteInSpans` も空白を落として照合するので、ここで当たったものはページ上でも見つかる
+- **結果を押すことは引用リンクを押すことと同じ**: `currentPageAtom` と `citedPassageAtom` を書き、
+  `PdfViewer` / `EpubViewer` の既存の引用の印がそのまま付く。URL は `useReadingLocation` が
+  ページの変化を見て書く（このパネルは URL に触れない）
+- **同じ語がページに何度もあるので、印の位置は前後の文脈で決める**。`CitedPassage` の任意の
+  `context`（`{ before, after }`）を `locateQuoteInSpans` / `rangeOfQuote` が受け、
+  `before + match + after` が並ぶ箇所の `match` に印を付ける。見つからなければ従来どおり最初の
+  出現（引用リンクは `context` を渡さない）
+- **パネルはビューアの中ではなく `AppPage` に置く**。PDF と EPUB で同じものが要り、検索に
+  描かれたページは要らない（ビューアの中の目次はドキュメントが届くまで出ない）。広い画面では
+  ページの横に並び、目次と同じくページを測り直させる。押しても開いたまま（次の結果へ進める）。
+  狭い画面ではページを覆うドロワー＋暗幕（「検索を閉じる」）で、結果を押すと閉じる。
+  **ツールバーの「目次」と「検索」は互いを畳む**——どちらのドロワーも左端に出て、目次（ビューアの
+  中）が後に描かれるので、両方開くと検索が隠れる
+- **開閉も検索語も保存しない**（本ごとのストアに載るだけ）。パネルを畳んでも実行した語は atom に
+  残り、開き直すと SWR のキャッシュから同じ結果が出る
+- **ボタンの名前は「本文検索」（開閉）と「本文を検索」（実行）**。ハイライト一覧の「検索」を
+  部分一致で名指す E2E は `exact: true` にしてある（上記「E2E の前提」のロケータの注意）
+
+守っているテストは次のとおり:
+
+| 何を                                            | どのテスト                                                                                                                                |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 照合の規則・文脈・打ち切り                      | `src/server/services/bookTextSearch.test.ts`                                                                                              |
+| ルート（形・別の本・ハイライトを見ない・400）   | `test/worker/pdf.test.ts` の `GET /api/pdf/:pdfId/find`                                                                                   |
+| 文脈で出現を選ぶ                                | `citedPassage.test.ts` / `epubTextRange.test.ts`                                                                                          |
+| パネルの見え方・IME の Enter・押したときの atom | `src/front/components/PdfViewer/BookSearch.test.tsx`                                                                                      |
+| ヘッダー・ツールバー・`/` の配線                | `AppPage.test.tsx`                                                                                                                        |
+| 実際に印が付く                                  | `e2e/chatbook.spec.ts`「searching the book's text turns to the page…」（同じ語が 6 行並ぶページの 3 つ目）と「searching an EPUB's text…」 |
+
 #### リーダーの URL は `useReadingLocation` が単独で書く
 
 リロードと共有リンクで同じ状態に戻るよう、リーダーの状態は 2 つのクエリパラメータに
@@ -1708,6 +1761,8 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 キーバインド（Vim / Emacs）は `src/front/lib/keybindings.ts` の `resolveAction` に
 DOM 非依存の純粋関数として実装。`gg` や `C-c t` の2ストロークは `pending` プレフィックスで表現し、
 タイマーを持たせない（挙動を決定的にしてテストできるようにするため）。
+vim の `/` は本文検索を開く（`openSearch`。上記「本文の検索は…」）。emacs の `C-s` には
+割り当てない——ブラウザの保存を奪うことになるため。
 
 **方向キー（`←` / `→` でページ送り、`↑` / `↓` でスクロール）はモードに属さない**。
 `resolveArrows` がモード分岐より先に答えるので「なし」でも効き、そのぶん
