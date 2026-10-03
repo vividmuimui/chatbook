@@ -23,6 +23,7 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
     updatedAt: "2026-01-01T00:00:00Z",
     hasThumbnail: false,
     inDropbox: false,
+    lastReadPage: null,
     ...overrides,
   };
 }
