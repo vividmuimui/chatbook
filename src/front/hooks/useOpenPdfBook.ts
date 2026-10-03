@@ -9,8 +9,14 @@ import { pdfMetadataSchema, type BookDetail } from "../../shared/schemas/book";
 /** Whatever was thrown, as something with a `message` the reader can be shown. */
 const asError = (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause)));
 
-/** Turns a file the reader chose into a stored book, and hands back its id. */
-export type OpenPdfBook = (file: File) => ResultAsync<string, Error>;
+/**
+ * Turns a file the reader chose into a stored book, and hands back its id.
+ *
+ * `dropboxId` names the Dropbox file `file` was just downloaded from. The
+ * server then fetches the bytes from Dropbox itself rather than having the
+ * reader send back what it has only just received.
+ */
+export type OpenPdfBook = (file: File, dropboxId?: string) => ResultAsync<string, Error>;
 
 /**
  * Reads a chosen PDF, stores it, and seeds the cache the reader opens it from.
@@ -28,14 +34,15 @@ export function useOpenPdfBook(
 ): OpenPdfBook {
   const { mutate } = useSWRConfig();
 
-  return (file: File) =>
+  return (file: File, dropboxId?: string) =>
     // Reading the file is pdf.js' job and can fail on its own (a file that is
     // not really a PDF), so it is part of the same result as the upload.
     ResultAsync.fromPromise(extract(file), asError)
       .andThen((extracted) => {
         // Send as multipart/form-data (avoids base64 overhead)
         const formData = new FormData();
-        formData.append("file", file);
+        if (dropboxId) formData.append("dropboxId", dropboxId);
+        else formData.append("file", file);
         formData.append("fullText", extracted.fullText);
         formData.append("pageCount", String(extracted.pageCount));
         if (extracted.thumbnail) {

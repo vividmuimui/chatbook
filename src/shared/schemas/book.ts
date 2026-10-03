@@ -8,6 +8,9 @@ export const bookSummarySchema = z.object({
   pageCount: z.number().int().positive(),
   updatedAt: z.string(),
   hasThumbnail: z.boolean(),
+  // Whether the book is a file in the Dropbox folder. Deleting it from the
+  // shelf leaves that file alone, and the reader is told so before agreeing.
+  inDropbox: z.boolean(),
 });
 
 export type BookSummary = z.infer<typeof bookSummarySchema>;

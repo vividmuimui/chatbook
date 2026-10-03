@@ -39,9 +39,11 @@ import {
   selectRanges,
 } from "../services/documentExcerpt";
 import { validate } from "./validation";
+import { dropboxClientFor, dropboxFailureResponse, dropboxFolderOf } from "./dropbox";
+import { placeInFolder, readFolderFile, type DropboxEnv } from "../services/dropboxService";
 
 type Env = {
-  Bindings: {
+  Bindings: DropboxEnv & {
     DB: D1Database;
     PDF_BUCKET: R2Bucket;
     LLM_API_KEY: string;
@@ -166,8 +168,13 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           );
         }
 
+        // Either the book itself, or the id of a Dropbox file the reader has
+        // just read through `/dropbox/file`. The second is not sent back up:
+        // fetching it again from here is a hop between two data centres,
+        // where the reader's upload is a phone's connection.
         const file = formData.file;
-        if (!file || !(file instanceof File)) {
+        const fromDropbox = typeof formData.dropboxId === "string" ? formData.dropboxId : null;
+        if (!fromDropbox && !(file instanceof File)) {
           return c.json(
             {
               error: {
@@ -195,8 +202,49 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           );
         }
 
-        // Compute hash and get binary data
-        const arrayBuffer = await file.arrayBuffer();
+        const dropbox = await dropboxFolderOf(c.env);
+        if (dropbox.isErr()) return storageFailureResponse(c, dropbox.error.cause);
+
+        let arrayBuffer: ArrayBuffer;
+        let fileName: string;
+        if (fromDropbox) {
+          if (!dropbox.value) {
+            return c.json(
+              {
+                error: {
+                  code: "DROPBOX_UNAVAILABLE" satisfies ErrorCode,
+                  message: "No Dropbox folder to read from",
+                },
+              },
+              400,
+            );
+          }
+          const read = await readFolderFile(
+            dropbox.value.client,
+            dropbox.value.folder,
+            fromDropbox,
+          );
+          if (read.isErr()) {
+            return read.error.type === "NOT_FOUND"
+              ? c.json(
+                  {
+                    error: {
+                      code: "DROPBOX_FILE_NOT_FOUND" satisfies ErrorCode,
+                      message: "No such file in the Dropbox folder",
+                    },
+                  },
+                  404,
+                )
+              : dropboxFailureResponse(c, read.error.cause);
+          }
+          arrayBuffer = read.value.bytes;
+          fileName = read.value.entry.name;
+        } else {
+          const uploaded = file as File;
+          arrayBuffer = await uploaded.arrayBuffer();
+          fileName = uploaded.name;
+        }
+
         const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
         const fileHash = Array.from(new Uint8Array(hashBuffer))
           .map((b) => b.toString(16).padStart(2, "0"))
@@ -233,11 +281,41 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           outline = checked.data;
         }
 
+        // An uploaded book goes into the Dropbox folder before it is stored
+        // here: Dropbox holds the books, so one that only made it into R2
+        // would be a book the folder does not have. A book that is already a
+        // Dropbox file is left where it is.
+        let dropboxId = fromDropbox ?? undefined;
+        if (!dropboxId && dropbox.value) {
+          const linked = await ResultAsync.fromPromise(
+            drizzle(c.env.DB)
+              .select({ dropboxId: pdfs.dropboxId })
+              .from(pdfs)
+              .where(eq(pdfs.fileHash, fileHash))
+              .get(),
+            storageFailure,
+          );
+          if (linked.isErr()) return storageFailureResponse(c, linked.error.cause);
+          dropboxId = linked.value?.dropboxId ?? undefined;
+
+          if (!dropboxId) {
+            const placed = await placeInFolder(
+              dropbox.value.client,
+              dropbox.value.folder,
+              fileName,
+              arrayBuffer,
+            );
+            if (placed.isErr()) return dropboxFailureResponse(c, placed.error);
+            dropboxId = placed.value.id;
+          }
+        }
+
         const stored = await openPdf(
           c.env.DB,
           c.env.PDF_BUCKET,
           {
-            fileName: file.name,
+            fileName,
+            dropboxId,
             fileHash,
             fullText,
             pageCount,
@@ -416,7 +494,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         // whole would read `full_text` as well — hundreds of kilobytes on a
         // real book, fetched out of D1 on every open just to be discarded.
         const pdf = await d1Db
-          .select({ filePath: pdfs.filePath, fileName: pdfs.fileName })
+          .select({ filePath: pdfs.filePath, fileName: pdfs.fileName, dropboxId: pdfs.dropboxId })
           .from(pdfs)
           .where(eq(pdfs.id, pdfId))
           .get();
@@ -430,7 +508,30 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         // `onlyIf` hands the browser's `If-None-Match` to R2, which answers
         // without the body when the file is the one already held. Reading the
         // header here instead would still pull the object out of storage.
-        const object = await c.env.PDF_BUCKET.get(pdf.filePath, { onlyIf: c.req.raw.headers });
+        let object: R2Object | R2ObjectBody | null = await c.env.PDF_BUCKET.get(pdf.filePath, {
+          onlyIf: c.req.raw.headers,
+        });
+        // R2 is a copy of what Dropbox holds. When the copy is gone (a cleared
+        // bucket, or a book that was linked from Dropbox on another deploy),
+        // it is made again from Dropbox and served from what was written.
+        const dropbox = !object && pdf.dropboxId ? dropboxClientFor(c.env) : null;
+        if (dropbox && pdf.dropboxId) {
+          const fetched = await dropbox.download(pdf.dropboxId).andThen(({ body }) =>
+            ResultAsync.fromPromise(new Response(body).arrayBuffer(), (cause) => ({
+              type: "DROPBOX" as const,
+              cause,
+            })),
+          );
+          if (fetched.isErr() && fetched.error.type === "DROPBOX") {
+            return dropboxFailureResponse(c, fetched.error.cause);
+          }
+          if (fetched.isOk()) {
+            await c.env.PDF_BUCKET.put(pdf.filePath, fetched.value, {
+              httpMetadata: { contentType: "application/pdf" },
+            });
+            object = await c.env.PDF_BUCKET.get(pdf.filePath);
+          }
+        }
         if (!object) {
           return c.json(
             {

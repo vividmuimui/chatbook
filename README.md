@@ -113,6 +113,58 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<worker 名>.<アカウント>.
 `pnpm exec vp build` →
 `pnpm exec wrangler d1 migrations apply chatbook-db --remote` を実行してください）。
 
+## Dropbox と連携する
+
+Dropbox のフォルダを本棚につなげられます（任意。設定しなければ本は R2 だけに置かれます）。
+
+- 本棚に、そのフォルダ（と配下のフォルダ）にある PDF が「未読み込み」として並びます。
+  開くとブラウザが Dropbox から取得して読み取り、本として登録します
+- 本棚から追加した PDF はそのフォルダにも保存されます（同名のファイルがあれば
+  「名前 (1).pdf」のように別名になり、上書きはしません。同じ中身のファイルが既に
+  フォルダにあれば、新しく書かずにそのファイルを本として扱います）
+- 本体は Dropbox が正で、R2 は配信用の写しです。R2 から消えていても Dropbox から作り直します
+- 本棚から本を削除しても **Dropbox のファイルは消えません**（未読み込みとして残ります）
+
+### 1. Dropbox アプリを作る
+
+1. <https://www.dropbox.com/developers/apps> で「Create app」→「Scoped access」→
+   アクセス範囲（「Full Dropbox」か「App folder」）を選んで作成
+2. 「Permissions」タブで `files.metadata.read` / `files.content.read` /
+   `files.content.write` にチェックを入れて「Submit」（**トークンを取る前に**。
+   権限は取得時点のものがトークンに焼き込まれます）
+3. 「Settings」タブの App key と App secret を控える
+
+### 2. refresh token を取る
+
+ブラウザで次の URL を開き、許可して表示されたコードを控えます:
+
+```
+https://www.dropbox.com/oauth2/authorize?client_id=<App key>&response_type=code&token_access_type=offline
+```
+
+```bash
+curl https://api.dropbox.com/oauth2/token \
+  -d code=<表示されたコード> -d grant_type=authorization_code \
+  -u <App key>:<App secret>
+# 応答の "refresh_token" を控える（期限はありません）
+```
+
+### 3. 秘密を入れる
+
+```bash
+pnpm exec wrangler secret put DROPBOX_APP_KEY
+pnpm exec wrangler secret put DROPBOX_APP_SECRET
+pnpm exec wrangler secret put DROPBOX_REFRESH_TOKEN
+```
+
+ローカルでは `.dev.vars` の同名の行に書きます。どれかが空なら Dropbox は使われません。
+`0007_add_dropbox.sql` のマイグレーションも（デプロイより先に）当ててください。
+
+### 4. フォルダを選ぶ
+
+本棚の右上の「Dropboxフォルダを設定」から、本を置いているフォルダのパス
+（例: `/Books`）を入力します。存在しないフォルダは保存されません。
+
 ## 接続先とモデルを差し替える
 
 **OpenAI 互換の API なら環境変数だけで差し替えられます。**接続先とモデルを設定しなければ

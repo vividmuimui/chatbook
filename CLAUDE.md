@@ -166,7 +166,7 @@ vp build   # dist/chatbook/wrangler.json を作り直す。これを飛ばすと
 vp exec wrangler d1 migrations apply chatbook-db --remote
 ```
 
-秘密は 4 つ、`wrangler secret put <名前>` で入れる（`.dev.vars` はローカル専用でデプロイには
+秘密は 4 つ（Dropbox を使うならさらに 3 つ。下記「Dropbox 連携」）、`wrangler secret put <名前>` で入れる（`.dev.vars` はローカル専用でデプロイには
 乗らない）: `LLM_API_KEY` / `AUTH_USERNAME` / `AUTH_PASSWORD` / `AUTH_SESSION_SECRET`。
 接続先とモデル（`LLM_BASE_URL` / `LLM_MODEL` / `LLM_WEB_SEARCH_SUPPORTED`）は秘密ではないので、
 **DeepSeek 以外に向けるときだけ** `wrangler.jsonc` の `vars` に書く（省略すれば DeepSeek。
@@ -195,10 +195,11 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                          |
-| ----------------- | ------------------------------------------------------------- |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ          |
-| R2 (`PDF_BUCKET`) | PDF 本体 `pdfs/<sha256>.pdf`、表紙 `thumbnails/<sha256>.webp` |
+| 置き場所          | 内容                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
+| R2 (`PDF_BUCKET`) | PDF 本体 `pdfs/<sha256>.pdf`、表紙 `thumbnails/<sha256>.webp`                                                      |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                         |
 
 **チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
 必ず持ち、`selection_id` を持つのはハイライトの会話だけ。本そのものへの質問（要約・章ごとの
@@ -213,6 +214,45 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 `fileName` / `fullText` / `pageCount` / `outline` を最新の抽出結果で**上書き**する
 (`src/server/services/pdfService.ts` の `openPdf`)。ここを「既存レコードをそのまま返す」に
 戻すと、古いメタデータが残り続ける不具合になる。
+
+#### Dropbox 連携
+
+`DROPBOX_APP_KEY` / `DROPBOX_APP_SECRET` / `DROPBOX_REFRESH_TOKEN` の 3 つが揃い、かつ画面で
+フォルダが選ばれているときだけ働く（`routes/dropbox.ts` の `dropboxFolderOf` が null を
+返せば従来どおり R2 だけ）。取得手順は README の「Dropbox と連携する」。
+
+| 何を                                          | どこが                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| Dropbox API（トークン更新・一覧・取得・書込） | `src/server/services/dropboxService.ts`                                  |
+| フォルダの保存・未読み込みの一覧・バイト列    | `src/server/routes/dropbox.ts`（`/api/dropbox/settings` `files` `file`） |
+| 取り込みとアップロード時の書き込み            | `src/server/routes/pdf.ts` の `POST /pdf/open`                           |
+| R2 の写しが無いときの作り直し                 | `src/server/routes/pdf.ts` の `GET /pdf/:pdfId/file`                     |
+| front と server が交わす形                    | `src/shared/schemas/dropbox.ts`                                          |
+| 本棚のカード・取得の進捗・フォルダの設定      | `ShelfPage.tsx` / `lib/dropboxDownload.ts` / `DropboxFolderDialog.tsx`   |
+
+- **本と Dropbox ファイルは `pdfs.dropbox_id`（Dropbox の `id:...`）で結ぶ**。パスではなく id
+  なのは、Dropbox 側で改名・移動されても同じ本のままにするため。本の同一性は従来どおり
+  SHA-256 で、`dropbox_id` は付け足しにすぎない
+- **未読み込みの本はサーバでは読まない**（pdf.js は workerd で動かない）。ブラウザが
+  `GET /api/dropbox/file?id=` で取得 → 抽出 → `POST /pdf/open` に **`file` ではなく
+  `dropboxId`** を載せて送る。サーバは Dropbox から取り直して保存する——読者の回線で
+  同じバイト列を上げ直させないため（上記の 22MB / 76 秒）。取得したバイト列は
+  `rememberUploadedFile` に渡るので、ビューアも取り直さない
+- **アップロードは Dropbox に書いてから R2 / D1 に保存する**。Dropbox が拒んだら 502
+  （`DROPBOX_ERROR`）で何も保存しない。正が持っていない本を作らないため。書く前に
+  Dropbox の `content_hash`（4MB ブロックごとの SHA-256 の SHA-256。`dropboxContentHash`）で
+  フォルダを探し、同じ中身があればそれを本にして書かない。書くときは `mode: "add"` +
+  `autorename` で上書きしない
+- **`Dropbox-API-Arg` ヘッダは ASCII でなければならない**。日本語のファイル名は
+  `headerSafeJson` が `\uXXXX` に逃がす（`dropbox.test.ts` の「Japanese name」が見張る）
+- **`/dropbox/file` と取り込みは選んだフォルダの中のファイルしか扱わない**（`isInsideFolder`）。
+  id を知っていればフォルダ外を読める口にしない
+- **本の削除は Dropbox のファイルを消さない**。削除の確認文がそれを言い、消した本は
+  未読み込みとして本棚に戻る
+- **アクセストークンは isolate のメモリに期限まで持つ**（`accessTokens`）。401 が返ったら
+  捨てて 1 回だけ取り直す
+- **未読み込みの一覧は本棚と別の SWR（`/api/dropbox/files`）**。本棚の本が Dropbox を
+  待たないため。一覧の失敗は本棚の失敗とは別の赤帯に出し、本棚そのものは描く
 
 #### 本を開くまでの往復を増やさない
 
@@ -305,7 +345,8 @@ union + `satisfies` で固定する。
   （`ResultAsync<T, ApiError>`）。受け皿になる SWR が無いので、失敗は値で返さないと消える。
   現在の該当箇所は本の削除（`ShelfPage`）・ハイライトの作成（`useAskAboutSelection`）・
   ハイライトの削除（`useHighlights`）・チャット履歴の取得（`AppPage`）・読書位置の保存
-  （`useReadingStateSync`）・ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）の 7 つ。
+  （`useReadingStateSync`）・ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
+  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 8 つ。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -344,6 +385,9 @@ union + `satisfies` で固定する。
 | 失敗                                       | 受け皿                                                | 出る場所                                                                         |
 | ------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------- |
 | 本棚の読み込み・削除・追加・ドロップの拒否 | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                 |
+| Dropbox の本の取得・取り込み               | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                 |
+| Dropbox フォルダの一覧                     | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                         |
+| Dropbox フォルダの保存                     | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                     |
 | 本の読み込み                               | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                     |
 | PDF バイナリの取得・pdf.js の構築          | `usePdfDocument` の `error`                           | ビューア中央                                                                     |
 | ページの描画                               | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                             |
@@ -1506,7 +1550,7 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 
 **マイグレーションを当ててから動かす**。`readPdf` / `storePdf` は drizzle が `pdfs` の全列を
 明示列挙するので、`0002_add_reading_state.sql` / `0003_add_reading_state_chat_panel.sql` /
-`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` が未適用の D1 に新しいコードを
+`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` が未適用の D1 に新しいコードを
 載せると本を開く経路ごと 500 になる（列を絞って読む本棚一覧だけは生き残る。
 `saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `bookChat` は省略なら
 `set` にも現れない。チャットは `outline` 列を select するので `0004` 未適用では 500）。

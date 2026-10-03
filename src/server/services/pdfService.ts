@@ -1,6 +1,6 @@
 import { ulid } from "ulid";
 import { drizzle } from "drizzle-orm/d1";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { ResultAsync, err, ok } from "neverthrow";
 import { pdfs, selections } from "../db/schema";
 import type {
@@ -53,6 +53,8 @@ interface OpenPdfInput {
   arrayBuffer: ArrayBuffer;
   thumbnail?: ArrayBuffer;
   outline?: BookOutline;
+  /** The Dropbox file the bytes came from or were written to, when there is one. */
+  dropboxId?: string;
 }
 
 export type { BookSummary } from "../../shared/schemas/book";
@@ -75,14 +77,16 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
       pageCount: pdfs.pageCount,
       fileHash: pdfs.fileHash,
       updatedAt: pdfs.updatedAt,
+      dropboxId: pdfs.dropboxId,
     })
     .from(pdfs)
     .orderBy(desc(pdfs.updatedAt))
     .all();
 
   return Promise.all(
-    rows.map(async ({ fileHash, ...book }) => ({
+    rows.map(async ({ fileHash, dropboxId, ...book }) => ({
       ...book,
+      inDropbox: dropboxId !== null,
       hasThumbnail: (await bucket.head(thumbnailObjectKey(fileHash))) !== null,
     })),
   );
@@ -110,7 +114,8 @@ async function storePdf(
   input: OpenPdfInput,
   idClock: IdClock,
 ): Promise<PdfMetadata> {
-  const { fileName, fileHash, fullText, pageCount, arrayBuffer, thumbnail, outline } = input;
+  const { fileName, fileHash, fullText, pageCount, arrayBuffer, thumbnail, outline, dropboxId } =
+    input;
   const d1Db = drizzle(db);
   const objectKey = pdfObjectKey(fileHash);
   // Stored like the rest of the metadata: whatever the caller just extracted
@@ -121,6 +126,16 @@ async function storePdf(
     await bucket.put(thumbnailObjectKey(fileHash), thumbnail, {
       httpMetadata: { contentType: THUMBNAIL_CONTENT_TYPE },
     });
+  }
+
+  if (dropboxId) {
+    // A Dropbox file is one book. If it used to be another (its bytes were
+    // replaced in Dropbox since), that book keeps its copy in R2 and lets go
+    // of the file, rather than the unique index refusing this one.
+    await d1Db
+      .update(pdfs)
+      .set({ dropboxId: null })
+      .where(and(eq(pdfs.dropboxId, dropboxId), ne(pdfs.fileHash, fileHash)));
   }
 
   const existing = await d1Db.select().from(pdfs).where(eq(pdfs.fileHash, fileHash)).get();
@@ -139,7 +154,16 @@ async function storePdf(
     // re-opening a book never costs the reader their place in it.
     await d1Db
       .update(pdfs)
-      .set({ fileName, fullText, pageCount, outline: outlineJson, updatedAt: idClock.now() })
+      .set({
+        fileName,
+        fullText,
+        pageCount,
+        outline: outlineJson,
+        updatedAt: idClock.now(),
+        // Only ever set here, never cleared: re-uploading a book from disk
+        // does not make the Dropbox file stop being it.
+        ...(dropboxId ? { dropboxId } : {}),
+      })
       .where(eq(pdfs.id, existing.id));
 
     return {
@@ -166,6 +190,7 @@ async function storePdf(
     fullText,
     pageCount,
     outline: outlineJson,
+    dropboxId: dropboxId ?? null,
     createdAt: now,
     updatedAt: now,
   });
