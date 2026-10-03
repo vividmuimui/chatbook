@@ -2203,6 +2203,43 @@ test("copies the passage a reader chose with the question box over it", async ({
   await expect(box).toHaveValue(COVER_TITLE);
 });
 
+test("a passage marked in a colour with a note keeps both through a reload", async ({ page }) => {
+  // No question is asked, so this runs without an LLM key: marking is the one
+  // way a highlight is made that never reaches the model.
+  const pdfId = await openTestBook(page);
+  const line = drawnPage(page, 1).first();
+  await expect(line).toBeVisible({ timeout: 60000 });
+  expect(await dragAndReadPassage(page, line, line)).toBe(COVER_TITLE);
+
+  // Exact names throughout: "メモ" is in more than one button's name.
+  await page.getByRole("button", { name: "メモを書く", exact: true }).click();
+  await page.getByRole("button", { name: "ピンクを選ぶ", exact: true }).click();
+  await page.getByPlaceholder("選択した文章にメモを書く...").fill("表紙の題名を引用する");
+  await page.getByRole("button", { name: "メモ付きでマーク", exact: true }).click();
+
+  // The box closes on the stored highlight, and no conversation opens on it
+  await expect(page.getByPlaceholder("選択した文章にメモを書く...")).toBeHidden();
+  const chatPanel = page.locator("main > div").last();
+  await expect(chatPanel.getByText("ハイライト 1件", { exact: true })).toBeVisible();
+  const mark = page.getByRole("button", { name: "ハイライトのチャットを開く" }).first();
+  await expect(mark).toHaveCSS("background-color", "rgb(236, 64, 122)");
+
+  // What the server kept is what comes back
+  await page.reload();
+  await expect(mark).toHaveCSS("background-color", "rgb(236, 64, 122)", { timeout: 60000 });
+  const row = chatPanel.locator("li").filter({ hasText: COVER_TITLE });
+  await expect(row.getByText("表紙の題名を引用する")).toBeVisible();
+
+  // Recoloured from the list: the page follows at once, and so does the server
+  await row.getByRole("button", { name: /のメモと色を変える$/ }).click();
+  await row.getByRole("button", { name: "青に変える", exact: true }).click();
+  await expect(mark).toHaveCSS("background-color", "rgb(66, 165, 245)");
+  const { selections } = (await (await page.request.get(`/api/pdf/${pdfId}`)).json()) as {
+    selections: { color: string; note: string | null }[];
+  };
+  expect(selections).toMatchObject([{ color: "#42A5F5", note: "表紙の題名を引用する" }]);
+});
+
 /** The EPUB these tests read, built by `fixtures/generateTestEpub.ts`. */
 const TEST_EPUB = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
