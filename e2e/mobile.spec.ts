@@ -47,9 +47,10 @@ async function openTestBook(page: Page): Promise<string> {
   await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
 
   const pdfId = new URL(page.url()).pathname.split("/").pop()!;
-  const { selections, readingState } = (await (
+  const { selections, readingState, pageDirection } = (await (
     await page.request.get(`/api/pdf/${pdfId}`)
   ).json()) as {
+    pageDirection: "ltr" | "rtl";
     selections: { id: string }[];
     readingState: {
       page: number;
@@ -79,6 +80,12 @@ async function openTestBook(page: Page): Promise<string> {
     },
   });
 
+  // The way the pages turn is the book's too, and a test that turned it to
+  // open on the right would otherwise hand every later one a mirrored reader.
+  await page.request.put(`/api/pdf/${pdfId}/page-direction`, {
+    data: { pageDirection: "ltr" },
+  });
+
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
   const resumedElsewhere =
@@ -87,7 +94,7 @@ async function openTestBook(page: Page): Promise<string> {
       readingState.bookChat === true ||
       readingState.outlineOpen === false ||
       readingState.chatPanelOpen === false);
-  if (selections.length > 0 || resumedElsewhere) {
+  if (selections.length > 0 || resumedElsewhere || pageDirection !== "ltr") {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // The page counter arrives with the book, but a tap or a drag needs the page
