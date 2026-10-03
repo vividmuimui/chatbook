@@ -224,7 +224,7 @@ export class DropboxClient {
     );
   }
 
-  /** Every PDF in the folder and the folders under it. */
+  /** Every PDF and EPUB in the folder and the folders under it. */
   listPdfs(folder: string): ResultAsync<DropboxFileEntry[], DropboxError> {
     return ResultAsync.fromPromise(
       (async () => {
@@ -250,7 +250,7 @@ export class DropboxClient {
           response = await this.rpc("files/list_folder/continue", { cursor: page.cursor });
         }
         return entries
-          .filter((entry) => entry[".tag"] === "file" && /\.pdf$/i.test(entry.name))
+          .filter((entry) => entry[".tag"] === "file" && /\.(pdf|epub)$/i.test(entry.name))
           .map(toFileEntry);
       })(),
       dropboxFailure,

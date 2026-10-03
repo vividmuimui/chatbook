@@ -7,7 +7,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { shelfLayoutAtom } from "../atoms/settingsAtom";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
-import { pickDroppedPdf } from "../lib/droppedPdf";
+import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
@@ -78,7 +78,7 @@ function importWording(importing: Importing): string {
     case "downloading":
       return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
-      return "PDFを読み取り中...";
+      return "本を読み取り中...";
     case "uploading":
       return `アップロード中 ${Math.round(importing.ratio * 100)}%`;
     case "storing":
@@ -87,7 +87,15 @@ function importWording(importing: Importing): string {
 }
 
 function bookTitle(fileName: string): string {
-  return fileName.replace(/\.pdf$/i, "");
+  return fileName.replace(/\.(pdf|epub)$/i, "");
+}
+
+/**
+ * How long a book is, in what it is made of: an EPUB has no pages of its own,
+ * and what the reader turns through there is its chapters.
+ */
+function bookLength(book: BookSummary): string {
+  return book.format === "epub" ? `${book.pageCount} 章` : `${book.pageCount} ページ`;
 }
 
 function BookCard({
@@ -129,7 +137,7 @@ function BookCard({
           )}
         </div>
         <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{title}</p>
-        <p className="text-xs text-gray-500">{book.pageCount} ページ</p>
+        <p className="text-xs text-gray-500">{bookLength(book)}</p>
       </button>
 
       {/* Kept out of the way until the pointer arrives — but only where there
@@ -199,7 +207,7 @@ function BookRow({
 }
 
 /**
- * A PDF in the Dropbox folder that has not been opened here yet. It has no
+ * A PDF or EPUB in the Dropbox folder that has not been opened here yet. It has no
  * cover and no page count until it has been read, so it says where it is
  * instead — and looks unlike the books, so it is not mistaken for one.
  */
@@ -274,12 +282,12 @@ function AddBookTile({
         >
           ＋
         </span>
-        <span className="text-sm font-medium">PDFを追加</span>
+        <span className="text-sm font-medium">本を追加</span>
       </button>
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf"
+        accept="application/pdf,.pdf,application/epub+zip,.epub"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) onFileChosen(file);
@@ -354,7 +362,7 @@ export function ShelfPage({
       (pdfId) => void openBook(pdfId),
       (failure) => {
         setImporting(null);
-        setActionError(`PDFを開けませんでした: ${failure.message}`);
+        setActionError(`本を開けませんでした: ${failure.message}`);
       },
     );
   };
@@ -392,8 +400,8 @@ export function ShelfPage({
     setDragDepth(0);
     if (importing) return;
 
-    const dropped = pickDroppedPdf(Array.from(e.dataTransfer.files));
-    if (dropped.kind === "pdf") void handleFile(dropped.file);
+    const dropped = pickDroppedBook(Array.from(e.dataTransfer.files));
+    if (dropped.kind === "book") void handleFile(dropped.file);
     // A drag carrying no files — a text selection, say — is not a mistake to
     // report; only something that was meant to be a book and is not.
     if (dropped.kind === "refused") setActionError(dropped.reason);
@@ -465,7 +473,7 @@ export function ShelfPage({
           // Held out of the pointer's way: appearing under the cursor would
           // count as leaving whatever the drag was over and put the shelf back.
           <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-400 bg-blue-50/80">
-            <p className="text-lg font-medium text-blue-700">ここにドロップしてPDFを追加</p>
+            <p className="text-lg font-medium text-blue-700">ここにドロップして本を追加</p>
           </div>
         )}
 
@@ -482,7 +490,7 @@ export function ShelfPage({
           <div className="pt-10 pb-8 text-center">
             <p className="text-lg font-medium text-gray-700">まだ本がありません</p>
             <p className="mt-1 text-sm text-gray-500">
-              「PDFを追加」を押すか、PDFファイルをここにドロップしてください
+              「本を追加」を押すか、PDFかEPUBのファイルをここにドロップしてください
             </p>
           </div>
         )}

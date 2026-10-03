@@ -182,9 +182,10 @@ describe("GET /api/dropbox/files", () => {
     expect(await listFolder()).toStrictEqual({ status: 200, body: { state: "no-folder" } });
   });
 
-  it("lists the PDFs in the folder and the folders under it, and nothing else", async () => {
+  it("lists the PDFs and EPUBs in the folder and the folders under it, and nothing else", async () => {
     dropbox.add("/books/Zig.pdf", uniquePdfBytes("zig"));
     dropbox.add("/books/rust/The Book.PDF", uniquePdfBytes("rust"));
+    dropbox.add("/books/novel/Novel.epub", new TextEncoder().encode("PK\x03\x04novel"));
     dropbox.add("/books/notes.txt", new TextEncoder().encode("not a book"));
     dropbox.add("/other/Elsewhere.pdf", uniquePdfBytes("elsewhere"));
     await chooseFolder("/books");
@@ -193,6 +194,7 @@ describe("GET /api/dropbox/files", () => {
     expect(status).toBe(200);
     expect(body).toMatchObject({ state: "ready", folder: "/books" });
     expect((body.files as { path: string }[]).map((f) => f.path)).toStrictEqual([
+      "/novel/Novel.epub",
       "/rust/The Book.PDF",
       "/Zig.pdf",
     ]);
@@ -226,7 +228,18 @@ describe("GET /api/dropbox/file", () => {
 
     const response = await apiFetch(`https://example.com/api/dropbox/file?id=${file.id}`);
     expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/pdf");
     expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(bytes);
+  });
+
+  it("names an EPUB as one", async () => {
+    const file = dropbox.add("/books/Novel.epub", new TextEncoder().encode("PK\x03\x04epub"));
+    await chooseFolder("/books");
+
+    const response = await apiFetch(`https://example.com/api/dropbox/file?id=${file.id}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/epub+zip");
+    await response.arrayBuffer();
   });
 
   it("does not reach outside the folder by id", async () => {

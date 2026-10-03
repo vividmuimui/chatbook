@@ -255,6 +255,6 @@ test("keeps the shelf shut until the password is typed", async ({ page }) => {
   await page.getByRole("button", { name: "ログイン" }).tap();
 
   // Signed in, and still at the address that was asked for
-  await expect(page.getByRole("button", { name: "PDFを追加" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "本を追加" })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe("/");
 });

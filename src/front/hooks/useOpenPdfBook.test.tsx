@@ -99,6 +99,7 @@ async function openAPdf(
     sending.answers({
       id: PDF_ID,
       fileName: FILE_NAME,
+      format: "pdf",
       pageCount: PAGE_COUNT,
       fullText: FULL_TEXT,
       readingState,
@@ -125,6 +126,7 @@ describe("useOpenPdfBook", () => {
     expect(cache.get(bookKey(PDF_ID))?.data).toStrictEqual({
       id: PDF_ID,
       fileName: FILE_NAME,
+      format: "pdf",
       pageCount: PAGE_COUNT,
       hasThumbnail: true,
       // The upload this seed answers for has just stored the outline, so the
@@ -142,6 +144,7 @@ describe("useOpenPdfBook", () => {
     expect(cache.get(bookKey(PDF_ID))?.data).toStrictEqual({
       id: PDF_ID,
       fileName: FILE_NAME,
+      format: "pdf",
       pageCount: PAGE_COUNT,
       hasThumbnail: false,
       hasOutline: false,

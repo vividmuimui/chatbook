@@ -11,6 +11,12 @@ import {
   PAGE_COUNT,
   pageText,
 } from "./fixtures/testBookManifest.ts";
+import {
+  EPUB_CHAPTERS,
+  EPUB_FILE_NAME,
+  EPUB_TITLE,
+  LINKED_ANCHOR,
+} from "./fixtures/testEpubManifest.ts";
 // Taken from the viewer rather than copied: a wait written as a number here
 // would stay put if the viewer's own wait grew, and quietly stop covering it.
 import { SELECTION_SETTLE_MS } from "../src/front/hooks/useSettledSelection.ts";
@@ -216,7 +222,7 @@ test("app loads and shows the shelf", async ({ page }) => {
   await logIn(page);
   await page.goto("/");
   await expect(page.locator("text=chatbook")).toBeVisible();
-  await expect(page.getByRole("button", { name: "PDFを追加" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "本を追加" })).toBeVisible();
 });
 
 /** Console output naming a pdf.js asset the viewer failed to fetch. */
@@ -536,7 +542,7 @@ test("gives the chat the window on the maximize toggle, and the page back on the
   // second pane beside it left to size.
   await expect(page.locator("canvas.block").first()).toBeHidden();
   await expect(page.getByRole("separator", { name: "PDFとチャットの幅を変更" })).toBeHidden();
-  await expect(chatPane.getByText("PDF内のテキストを選択して質問してください")).toBeVisible();
+  await expect(chatPane.getByText("本文のテキストを選択して質問してください")).toBeVisible();
   expect((await chatPane.boundingBox())!.width).toBeCloseTo(paneRow, 0);
 
   await page.getByRole("button", { name: "最大化を解除" }).click();
@@ -2195,4 +2201,128 @@ test("copies the passage a reader chose with the question box over it", async ({
   await page.keyboard.press("ControlOrMeta+v");
 
   await expect(box).toHaveValue(COVER_TITLE);
+});
+
+/** The EPUB these tests read, built by `fixtures/generateTestEpub.ts`. */
+const TEST_EPUB = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  EPUB_FILE_NAME,
+);
+
+/** The drawn chapter's heading, which is only there once the chapter is. */
+const chapterHeading = (page: Page, index: number) =>
+  page.locator(".epubChapter h1", { hasText: EPUB_CHAPTERS[index].heading });
+
+/** Uploads the EPUB from the shelf and lands on its first chapter with no highlights in it. */
+async function openTestEpub(page: Page): Promise<string> {
+  await logIn(page);
+  await page.goto("/");
+  await page.setInputFiles('input[type="file"]', TEST_EPUB);
+  await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
+
+  const bookId = new URL(page.url()).pathname.split("/").pop()!;
+  const { selections } = (await (await page.request.get(`/api/pdf/${bookId}`)).json()) as {
+    selections: { id: string }[];
+  };
+  for (const selection of selections) {
+    await page.request.delete(`/api/pdf/${bookId}/selections/${selection.id}`);
+  }
+  await page.request.put(`/api/pdf/${bookId}/reading-state`, {
+    data: { page: 1, selectionId: null, bookChat: false, outlineOpen: true, chatPanelOpen: true },
+  });
+  await page.goto(`/books/${bookId}?page=1`);
+  await expect(chapterHeading(page, 0)).toBeVisible();
+  return bookId;
+}
+
+test("an EPUB added from the shelf is read chapter by chapter, in the reader's own type", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+
+  // The publisher's stylesheet would colour the text red
+  const color = await page
+    .locator(".epubChapter p")
+    .first()
+    .evaluate((p) => getComputedStyle(p).color);
+  expect(color).not.toBe("rgb(255, 0, 0)");
+
+  // Its own table of contents, each entry opening its chapter
+  const outline = page.getByRole("navigation", { name: "目次" });
+  await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
+  await expect(chapterHeading(page, 1)).toBeVisible();
+
+  // The keys that turn a PDF's pages turn its chapters
+  await page.keyboard.press("h");
+  await expect(chapterHeading(page, 0)).toBeVisible();
+
+  // A link into the book lands on the chapter it names, at the passage it names
+  await page.locator(".epubChapter a", { hasText: "R2 について" }).click();
+  await expect(chapterHeading(page, EPUB_CHAPTERS.length - 1)).toBeVisible();
+  await expect(page.locator(`#epub-${LINKED_ANCHOR}`)).toBeInViewport();
+
+  // And the shelf counts it in chapters
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: `${EPUB_TITLE} を開く` })).toContainText(
+    `${EPUB_CHAPTERS.length} 章`,
+  );
+});
+
+test("a passage of an EPUB offers to ask about it, and its highlight follows the text as the pane changes width", async ({
+  page,
+}) => {
+  const bookId = await openTestEpub(page);
+
+  // Dragging over a line offers the question box, as on a PDF page
+  const paragraph = page.locator(".epubChapter p").first();
+  const box = (await paragraph.boundingBox())!;
+  await page.mouse.move(box.x + 2, box.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + 10, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.getByRole("button", { name: "質問する", exact: true })).toBeVisible({
+    timeout: 10000,
+  });
+  await page.keyboard.press("Escape");
+
+  // A highlight is kept by where it is in the chapter's text. Stored here
+  // rather than by asking, which would reach the model.
+  const text = EPUB_CHAPTERS[0].paragraphs[0];
+  const start = (await page.locator(".epubChapter").textContent())!.indexOf(text);
+  const created = await page.request.post(`/api/pdf/${bookId}/selections`, {
+    data: {
+      selectedText: text,
+      pageNumber: 1,
+      positionData: { rects: [], textRange: { start, end: start + text.length } },
+    },
+  });
+  expect(created.status()).toBe(201);
+  await page.goto(`/books/${bookId}?page=1`);
+
+  /** Where the highlight is drawn, against where its text is laid out now. */
+  const highlightAgainstText = async () => {
+    const marks = page.getByRole("button", { name: "ハイライトのチャットを開く" });
+    await expect(marks.first()).toBeVisible();
+    const drawn = await marks.evaluateAll((els) =>
+      els.map((el) => el.getBoundingClientRect()).map(({ top, bottom }) => ({ top, bottom })),
+    );
+    const laidOut = await paragraph.evaluate((p) => {
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      const { top, bottom } = range.getBoundingClientRect();
+      return { top, bottom };
+    });
+    return { lines: drawn.length, drawn, laidOut };
+  };
+
+  const wide = await highlightAgainstText();
+  await page.getByRole("button", { name: "目次を隠す" }).click();
+  await page.getByRole("button", { name: "チャットを隠す" }).click();
+  // The chapter reflows onto fewer lines once the pane is wider
+  await expect.poll(async () => (await highlightAgainstText()).lines).toBeLessThan(wide.lines);
+
+  const folded = await highlightAgainstText();
+  expect(folded.drawn[0].top).toBeGreaterThanOrEqual(folded.laidOut.top - 2);
+  expect(folded.drawn.at(-1)!.bottom).toBeLessThanOrEqual(folded.laidOut.bottom + 2);
 });

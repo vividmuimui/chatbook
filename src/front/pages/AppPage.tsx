@@ -14,6 +14,7 @@ import {
   type ActiveSelection,
 } from "../atoms/chatAtom";
 import { PdfViewer } from "../components/PdfViewer/PdfViewer";
+import { EpubViewer } from "../components/EpubViewer/EpubViewer";
 import { PageToolbar } from "../components/PdfViewer/PageToolbar";
 import { ChatArea } from "../components/ChatArea/ChatArea";
 import { ChatSheet } from "../components/ChatArea/ChatSheet";
@@ -329,12 +330,26 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
           }
           className={`h-full min-w-0 ${isNarrow ? "w-full" : ""}`}
         >
-          <PdfViewer
-            pdfId={pdfId}
-            book={book}
-            bookError={error as Error | undefined}
-            onSelectionClick={handleSelectionClick}
-          />
+          {/* A PDF is the viewer drawn until the book says otherwise: its
+              download starts on the id alone, before the book has arrived
+              (`usePdfDocument`), and waiting on the book to choose would undo
+              that. An EPUB's bytes are left alone by it until the book arrives
+              and hands over to the viewer that can read them. */}
+          {book?.format === "epub" ? (
+            <EpubViewer
+              pdfId={pdfId}
+              book={book}
+              bookError={error as Error | undefined}
+              onSelectionClick={handleSelectionClick}
+            />
+          ) : (
+            <PdfViewer
+              pdfId={pdfId}
+              book={book}
+              bookError={error as Error | undefined}
+              onSelectionClick={handleSelectionClick}
+            />
+          )}
         </div>
 
         {isNarrow && (

@@ -39,7 +39,10 @@ export const downloadDropboxFile: DownloadDropboxFile = (file, onProgress) => {
       received += value.byteLength;
       if (file.size > 0) onProgress(Math.min(1, received / file.size));
     }
-    return new File(chunks, file.name, { type: "application/pdf" });
+    // Typed by the name the listing chose it by; which format it really is,
+    // is read off the bytes when it is extracted (`extractBookData`).
+    const type = /\.epub$/i.test(file.name) ? "application/epub+zip" : "application/pdf";
+    return new File(chunks, file.name, { type });
   })();
 
   return ResultAsync.fromPromise(downloaded, (cause) =>

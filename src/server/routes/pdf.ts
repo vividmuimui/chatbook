@@ -11,6 +11,8 @@ import {
   saveReadingState,
   searchSelections,
   thumbnailObjectKey,
+  BOOK_CONTENT_TYPES,
+  readFormat,
   THUMBNAIL_CONTENT_TYPE,
   systemIdClock,
   type IdClock,
@@ -490,11 +492,16 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
       .get("/pdf/:pdfId/file", async (c) => {
         const pdfId = c.req.param("pdfId");
         const d1Db = drizzle(c.env.DB);
-        // Only the two columns this answer is built from. Selecting the row
+        // Only the columns this answer is built from. Selecting the row
         // whole would read `full_text` as well — hundreds of kilobytes on a
         // real book, fetched out of D1 on every open just to be discarded.
         const pdf = await d1Db
-          .select({ filePath: pdfs.filePath, fileName: pdfs.fileName, dropboxId: pdfs.dropboxId })
+          .select({
+            filePath: pdfs.filePath,
+            fileName: pdfs.fileName,
+            dropboxId: pdfs.dropboxId,
+            format: pdfs.format,
+          })
           .from(pdfs)
           .where(eq(pdfs.id, pdfId))
           .get();
@@ -504,6 +511,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
             404,
           );
         }
+        const contentType = BOOK_CONTENT_TYPES[readFormat(pdf.format)];
 
         // `onlyIf` hands the browser's `If-None-Match` to R2, which answers
         // without the body when the file is the one already held. Reading the
@@ -527,7 +535,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           }
           if (fetched.isOk()) {
             await c.env.PDF_BUCKET.put(pdf.filePath, fetched.value, {
-              httpMetadata: { contentType: "application/pdf" },
+              httpMetadata: { contentType },
             });
             object = await c.env.PDF_BUCKET.get(pdf.filePath);
           }
@@ -549,7 +557,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         // `private` because this is behind the session — a shared cache holding
         // it would hand the book to whoever asked next.
         const headers = {
-          "Content-Type": "application/pdf",
+          "Content-Type": contentType,
           "Content-Disposition": `inline; filename="${encodeURIComponent(pdf.fileName)}"`,
           "Cache-Control": "private, max-age=31536000, immutable",
           ETag: object.httpEtag,

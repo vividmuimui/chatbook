@@ -96,6 +96,12 @@ export async function storeOutlineIfMissing(
   }
 }
 
+/** Whether bytes open the way a ZIP archive — and so an EPUB — does. */
+function isZipArchive(bytes: ArrayBuffer): boolean {
+  const head = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+  return head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+}
+
 /** Hands the fetched bytes to pdf.js. Injected so tests can stand in for it. */
 const buildPdfDocument = (data: ArrayBuffer) =>
   pdfjsLib.getDocument({ data, ...PDFJS_ASSET_OPTIONS }).promise;
@@ -191,6 +197,10 @@ export function usePdfDocument(
           return response.arrayBuffer();
         })();
         if (cancelled) return;
+        // An EPUB opened by its address, before the book arrived to say so.
+        // Nothing to show and nothing gone wrong: the reader swaps this viewer
+        // for the EPUB one as soon as the book is in (`AppPage`).
+        if (isZipArchive(arrayBuffer)) return;
 
         const doc = await buildDocument(arrayBuffer);
         opened = doc;
