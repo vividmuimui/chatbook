@@ -10,7 +10,8 @@ import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
-import type { ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { OcrProgress } from "../lib/pdfOcr";
 import { groupProgress } from "../lib/readingProgress";
 import {
   filterShelf,
@@ -80,7 +81,7 @@ interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
   /** Passed straight to the file picker; injectable so tests can fail a read. */
-  extract?: (file: File) => Promise<ExtractedPdfData>;
+  extract?: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData>;
   /** The upload's own request; injectable so tests can drive its progress. */
   createUploadRequest?: () => XMLHttpRequest;
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
@@ -96,11 +97,13 @@ interface ShelfPageProps {
  * Three states rather than a share alone: the reading happens before anything
  * has been sent, and once the whole body is up there is still the server
  * writing it away — a bar sat at 0% or at 100% for either of those reads as a
- * shelf that has hung.
+ * shelf that has hung. A book without text adds a fourth between reading and
+ * sending: OCR, counted in pages, which for a long scan is minutes.
  */
 type Importing =
   | { phase: "downloading"; ratio: number }
   | { phase: "reading" }
+  | ({ phase: "recognizing" } & OcrProgress)
   | { phase: "uploading"; ratio: number }
   | { phase: "storing" };
 
@@ -111,6 +114,8 @@ function importWording(importing: Importing): string {
       return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
       return "本を読み取り中...";
+    case "recognizing":
+      return `文字を読み取り中 ${importing.done}/${importing.total} ページ`;
     case "uploading":
       return `アップロード中 ${Math.round(importing.ratio * 100)}%`;
     case "storing":
@@ -569,6 +574,10 @@ export function ShelfPage({
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
+  // Stops the OCR of the book being added. Only OCR listens: everything else
+  // in an import is over in seconds, and an upload that was half sent is no
+  // more a stored book than one never started.
+  const cancelImport = useRef<AbortController | null>(null);
   const openFile = useOpenPdfBook(
     extract,
     // The share the browser reports is the upload's alone; once it is all up
@@ -606,14 +615,32 @@ export function ShelfPage({
     setActionError(null);
     setImporting({ phase: "reading" });
 
-    const outcome = await openFile(file);
+    const outcome = await openFile(file, startImport());
     outcome.match(
       (pdfId) => void openBook(pdfId),
-      (failure) => {
-        setImporting(null);
-        setActionError(`本を開けませんでした: ${failure.message}`);
-      },
+      (failure) => importFailed(failure, "本を開けませんでした"),
     );
+  };
+
+  /** A way to cancel the import about to start, and to hear how far its OCR has got. */
+  const startImport = () => {
+    const controller = new AbortController();
+    cancelImport.current = controller;
+    return {
+      signal: controller.signal,
+      onOcrProgress: (progress: OcrProgress) => setImporting({ phase: "recognizing", ...progress }),
+    };
+  };
+
+  /**
+   * Hands the shelf back after an import that did not become a book. A reader
+   * who cancelled is not told anything went wrong — they asked for it, and the
+   * shelf looking as it did before is the answer.
+   */
+  const importFailed = (failure: Error, lead: string) => {
+    cancelImport.current = null;
+    setImporting(null);
+    if (failure.name !== "AbortError") setActionError(`${lead}: ${failure.message}`);
   };
 
   /**
@@ -630,14 +657,11 @@ export function ShelfPage({
       setImporting({ phase: "downloading", ratio }),
     ).andThen((file) => {
       setImporting({ phase: "reading" });
-      return openFile(file, entry.dropboxId);
+      return openFile(file, { dropboxId: entry.dropboxId, ...startImport() });
     });
     outcome.match(
       (pdfId) => void openBook(pdfId),
-      (failure) => {
-        setImporting(null);
-        setActionError(`Dropboxの本を開けませんでした: ${failure.message}`);
-      },
+      (failure) => importFailed(failure, "Dropboxの本を開けませんでした"),
     );
   };
 
@@ -862,9 +886,22 @@ export function ShelfPage({
 
       {importing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/70">
-          <p role="status" className="text-lg text-gray-600">
-            {importWording(importing)}
-          </p>
+          <div className="flex flex-col items-center gap-4">
+            <p role="status" className="text-lg text-gray-600">
+              {importWording(importing)}
+            </p>
+            {/* Only while OCR runs: it is the one part long enough to want
+                stopping, and the one that listens. */}
+            {importing.phase === "recognizing" && (
+              <button
+                type="button"
+                onClick={() => cancelImport.current?.abort()}
+                className="rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 cursor-pointer hover:bg-gray-100"
+              >
+                中止
+              </button>
+            )}
+          </div>
         </div>
       )}
 

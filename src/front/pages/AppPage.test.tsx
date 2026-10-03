@@ -41,6 +41,7 @@ const BOOK_A: BookDetail = {
   pageCount: 209,
   hasThumbnail: true,
   hasOutline: true,
+  hasOcr: false,
   // The second one is pages away, so what a highlight does to the page the
   // reader is on can be told apart from doing nothing at all
   selections: [highlight("a1", A_PASSAGE), highlight("a2", A_SECOND_PASSAGE, 30)],
@@ -54,6 +55,7 @@ const BOOK_B: BookDetail = {
   pageCount: 120,
   hasThumbnail: true,
   hasOutline: true,
+  hasOcr: false,
   selections: [highlight("b1", B_PASSAGE)],
   readingState: null,
 };

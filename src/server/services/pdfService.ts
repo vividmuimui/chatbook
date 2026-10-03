@@ -18,6 +18,7 @@ import {
   type SelectionUpdated,
 } from "../../shared/schemas/selection";
 import type { BookSearchResult } from "../../shared/schemas/bookSearch";
+import type { OcrText } from "../../shared/schemas/ocr";
 import { findInBookText } from "./bookTextSearch";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
 
@@ -81,6 +82,17 @@ export function thumbnailObjectKey(fileHash: string): string {
 export const THUMBNAIL_CONTENT_TYPE = "image/webp";
 
 /**
+ * R2 object key for the lines OCR read off a scanned book's pages. Kept in R2
+ * rather than D1: it is a box per line on every page, a megabyte or so for a
+ * long book, and only the viewer reads it — never a query.
+ */
+export function ocrObjectKey(fileHash: string): string {
+  return `ocr/${fileHash}.json`;
+}
+
+export const OCR_CONTENT_TYPE = "application/json";
+
+/**
  * The two non-deterministic values every write needs. Injected so tests can
  * pin the ids and timestamps a request produces.
  */
@@ -104,6 +116,8 @@ interface OpenPdfInput {
   arrayBuffer: ArrayBuffer;
   thumbnail?: ArrayBuffer;
   outline?: BookOutline;
+  /** What OCR read off pages without text; absent for a book that needed none. */
+  ocr?: OcrText;
   /** The Dropbox file the bytes came from or were written to, when there is one. */
   dropboxId?: string;
 }
@@ -168,8 +182,17 @@ async function storePdf(
   input: OpenPdfInput,
   idClock: IdClock,
 ): Promise<PdfMetadata> {
-  const { fileName, fileHash, fullText, pageCount, arrayBuffer, thumbnail, outline, dropboxId } =
-    input;
+  const {
+    fileName,
+    fileHash,
+    fullText,
+    pageCount,
+    arrayBuffer,
+    thumbnail,
+    outline,
+    ocr,
+    dropboxId,
+  } = input;
   const d1Db = drizzle(db);
   const format = bookFormatOf(arrayBuffer);
   const objectKey = bookObjectKey(fileHash, format);
@@ -182,6 +205,17 @@ async function storePdf(
     await bucket.put(thumbnailObjectKey(fileHash), thumbnail, {
       httpMetadata: { contentType: THUMBNAIL_CONTENT_TYPE },
     });
+  }
+
+  // Like the outline, the latest reading wins: a book read again without OCR
+  // (its pages turned out to carry text after all) must not keep laying the
+  // old lines over pages that now draw their own.
+  if (ocr) {
+    await bucket.put(ocrObjectKey(fileHash), JSON.stringify(ocr), {
+      httpMetadata: { contentType: OCR_CONTENT_TYPE },
+    });
+  } else {
+    await bucket.delete(ocrObjectKey(fileHash));
   }
 
   if (dropboxId) {
@@ -347,7 +381,7 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
 
   await d1Db.delete(pdfs).where(eq(pdfs.id, pdfId));
   // The key the book was stored under, which carries its format's extension
-  await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash)]);
+  await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash), ocrObjectKey(pdf.fileHash)]);
 
   return true;
 }
@@ -498,9 +532,12 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
   // Asked for together: the highlights and the cover do not depend on each
   // other, and awaiting them in turn made opening a book wait out two round
   // trips where one would do.
-  const [selRows, thumbnail] = await Promise.all([
+  // The OCR head joins them for the same reason: alongside, it costs the
+  // opening of a book no round trip of its own.
+  const [selRows, thumbnail, ocr] = await Promise.all([
     d1Db.select().from(selections).where(eq(selections.pdfId, pdfId)).all(),
     bucket.head(thumbnailObjectKey(pdf.fileHash)),
+    bucket.head(ocrObjectKey(pdf.fileHash)),
   ]);
 
   return {
@@ -510,6 +547,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
     pageCount: pdf.pageCount,
     hasThumbnail: thumbnail !== null,
     hasOutline: pdf.outline !== null,
+    hasOcr: ocr !== null,
     readingState: readingStateOf(pdf),
     selections: selRows.map((s) => ({
       id: s.id,
