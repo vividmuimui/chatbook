@@ -112,10 +112,17 @@
  * is never loaded (`renderChapter` drops it), so every book reads the same way
  * and none of them can restyle the app around it.
  */
+/* The reader's choices (`epubTypographyStyle`) arrive as custom properties on
+   the page; the fallbacks are the defaults, for a page drawn without them. */
+.epubPage {
+  padding-inline: var(--epub-page-margin, 8%);
+}
 .epubChapter {
   color: #1f2937;
-  font-size: 1.0625rem;
-  line-height: 1.9;
+  font-family: var(--epub-font-family, inherit);
+  font-size: var(--epub-font-size, 1.0625rem);
+  line-height: var(--epub-line-height, 1.9);
+  text-align: var(--epub-text-align, start);
   overflow-wrap: anywhere;
 }
 .epubChapter p {
@@ -130,6 +137,8 @@
   margin: 1.6em 0 0.7em;
   font-weight: 700;
   line-height: 1.4;
+  /* A justified heading of two short lines spreads its first one edge to edge. */
+  text-align: start;
 }
 .epubChapter h1 {
   font-size: 1.6em;
@@ -165,6 +174,7 @@
   border-radius: 4px;
   font-size: 0.875em;
   line-height: 1.6;
+  text-align: start;
 }
 .epubChapter code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
