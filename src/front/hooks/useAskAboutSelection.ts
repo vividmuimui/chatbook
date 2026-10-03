@@ -13,6 +13,7 @@ import { resultFetcher, type ApiError } from "../lib/fetcher";
 import {
   createdSelectionSchema,
   type CreatedSelection,
+  type HighlightColor,
   type PositionData,
 } from "../../shared/schemas/selection";
 import { useChatStream } from "./useChatStream";
@@ -23,6 +24,10 @@ export interface SelectionDraft {
   pageNumber: number;
   /** Sent whole; the endpoint keeps only `rects` and `pageWidth`. */
   positionData: PositionData;
+  /** Left out when asking, which stores the default yellow. */
+  color?: HighlightColor;
+  /** What the reader wrote against the passage, if they wrote anything. */
+  note?: string;
 }
 
 export type SaveSelection = (
@@ -109,5 +114,25 @@ export function useAskAboutSelection(
     ],
   );
 
-  return { askAboutSelection, saveError };
+  /**
+   * Keep a passage as a highlight and nothing more — the Kindle way of marking
+   * a book, in the colour the reader picked and with their note if they wrote
+   * one. No chat opens: there is no question, so no answer to show, and
+   * drawing the sheet up would cover the page the reader is marking.
+   *
+   * Fails into the same `saveError` an ask does, so the viewer has one place
+   * that says a highlight was not kept, whichever way it was made.
+   */
+  const markSelection = useCallback(
+    (pdfId: string, draft: SelectionDraft) => {
+      setSaveError(null);
+
+      return saveSelection(pdfId, draft)
+        .andTee(addHighlight)
+        .orTee((failure) => setSaveError(failure.message));
+    },
+    [addHighlight, saveSelection],
+  );
+
+  return { askAboutSelection, markSelection, saveError };
 }

@@ -5,7 +5,7 @@ import { Provider, createStore } from "jotai";
 import { errAsync, ok, okAsync, ResultAsync, type Result } from "neverthrow";
 import { PdfViewer, type MeasureSelection } from "./PdfViewer";
 import { SwrTestCache } from "../../../test/swrTestCache";
-import { chatSheetAtom } from "../../atoms/chatAtom";
+import { activeSelectionAtom, chatPanelOpenAtom, chatSheetAtom } from "../../atoms/chatAtom";
 import { bookKey } from "../../hooks/useBook";
 import { zoomAtomFor } from "../../atoms/settingsAtom";
 import { PHONE_WIDTH, setViewportWidth } from "../../../test/viewport";
@@ -263,6 +263,107 @@ describe("PdfViewer", () => {
         },
       ],
     ]);
+  });
+
+  describe("marking a passage without asking", () => {
+    it("keeps the passage a mouse chose in the colour picked, and opens no chat", async () => {
+      vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+      const store = createStore();
+      store.set(chatPanelOpenAtom, false);
+      const saved: unknown[] = [];
+      const saveSelection: SaveSelection = (pdfId, draft) => {
+        saved.push([pdfId, draft]);
+        return okAsync({ ...STORED, color: "#EC407A" });
+      };
+      const { container } = renderViewer({
+        measureSelection: () => MEASURED,
+        saveSelection,
+        store,
+      });
+      await selectPassage(container);
+
+      await userEvent.click(screen.getByRole("button", { name: "ピンクでマーク" }));
+
+      expect(saved).toStrictEqual([
+        [
+          BOOK.id,
+          {
+            selectedText: PASSAGE,
+            pageNumber: MEASURED.selectionPosition.pageNumber,
+            positionData: MEASURED.selectionPosition,
+            color: "#EC407A",
+          },
+        ],
+      ]);
+      await waitFor(() =>
+        expect(screen.queryByPlaceholderText("選択した文章について質問する...")).toBeNull(),
+      );
+      expect(store.get(chatPanelOpenAtom)).toBe(false);
+      expect(store.get(activeSelectionAtom)).toBeNull();
+    });
+
+    it("keeps the passage a finger chose from the bar, without opening any box", async () => {
+      setViewportWidth(PHONE_WIDTH);
+      vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+      const store = createStore();
+      const saved: unknown[] = [];
+      renderViewer({
+        measureSelection: () => MEASURED,
+        saveSelection: (_pdfId, draft) => {
+          saved.push(draft);
+          return okAsync({ ...STORED, color: "#FF9800" });
+        },
+        store,
+      });
+      document.dispatchEvent(new Event("selectionchange"));
+
+      await userEvent.click(await screen.findByRole("button", { name: "オレンジでマーク" }));
+
+      expect(saved).toMatchObject([{ color: "#FF9800" }]);
+      await waitFor(() => expect(screen.queryByRole("button", { name: "AIに質問" })).toBeNull());
+      expect(store.get(chatSheetAtom)).toBe("closed");
+    });
+
+    it("opens the box on a note from the bar, and keeps the note with the highlight", async () => {
+      setViewportWidth(PHONE_WIDTH);
+      vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+      const saved: unknown[] = [];
+      renderViewer({
+        measureSelection: () => MEASURED,
+        saveSelection: (_pdfId, draft) => {
+          saved.push(draft);
+          return okAsync({ ...STORED, note: "あとで読む" });
+        },
+      });
+      document.dispatchEvent(new Event("selectionchange"));
+      await userEvent.click(await screen.findByRole("button", { name: "メモ" }));
+
+      const field = await screen.findByPlaceholderText("選択した文章にメモを書く...");
+      await userEvent.type(field, "あとで読む");
+      await userEvent.click(screen.getByRole("button", { name: "メモ付きでマーク" }));
+
+      expect(saved).toMatchObject([{ color: "#FFEB3B", note: "あとで読む" }]);
+      await waitFor(() =>
+        expect(screen.queryByPlaceholderText("選択した文章にメモを書く...")).toBeNull(),
+      );
+    });
+
+    it("says the highlight could not be saved and keeps the offer up", async () => {
+      setViewportWidth(PHONE_WIDTH);
+      vi.stubGlobal("fetch", bucketWithout({ ok: true }, 200));
+      renderViewer({
+        measureSelection: () => MEASURED,
+        saveSelection: () => errAsync(new ApiError("PDF not found", "PDF_NOT_FOUND", 404)),
+      });
+      document.dispatchEvent(new Event("selectionchange"));
+
+      await userEvent.click(await screen.findByRole("button", { name: "黄でマーク" }));
+
+      expect(
+        await screen.findByText("ハイライトを保存できませんでした: PDF not found"),
+      ).toBeVisible();
+      expect(screen.getByRole("button", { name: "黄でマーク" })).toBeEnabled();
+    });
   });
 
   it("zooms the book in on a pinch, instead of letting the browser zoom the app", async () => {
