@@ -355,10 +355,12 @@ union + `satisfies` で固定する。
   その境界の Result そのもので、`Err` に変換して戻すのは往復の無駄
 - **失敗を画面に出す mutation とイベントハンドラ起点の 1 回きりの取得は `resultFetcher`**
   （`ResultAsync<T, ApiError>`）。受け皿になる SWR が無いので、失敗は値で返さないと消える。
-  現在の該当箇所は本の削除（`ShelfPage`）・ハイライトの作成（`useAskAboutSelection`）・
-  ハイライトの削除（`useHighlights`）・チャット履歴の取得（`AppPage`）・読書位置の保存
-  （`useReadingStateSync`）・ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
-  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 8 つ。
+  現在の該当箇所は本の削除（`ShelfPage`）・ハイライトの作成（`useAskAboutSelection`。
+  質問するときも色だけ・メモだけで作るときも同じ口）・ハイライトの色とメモの変更
+  （`useHighlights` の `updateHighlight`）・ハイライトの削除（`useHighlights`）・
+  チャット履歴の取得（`AppPage`）・読書位置の保存（`useReadingStateSync`）・
+  ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
+  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 9 つ。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -394,22 +396,23 @@ union + `satisfies` で固定する。
 
 失敗の受け皿と表示場所は次のとおり。新しい失敗を足すときはこの表のどれかに合流させる:
 
-| 失敗                                       | 受け皿                                                | 出る場所                                                                         |
-| ------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------- |
-| 本棚の読み込み・削除・追加・ドロップの拒否 | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                 |
-| Dropbox の本の取得・取り込み               | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                 |
-| Dropbox フォルダの一覧                     | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                         |
-| Dropbox フォルダの保存                     | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                     |
-| 本の読み込み                               | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                     |
-| PDF バイナリの取得・pdf.js の構築          | `usePdfDocument` の `error`                           | ビューア中央                                                                     |
-| ページの描画                               | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                             |
-| 目次の取得                                 | `usePdfOutline` の `error`                            | 目次パネル                                                                       |
-| ハイライトの保存                           | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では質問の入力欄が開いたまま） |
-| ハイライトの削除                           | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                   |
-| ハイライトの検索                           | `useHighlightSearch` の `searchError`                 | 同じ枠。削除の失敗が出ている間はそちらが優先される                               |
-| チャットの送信・履歴の取得                 | `chatErrorAtom`                                       | チャットパネル（狭い画面ではシート）                                             |
-| リンク先の passage が見つからない          | `useReadingLocation` の `passageMiss`                 | ヘッダ直下の帯                                                                   |
-| 読書位置の保存                             | `useReadingStateSync` の `saveError`                  | ヘッダ直下の帯                                                                   |
+| 失敗                                         | 受け皿                                                | 出る場所                                                                             |
+| -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                     |
+| Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
+| Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
+| Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
+| 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
+| PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
+| ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
+| 目次の取得                                   | `usePdfOutline` の `error`                            | 目次パネル                                                                           |
+| ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
+| ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                          | 編集欄の中（開いたまま。打ったメモも残る）                                           |
+| ハイライトの削除                             | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
+| ハイライトの検索                             | `useHighlightSearch` の `searchError`                 | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
+| チャットの送信・履歴の取得                   | `chatErrorAtom`                                       | チャットパネル（狭い画面ではシート）                                                 |
+| リンク先の passage が見つからない            | `useReadingLocation` の `passageMiss`                 | ヘッダ直下の帯                                                                       |
+| 読書位置の保存                               | `useReadingStateSync` の `saveError`                  | ヘッダ直下の帯                                                                       |
 
 `chatErrorAtom` だけ二重の口がある。**atom が表示の正、`sendMessage` の戻り値
 （`ResultAsync<string, ApiError>`。成功時の値は保存された回答の id）は呼び出し元の
@@ -438,7 +441,8 @@ union + `satisfies` で固定する。
 | `useServerConfig.ts` の取得失敗                                    | Web 検索は「あり」と仮定して進む。送ってもサーバが落とす                                                         |
 
 **報告しないためではなく報告する主体が別**という catch が 2 つある。`SelectionPopover` の
-`onSubmit` を囲むもの（質問の失敗は `useAskAboutSelection` が受け持つ。ここで再 throw すると
+`onSubmit` / `onMark` を囲むもの（`runStore`。質問とマークの失敗は `useAskAboutSelection` が
+受け持つ。ここで再 throw すると
 イベントハンドラの外へ抜け、`errorElement` にも届かない）と、`usePageBaseSize` の
 `getPage` を囲むもの（同じページを `PdfPage` も開こうとしていて、描けない理由はそちらが
 読者に伝える。最後に分かっていた寸法を保つので、通りすがりにレイアウトが畳まれない）。
@@ -1278,11 +1282,92 @@ half と full の切り替えと閉じるのは `ChatSheet` 自身の `onChange`
 モックは操作感を詰めるために作った参考物。テストの書き方は下記「jsdom に無いものは
 `src/test/setup.ts` が埋める」の `setViewportWidth` を使う。
 
+#### ハイライトは質問しなくても作れる（色とメモ）
+
+Kindle と同じく、**本文を選んで色を付けるだけ・メモを付けるだけ**でハイライトになる。
+チャットは開かない（質問が無いので見せる回答が無く、シートを上げればマークしている
+ページを覆う）。色は 4 つで、**値の正は `src/shared/schemas/selection.ts` の
+`HIGHLIGHT_COLORS`**（黄 `#FFEB3B` / 青 `#42A5F5` / ピンク `#EC407A` / オレンジ `#FF9800`）、
+読者に見せる名前は `src/front/lib/highlightColors.ts`、ボタンの列は
+`src/front/components/ColorSwatches.tsx`（44px 角。提示バー・質問ボックス・編集欄の 3 箇所で共用）。
+
+| 何を                                   | どこが                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 保存の形（色の許可リスト・メモの上限） | `src/shared/schemas/selection.ts`（`highlightColorSchema` / `MAX_NOTE_LENGTH` = 2000）    |
+| 作成（色とメモは任意）                 | `POST /api/pdf/:pdfId/selections`（`routes/pdf.ts`）                                      |
+| 変更                                   | `PATCH /api/pdf/:pdfId/selections/:selId` → `pdfService.ts` の `updateSelection`          |
+| マウスの選択に出すもの                 | `SelectionPopover`（色の列と「メモを書く」が入力欄の上に並ぶ）                            |
+| 指・狭い画面の選択に出すもの           | `SelectionActionBar`（2 段目に色の列と「メモ」「AIに質問」）                              |
+| 保存してキャッシュに足す               | `useAskAboutSelection` の `markSelection`（`askAboutSelection` と同じ保存の口）           |
+| 後から変える                           | `HighlightEditor`（一覧の行の「…のメモと色を変える」と、会話の見出しの「メモと色」）      |
+| キャッシュへの反映                     | `useHighlights` の `updateHighlight`（本のキー `bookKey` を書き換える。専用 atom は無い） |
+
+- **色は保存された値が正**。`selections.color` は NOT NULL で既定が `#FFEB3B` なので、色を
+  選べなかった頃の行はすべて黄で、それがそのまま意味になる（`HIGHLIGHT_COLORS` の先頭を黄に
+  しているのはこのため）。質問から作るハイライトも色を送らないので黄。**配列の位置で色を
+  補うのはやめた**——位置で決めると、前の行を消すたびに後ろの色がずれる。空の色が来たら
+  （サーバは返さない。手で書いたキャッシュだけ）既定の黄で描く（`useHighlights` の `drawnColor`）
+- **色は許可リストで検証する**（任意の `#RRGGBB` ではない）。画面に無い色を受け入れると、
+  一度変えたら二度と選び直せない色が残る。外れれば 400（`Invalid request body: color`）
+- **メモは前後の空白を落とし、空ならメモ無し（`null`）として保存する**（`noteInputSchema`）。
+  編集欄でメモを空にして保存するのがメモの消し方で、別の「消す」ボタンは無い。上限を超えたら
+  切り詰めずに 400（入力欄も `maxLength` で止める）
+- **`PATCH` は `{ color?, note? }` の省略したほうを保つ**。どちらも無ければ 400。**別の本の
+  ハイライトを名指したら 404（`SELECTION_NOT_FOUND`）**——`pdf_id` も条件に入れて更新する。
+  応答は変更後の `{ id, color, note }` だけで、`useHighlights` がそれを本のエントリに書き込む
+  ので、ページ上の色・一覧・会話の見出しが同時に追従する。**楽観的には書かない**（削除と同じ
+  理由: 拒否されたら戻すことになり、読者は色が戻るのを見る）
+- **質問ボックスは 2 つの用途を 1 つの入力欄で持つ**（`mode`: `ask` / `note`）。「メモを書く」で
+  切り替えても打った文は残る。**色の列は用途で振る舞いが変わる**——質問のときは押した瞬間に
+  その色で保存（名前は「黄でマーク」）、メモのときはメモの色を選ぶだけ（「黄を選ぶ」、
+  `aria-pressed` 付き）で、保存は「メモ付きでマーク」。**送信中フラグは質問とマークで 1 つ**
+  （`busy`）——質問の保存中にマークすると、同じ箇所のハイライトが 2 つになる
+- **浮かぶボックスは色の列のぶん背が高い**ので、選んだ行から `POPOVER_LIFT_PX`（180px）上に
+  置く（PDF と EPUB で共用。元は 130px）
+- **提示バーの色は押した瞬間に保存する**。バーはフォーカスを取らないので、保存が終わるまで
+  読者の選択はそのまま残る。保存できたら `handlePopoverDismiss` で選択ごと畳む（残すと、
+  ハイライトの上にブラウザの選択が重なって見える）。バーの「メモ」は質問と同じ下端の入力欄を
+  メモの用途で開く（`boxOpen` = `"note"`。`PdfViewer` / `EpubViewer` の `questionOpen` を
+  用途つきに広げたもの）。**バーの 2 段目は 390px にちょうど収まる幅**なので、ボタンを足す
+  ならどれかを削る（「メモを書く」ではなく「メモ」なのはこのため）
+- **EPUB も同じ口を通る**。保存する `positionData` に `textRange` が載るのは質問のときと同じ
+  （`EpubViewer` の `draftOf`）
+- **変更の失敗は編集欄の中に出す**（`HighlightEditor` の `error`。上記「失敗の運び方」の表）。
+  一覧の赤い枠（削除・検索の失敗）にも会話の `chatErrorAtom` にも合流させないのは、編集欄が
+  一覧と会話の見出しの 2 箇所に出て、どちらにも別の失敗の枠があるため。編集欄は開いたままで、
+  打ったメモも残る
+- **会話の見出しの色とメモは本から読む**（`ChatArea` の `marked`）。`activeSelectionAtom` は
+  箇所しか名指さないので、そこに色やメモを足すと SWR の写しになる（上記「`useEffect` の扱い」の
+  「写し（禁止）」）。別のハイライトを開くと編集欄は閉じる（引用と同じくレンダー中に畳む）
+
+**名前の衝突に注意**（下記「E2E の前提」の「ロケータの name は部分一致」）。足したボタンは
+「黄でマーク」「黄を選ぶ」「黄に変える」「メモを書く」「メモ」「メモ付きでマーク」「メモを保存」
+「メモと色」「やめる」と、一覧の行ごとの「「…」のメモと色を変える」。**「メモ」はほかの 5 つの
+部分文字列**なので、E2E で名指すときは `exact: true` を付ける。一覧の行ごとのボタンは
+「「…」を削除」と同じ書き出しになったので、`ChatArea.test.tsx` の 2 本は正規表現を
+`/^「エッジは….*」を削除$/` に絞った（`/^「エッジは…/` のままだと 2 つに当たって落ちる）。
+
+守っているテストは次のとおり。**狭い画面の提示バーの色・メモを通る E2E は無い**（jsdom の
+`setViewportWidth` だけ。バーが 390px に収まることは手で見る）:
+
+| 何を                                          | どのテスト                                                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 作成・変更・許可リスト・メモの空白と上限・404 | `test/worker/pdf.test.ts` の `POST /api/pdf/:pdfId/selections` と `PATCH /api/pdf/:pdfId/selections/:selId` |
+| メモで見つかる（`%` のエスケープ込み）        | 同 `GET /api/pdf/:pdfId/search`「finds a highlight by the note written against it」                         |
+| 色の列・用途の切り替え・送信中の 1 本化       | `SelectionPopover.test.tsx`「marking without asking」                                                       |
+| チャットを開かずに保存する・失敗の運び方      | `useAskAboutSelection.test.tsx`「marking a passage without asking」                                         |
+| 保存された色で描く・変更がキャッシュに載る    | `useHighlights.test.tsx`                                                                                    |
+| ビューアの配線（マウス・バー・メモ・失敗）    | `PdfViewer.test.tsx`「marking a passage without asking」、`EpubViewer.test.tsx` の 1 本                     |
+| 一覧のメモ表示と編集欄                        | `HighlightListPanel.test.tsx`「colours and notes」                                                          |
+| 会話の見出しから変える                        | `ChatArea.test.tsx`「changes the open highlight's colour and note…」ほか 2 本                               |
+| 実ブラウザで色とメモがリロードを越える        | `e2e/chatbook.spec.ts`「a passage marked in a colour with a note keeps both through a reload」（desktop）   |
+
 #### ハイライト一覧の検索はサーバ、削除はパネルが持つ
 
 一覧（`src/front/components/ChatArea/HighlightListPanel.tsx`）は**データ源を読まない
 props のコンポーネントのまま**で、自分で持っているのは削除ダイアログの開閉と直近の削除失敗
-（`actionError`）だけ。**検索欄はパネルが描くが、値も結果も持たない**——入力と SWR は
+（`actionError`）、それにどの行の編集欄を開いているか（`editingId`。一度に 1 つ）だけ。
+各行にはメモがあれば本文の下に出す（行の色の縦線つき。読み上げでは「メモ:」と前置きする）。**検索欄はパネルが描くが、値も結果も持たない**——入力と SWR は
 `src/front/hooks/useHighlightSearch.ts` にあり、`ChatArea` がそれを呼んで
 `query` / `onQueryChange` / `onSearch` / `searched` / `searchError` と、絞り込み済みの
 `highlights` / 本の総数 `total` を props で渡す。
@@ -1311,7 +1396,7 @@ props のコンポーネントのまま**で、自分で持っているのは削
 `pdfService.ts` の `searchSelections`）。**サーバで検索するのは、チャットが本の
 レスポンスに載っていないから**——一覧は `GET /api/pdf/:pdfId` の `selections[]` から
 描かれるので、会話の中身はクライアントに無い。本の存在を確かめたあと、**手書き SQL を 1 本**
-で `selections.selected_text` と `chat_messages.content` の両方を見る（`EXISTS`。2 つの
+で `selections.selected_text` と `selections.note` と `chat_messages.content` を見る（`EXISTS`。2 つの
 検索に分けて後で混ぜると、片方だけ届いた瞬間に結果がちらつく）。**`findSelections` の
 `db.prepare()` は service で唯一 drizzle を通らない**箇所で、`ESCAPE` を書くため——軸を
 足すならここ。返すのは**該当した id だけ**（`{ selectionIds }`。`selectionSearchResultSchema`）
@@ -1324,9 +1409,9 @@ props のコンポーネントのまま**で、自分で持っているのは削
 400。**入力欄に `maxLength` は無い**ので、長い段落を貼れば読者には「検索に失敗しました」
 として出る。
 
-- 軸は**ハイライトの本文とそのチャットの本文**。色もページ範囲も軸にしていない——色は
-  選ぶ UI が無く保存された行がすべて D1 の既定値（`#FFEB3B`）、ページは読者が絞りたい
-  単位（章）と一致しない
+- 軸は**ハイライトの本文・メモ・そのチャットの本文**。色もページ範囲も軸にしていない——
+  色は一覧の印で見分けがつき（4 つしかないので絞るほどの数にならない）、ページは読者が
+  絞りたい単位（章）と一致しない
 - **`%` と `_`、それにバックスラッシュ自身をエスケープする**（`likeContaining`）。素通しすると
   `%` の検索が本の全件に当たり、検索が壊れているようにしか見えない
 - **大文字小文字を無視するのは ASCII だけ**（SQLite の LIKE の仕様）。`workers` は
@@ -1387,26 +1472,24 @@ props のコンポーネントのまま**で、自分で持っているのは削
   `selectionDeleted(id)` を撃つ。**本の id は hook に渡したものと同じでなければならない**
   ——リクエストは引数の id へ飛ぶが、ハイライトが消えるのは hook の `pdfId` の一覧）
 
-**既知の割り切りが 1 つ**: 同じセッションで作ったハイライト（`addHighlight` が `color: ""`
-で先に置いた分）がある状態で古い行を削除すると、その色が 1 つずれる——パレットが配列の位置で
-決まるため。ページ上のハイライトも同じ配列を読むので同時に変わる。本を読み直せば既定値に
-戻り、色に意味を持たせていないので直していない。
+以前あった「削除すると同じセッションで作ったハイライトの色が 1 つずれる」割り切りは、
+色を保存された値で描くようにしたので無くなった（上記「ハイライトは質問しなくても作れる」）。
 
 守っているテストは次のとおり。**狭い画面でこの UI を通る自動テストは無い**（`mobile` /
 `tablet` の E2E にも jsdom の `setViewportWidth` にも無いので、シートの中の見え方は手で見る）:
 
-| 何を                                      | どのテスト                                                                                                        |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| 検索の SQL（本文・チャット・`%`・他の本） | `test/worker/pdf.test.ts` の `GET /api/pdf/:pdfId/search`（8 件。**チャット本文で見つかることを守る唯一の場所**） |
-| 入力と実行の分離・失敗の運び方            | `src/front/hooks/useHighlightSearch.test.tsx`                                                                     |
-| 一覧の見え方・削除の確認と失敗表示        | `HighlightListPanel.test.tsx`                                                                                     |
-| 検索結果で一覧が絞られる                  | `ChatArea.test.tsx`「narrows the list to what the server says holds the query, chats included」                   |
-| サーバが落とした分だけキャッシュから除く  | `useHighlights.test.tsx`「takes a highlight the reader deleted out of the list without re-reading the book」      |
-| 失敗しても一覧に残す                      | 同「keeps the highlight and hands back the reason when the server refuses to delete it」                          |
-| 開いているチャットを畳む                  | `src/front/atoms/chatAtom.test.ts`「leaves the chat of a highlight that has just been deleted」                   |
-| 待っている間に開かれたチャットを畳む      | `ChatArea.test.tsx`「leaves the chat a reader opened on a highlight while its deletion was in flight」            |
-| サーバから本当に消えている                | `e2e/chatbook.spec.ts`「a highlight deleted from the list stays gone after a reload」（desktop 1 本）             |
-| 検索が実際にサーバを通る                  | 同「searching the list narrows it to what the server matched」（本文の検索だけ。理由は下記）                      |
+| 何を                                            | どのテスト                                                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 検索の SQL（本文・メモ・チャット・`%`・他の本） | `test/worker/pdf.test.ts` の `GET /api/pdf/:pdfId/search`（9 件。**チャット本文で見つかることを守る唯一の場所**） |
+| 入力と実行の分離・失敗の運び方                  | `src/front/hooks/useHighlightSearch.test.tsx`                                                                     |
+| 一覧の見え方・削除の確認と失敗表示              | `HighlightListPanel.test.tsx`                                                                                     |
+| 検索結果で一覧が絞られる                        | `ChatArea.test.tsx`「narrows the list to what the server says holds the query, chats included」                   |
+| サーバが落とした分だけキャッシュから除く        | `useHighlights.test.tsx`「takes a highlight the reader deleted out of the list without re-reading the book」      |
+| 失敗しても一覧に残す                            | 同「keeps the highlight and hands back the reason when the server refuses to delete it」                          |
+| 開いているチャットを畳む                        | `src/front/atoms/chatAtom.test.ts`「leaves the chat of a highlight that has just been deleted」                   |
+| 待っている間に開かれたチャットを畳む            | `ChatArea.test.tsx`「leaves the chat a reader opened on a highlight while its deletion was in flight」            |
+| サーバから本当に消えている                      | `e2e/chatbook.spec.ts`「a highlight deleted from the list stays gone after a reload」（desktop 1 本）             |
+| 検索が実際にサーバを通る                        | 同「searching the list narrows it to what the server matched」（本文の検索だけ。理由は下記）                      |
 
 **チャット本文で見つかることを E2E に足していないのは、実キーが要るから**ではない——質問
 （user のメッセージ）は LLM を呼ぶ**前**に保存されるので、ダミーキーでも D1 には残る。
@@ -1508,7 +1591,7 @@ SWR の使い方で押さえるところ:
   作り直せない**（別のオブジェクトは別の state になる）。jotai の
   `atomFamily` を使わないのは非推奨で本を開くたびに警告を出すため
 - **テストの差し替え口は 2 つある**。取得そのものを差し替えるなら DI 引数——
-  `useBook(pdfId, loadBook)` / `useHighlights(pdfId, loadBook, deleteHighlight)` /
+  `useBook(pdfId, loadBook)` / `useHighlights(pdfId, loadBook, deleteHighlight, updateSelection)` /
   `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/
   `usePdfDocument(pdfId, book, fetchFn, buildDocument)`（**アップロードの手渡しだけは DI
   ではない**——モジュールの 1 枠なので、テストは `rememberUploadedFile` で置き
@@ -1525,7 +1608,7 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
   止められない**——`src/test/fakeUpload.ts` の `fakeUpload()` が作った `request` を返す関数を
   渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める）/
   `PdfViewer({ measureSelection, saveSelection })` /
-  `ChatArea({ readQuote, deleteHighlight, searchHighlights })` がその口。`measureSelection` は
+  `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights })` がその口。`measureSelection` は
   ポップオーバーを開く唯一の入口で、**実 DOM 選択と pdf.js が描いたページを両方要求する
   経路（質問・保存失敗の表示・二重送信の防止）を jsdom で動かすための seam**。
   キャッシュの中身を用意したいなら `src/test/swrTestCache.tsx` の `SwrTestCache` で包む
@@ -1638,6 +1721,9 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 載せると本を開く経路ごと 500 になる（列を絞って読む本棚一覧だけは生き残る。
 `saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `bookChat` は省略なら
 `set` にも現れない。チャットは `outline` 列を select するので `0004` 未適用では 500）。
+**`0010_add_selection_note.sql`（`selections.note`）も同じ**——`readPdf` はハイライトを
+`selections` の全列で読むので、未適用の D1 では本を開く経路ごと 500、ハイライトの作成・変更・
+検索も 500 になる。nullable な列の追加なので旧コードには無害で、先に当てればよい。
 ローカルは `pnpm run db:migrate:local`、リモートは
 `vp build` → `wrangler d1 migrations apply chatbook-db --remote` → `pnpm run deploy` の順。
 **列の追加は旧コードに無害なので、先に当てるのが常に安全——ただし `0005_book_chat.sql` だけは
