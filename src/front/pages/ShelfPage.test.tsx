@@ -3,7 +3,8 @@ import { render, screen, fireEvent, act, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { ResultAsync, errAsync, okAsync } from "neverthrow";
-import { ShelfPage, type DeleteBook } from "./ShelfPage";
+import { ShelfPage, type DeleteBook, type SetHidden } from "./ShelfPage";
+import type { HiddenBooks } from "../../shared/schemas/shelf";
 import { ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import type { BookSummary } from "../../shared/schemas/book";
@@ -34,11 +35,14 @@ function renderShelf(props: {
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
   saveDropboxFolder?: SaveDropboxFolder;
   downloadDropbox?: DownloadDropboxFile;
+  loadHidden?: () => Promise<HiddenBooks>;
+  setHidden?: SetHidden;
 }) {
   // A deploy without Dropbox unless the test says otherwise, so the shelf
   // never reaches for a real endpoint jsdom has no server behind.
   const withDropbox = {
     loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({ state: "unavailable" }),
+    loadHidden: async (): Promise<HiddenBooks> => ({ keys: [] }),
     ...props,
   };
   return render(
@@ -472,7 +476,7 @@ describe("ShelfPage", () => {
 
       expect(toggle).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByText("Rust 入門")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "PDFを追加" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "本を追加" })).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を削除" }));
       await userEvent.click(screen.getByRole("button", { name: "削除する" }));
@@ -679,5 +683,142 @@ describe("ShelfPage with Dropbox", () => {
     expect(screen.getByRole("alertdialog")).toHaveTextContent(
       "Dropbox のファイルは削除されず、未読み込みの本として本棚に残ります。",
     );
+  });
+});
+
+describe("ShelfPage: one entry per title", () => {
+  const PDF_AND_EPUB = async () => [
+    book({ id: "pdf-1", fileName: "Rust 入門.pdf" }),
+    book({ id: "epub-1", fileName: "Rust 入門.epub", format: "epub", pageCount: 12 }),
+  ];
+
+  it("shows a PDF and an EPUB of the same name as one card, with a way into each", async () => {
+    renderShelf({ loadBooks: PDF_AND_EPUB });
+
+    await screen.findByRole("button", { name: "Rust 入門 を開く" });
+    expect(screen.getAllByText("Rust 入門", { selector: "p" })).toHaveLength(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を EPUB で開く" }));
+    expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
+  });
+
+  it("opens the PDF from the card itself", async () => {
+    renderShelf({ loadBooks: PDF_AND_EPUB });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を開く" }));
+
+    expect(await screen.findByText("リーダー: pdf-1")).toBeInTheDocument();
+  });
+
+  it("joins a Dropbox file to the book that shares its name", async () => {
+    renderShelf({
+      loadBooks: async () => [book({ id: "pdf-1", fileName: "Rust 入門.pdf" })],
+      loadDropboxFolder: async () => ({
+        state: "ready",
+        folder: "/books",
+        files: [{ dropboxId: "id:e", name: "Rust 入門.epub", path: "/Rust 入門.epub", size: 1 }],
+      }),
+    });
+
+    await screen.findByRole("button", { name: "Rust 入門 を開く" });
+    expect(screen.getAllByText("Rust 入門", { selector: "p" })).toHaveLength(1);
+    expect(
+      await screen.findByRole("button", {
+        name: /Rust 入門 を EPUB で開く（Dropbox・未読み込み）/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("deletes every book of the card once the reader agrees", async () => {
+    const { deletedIds, deleteBook } = recordingDeleter();
+    renderShelf({ loadBooks: PDF_AND_EPUB, deleteBook });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を削除" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("PDF・EPUB");
+    await userEvent.click(screen.getByRole("button", { name: "削除する" }));
+
+    await waitFor(() => expect(deletedIds).toStrictEqual(["pdf-1", "epub-1"]));
+  });
+});
+
+describe("ShelfPage: putting books away", () => {
+  /** A store of what is hidden, answering the way the server does. */
+  function hiddenStore(initial: string[] = []) {
+    let keys = initial;
+    const calls: { keys: string[]; hidden: boolean }[] = [];
+    const setHidden: SetHidden = (changed, hidden) => {
+      calls.push({ keys: changed, hidden });
+      keys = hidden
+        ? [...new Set([...keys, ...changed])]
+        : keys.filter((k) => !changed.includes(k));
+      return okAsync({ keys });
+    };
+    return { calls, setHidden, loadHidden: async () => ({ keys }) };
+  }
+
+  it("takes a card off the shelf, every file of it, and lists it under the hidden books", async () => {
+    const store = hiddenStore();
+    renderShelf({
+      loadBooks: async () => [
+        book({ id: "pdf-1", fileName: "Rust 入門.pdf" }),
+        book({ id: "epub-1", fileName: "Rust 入門.epub", format: "epub" }),
+        book({ id: "other", fileName: "Zig 入門.pdf" }),
+      ],
+      ...store,
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を非表示" }));
+
+    expect(store.calls).toStrictEqual([{ keys: ["pdf-1", "epub-1"], hidden: true }]);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Rust 入門 を開く" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "非表示の本 (1)" }));
+    expect(screen.getByText("Rust 入門")).toBeInTheDocument();
+  });
+
+  it("starts without the books the server says are put away, Dropbox files included", async () => {
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      loadDropboxFolder: async () => ({
+        state: "ready",
+        folder: "/books",
+        files: [{ dropboxId: "id:zig", name: "Zig 入門.pdf", path: "/Zig 入門.pdf", size: 1 }],
+      }),
+      ...hiddenStore(["book-2", "id:zig"]),
+    });
+
+    await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" });
+    expect(screen.queryByRole("button", { name: "Rust 入門 を開く" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Zig 入門/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "非表示の本 (2)" })).toBeInTheDocument();
+  });
+
+  it("brings a book back to the shelf from the hidden list", async () => {
+    const store = hiddenStore(["book-2"]);
+    renderShelf({ loadBooks: TWO_BOOKS, ...store });
+
+    await userEvent.click(await screen.findByRole("button", { name: "非表示の本 (1)" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を表示に戻す" }));
+
+    expect(store.calls).toStrictEqual([{ keys: ["book-2"], hidden: false }]);
+    expect(await screen.findByText("非表示の本はありません")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "非表示の本 (0)" }));
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
+  });
+
+  it("keeps the book on the shelf and says why when hiding fails", async () => {
+    renderShelf({
+      loadBooks: TWO_BOOKS,
+      setHidden: () => errAsync(new ApiError("down", "INTERNAL_ERROR", 500, "http")),
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を非表示" }));
+
+    expect(await screen.findByText(/非表示にすることに失敗しました: down/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
   });
 });
