@@ -5,6 +5,7 @@ import { errAsync, okAsync, type ResultAsync } from "neverthrow";
 import { HighlightListPanel, type HighlightListItem } from "./HighlightListPanel";
 import { ApiError } from "../../lib/fetcher";
 import type { ActiveSelection } from "../../atoms/chatAtom";
+import type { UpdateSelectionRequest } from "../../../shared/schemas/selection";
 
 const OLDER: HighlightListItem = {
   id: "01JOLD",
@@ -38,6 +39,7 @@ const ACCEPTS_EVERY_DELETION = () => okAsync(undefined);
 interface PanelOverrides {
   onSelect?: (selection: ActiveSelection) => void;
   onDelete?: (selectionId: string) => ResultAsync<void, ApiError>;
+  onUpdate?: (selectionId: string, change: UpdateSelectionRequest) => ResultAsync<void, ApiError>;
   /** Opens the conversation about the book itself, which no highlight holds. */
   onOpenBookChat?: () => void;
   /** The narrowed list, when the test is standing in for a search that ran. */
@@ -62,6 +64,7 @@ function panel(highlights: HighlightListItem[], overrides: PanelOverrides = {}) 
       searchError={overrides.searchError}
       onSelect={overrides.onSelect ?? (() => {})}
       onDelete={overrides.onDelete ?? ACCEPTS_EVERY_DELETION}
+      onUpdate={overrides.onUpdate ?? (() => okAsync(undefined))}
       onOpenBookChat={overrides.onOpenBookChat ?? (() => {})}
     />
   );
@@ -334,5 +337,112 @@ describe("HighlightListPanel", () => {
 
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.getByText("ハイライト 2件")).toBeInTheDocument();
+  });
+
+  describe("colours and notes", () => {
+    const NOTED: HighlightListItem = {
+      ...MIDDLE,
+      color: "#EC407A",
+      note: "設計レビューで引用する",
+    };
+
+    function editButtonOf(highlight: HighlightListItem) {
+      const row = screen.getByText(highlight.selectedText).closest("li");
+      return within(row as HTMLElement).getByRole("button", { name: /のメモと色を変える$/ });
+    }
+
+    it("shows a note under its passage, said to be a note, and nothing under one without", () => {
+      renderPanel([OLDER, NOTED]);
+
+      const noted = screen.getByText(NOTED.selectedText).closest("li") as HTMLElement;
+      expect(within(noted).getByText("設計レビューで引用する")).toBeInTheDocument();
+      expect(within(noted).getByRole("button", { name: /メモ:\s*設計レビューで引用する/ })).toBe(
+        within(noted).getAllByRole("button")[0],
+      );
+      const plain = screen.getByText(OLDER.selectedText).closest("li") as HTMLElement;
+      expect(plain.textContent).not.toContain("メモ:");
+    });
+
+    it("changes a highlight's colour the moment a swatch is pressed", async () => {
+      const changes: unknown[] = [];
+      renderPanel([NOTED], {
+        onUpdate: (id, change) => {
+          changes.push([id, change]);
+          return okAsync(undefined);
+        },
+      });
+
+      await userEvent.click(editButtonOf(NOTED));
+      expect(screen.getByRole("button", { name: "ピンクに変える" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await userEvent.click(screen.getByRole("button", { name: "オレンジに変える" }));
+
+      expect(changes).toStrictEqual([[NOTED.id, { color: "#FF9800" }]]);
+    });
+
+    it("rewrites a note on saving it, and closes the editor once it is kept", async () => {
+      const changes: unknown[] = [];
+      renderPanel([NOTED], {
+        onUpdate: (id, change) => {
+          changes.push([id, change]);
+          return okAsync(undefined);
+        },
+      });
+      await userEvent.click(editButtonOf(NOTED));
+      const field = screen.getByRole("textbox", { name: "メモ" });
+      expect(field).toHaveValue(NOTED.note);
+
+      await userEvent.clear(field);
+      await userEvent.type(field, "  章の要約に使う  ");
+      await userEvent.click(screen.getByRole("button", { name: "メモを保存" }));
+
+      expect(changes).toStrictEqual([[NOTED.id, { note: "章の要約に使う" }]]);
+      await waitFor(() => expect(screen.queryByRole("group", { name: "メモと色" })).toBeNull());
+    });
+
+    it("takes the note away when it is emptied and saved", async () => {
+      const changes: unknown[] = [];
+      renderPanel([NOTED], {
+        onUpdate: (id, change) => {
+          changes.push([id, change]);
+          return okAsync(undefined);
+        },
+      });
+      await userEvent.click(editButtonOf(NOTED));
+
+      await userEvent.clear(screen.getByRole("textbox", { name: "メモ" }));
+      await userEvent.click(screen.getByRole("button", { name: "メモを保存" }));
+
+      expect(changes).toStrictEqual([[NOTED.id, { note: null }]]);
+    });
+
+    it("says a change was refused inside the editor, and keeps what was typed", async () => {
+      renderPanel([OLDER], {
+        onUpdate: () => errAsync(new ApiError("Selection not found", "SELECTION_NOT_FOUND", 404)),
+      });
+      await userEvent.click(editButtonOf(OLDER));
+      const field = screen.getByRole("textbox", { name: "メモ" });
+
+      await userEvent.type(field, "書きかけ");
+      await userEvent.click(screen.getByRole("button", { name: "メモを保存" }));
+
+      const editor = screen.getByRole("group", { name: "メモと色" });
+      expect(await within(editor).findByRole("alert")).toHaveTextContent(
+        "変更できませんでした: Selection not found",
+      );
+      expect(field).toHaveValue("書きかけ");
+    });
+
+    it("opens one editor at a time", async () => {
+      renderPanel([OLDER, NOTED]);
+
+      await userEvent.click(editButtonOf(OLDER));
+      await userEvent.click(editButtonOf(NOTED));
+
+      expect(screen.getAllByRole("group", { name: "メモと色" })).toHaveLength(1);
+      expect(screen.getByRole("textbox", { name: "メモ" })).toHaveValue(NOTED.note);
+    });
   });
 });

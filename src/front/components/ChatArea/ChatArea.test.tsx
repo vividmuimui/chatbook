@@ -22,7 +22,7 @@ import type { ChatQuoteSelection } from "../../lib/chatQuoteSelection";
 import type { SelectionHighlight } from "../../../shared/schemas/selection";
 import type { BookDetail } from "../../../shared/schemas/book";
 import { bookKey } from "../../hooks/useBook";
-import type { DeleteHighlight } from "../../hooks/useHighlights";
+import type { DeleteHighlight, UpdateHighlight } from "../../hooks/useHighlights";
 import type { SearchSelections } from "../../hooks/useHighlightSearch";
 import { SwrTestCache } from "../../../test/swrTestCache";
 
@@ -80,6 +80,8 @@ function renderChat(
     messages?: { id: string; role: "user" | "assistant"; content: string; createdAt: string }[];
     /** Stands in for the delete endpoint the list reaches for. */
     deleteHighlight?: DeleteHighlight;
+    /** Stands in for the endpoint that recolours a highlight or rewrites its note. */
+    changeHighlight?: UpdateHighlight;
     /** Stands in for the search endpoint, which looks through the chats too. */
     searchHighlights?: SearchSelections;
     /** Opens the panel on the book's own conversation rather than a passage's. */
@@ -92,6 +94,7 @@ function renderChat(
     bookError,
     messages = [],
     deleteHighlight,
+    changeHighlight,
     searchHighlights,
     bookChatOpen = false,
     onOpenBookChat = () => {},
@@ -120,6 +123,7 @@ function renderChat(
           onOpenBookChat={onOpenBookChat}
           readQuote={() => selected}
           deleteHighlight={deleteHighlight}
+          changeHighlight={changeHighlight}
           searchHighlights={searchHighlights}
         />
       </Provider>
@@ -337,7 +341,9 @@ describe("ChatArea", () => {
       },
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /^「エッジはサーバーレス実行基盤/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^「エッジはサーバーレス実行基盤.*」を削除$/ }),
+    );
     await userEvent.click(screen.getByRole("button", { name: "削除する" }));
 
     await waitFor(() => expect(screen.getByText("ハイライト 1件")).toBeInTheDocument());
@@ -360,7 +366,9 @@ describe("ChatArea", () => {
         ),
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /^「エッジはサーバーレス実行基盤/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^「エッジはサーバーレス実行基盤.*」を削除$/ }),
+    );
     await userEvent.click(screen.getByRole("button", { name: "削除する" }));
     act(() => {
       store.set(activeSelectionAtom, { id: "s1", selectedText: SELECTED_TEXT, pageNumber: 42 });
@@ -451,5 +459,45 @@ describe("ChatArea", () => {
     expect(controller.signal.aborted).toBe(true);
     expect(store.get(isStreamingAtom)).toBe(false);
     expect(screen.getByText("ハイライト 2件")).toBeInTheDocument();
+  });
+
+  it("changes the open highlight's colour and note from the head of its conversation", async () => {
+    const changes: unknown[] = [];
+    renderChat({
+      changeHighlight: (pdfId, selectionId, change) => {
+        changes.push([pdfId, selectionId, change]);
+        return okAsync({ id: selectionId, color: "#42A5F5", note: "状態は外に置く" });
+      },
+    });
+    expect(screen.queryByText("状態は外に置く")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "メモと色" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "メモ" }), "状態は外に置く");
+    await userEvent.click(screen.getByRole("button", { name: "メモを保存" }));
+
+    expect(changes).toStrictEqual([[BOOK.id, "s1", { note: "状態は外に置く" }]]);
+    // Read back out of the book the viewer draws from, so the note is shown
+    // under the head the moment the cache has it, and the list has it too.
+    expect(await screen.findByText("状態は外に置く")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "一覧に戻る" }));
+    expect(screen.getByText("状態は外に置く")).toBeVisible();
+  });
+
+  it("leaves the editor behind when another highlight's conversation is opened", async () => {
+    const { store } = renderChat();
+    await userEvent.click(screen.getByRole("button", { name: "メモと色" }));
+    expect(screen.getByRole("group", { name: "メモと色" })).toBeInTheDocument();
+
+    act(() => {
+      store.set(activeSelectionAtom, { id: "s2", selectedText: OTHER_TEXT, pageNumber: 7 });
+    });
+
+    expect(screen.queryByRole("group", { name: "メモと色" })).toBeNull();
+  });
+
+  it("offers no colour or note in the book's own conversation, which marks no passage", () => {
+    renderChat({ activeSelection: null, bookChatOpen: true });
+
+    expect(screen.queryByRole("button", { name: "メモと色" })).toBeNull();
   });
 });
