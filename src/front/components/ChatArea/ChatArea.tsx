@@ -18,10 +18,15 @@ import { ChatMessageList } from "./ChatMessageList";
 import { ChatInput } from "./ChatInput";
 import { ChatScopeMenu } from "./ChatScopeMenu";
 import { HighlightListPanel } from "./HighlightListPanel";
+import { HighlightEditor } from "./HighlightEditor";
 import { useWebSearchAtom } from "../../atoms/settingsAtom";
 import { useChatStream } from "../../hooks/useChatStream";
 import { useChapters } from "../../hooks/useChapters";
-import { useHighlights, type DeleteHighlight } from "../../hooks/useHighlights";
+import {
+  useHighlights,
+  type DeleteHighlight,
+  type UpdateHighlight,
+} from "../../hooks/useHighlights";
 import { useHighlightSearch, type SearchSelections } from "../../hooks/useHighlightSearch";
 import { formatQuotedQuestion } from "../../lib/quotedQuestion";
 import { scopeRanges } from "../../lib/chatScope";
@@ -39,6 +44,8 @@ interface ChatAreaProps {
   readQuote?: ReadChatQuote;
   /** Removes a highlight; injectable so tests can record or refuse one. */
   deleteHighlight?: DeleteHighlight;
+  /** Recolours a highlight or rewrites its note; injectable for the same reason. */
+  changeHighlight?: UpdateHighlight;
   /** Searches the highlights and their chats; injectable for the same reason. */
   searchHighlights?: SearchSelections;
 }
@@ -59,6 +66,7 @@ export function ChatArea({
   onOpenBookChat,
   readQuote,
   deleteHighlight,
+  changeHighlight,
   searchHighlights,
 }: ChatAreaProps) {
   const [activeSelection, setActiveSelection] = useAtom(activeSelectionAtom);
@@ -66,7 +74,12 @@ export function ChatArea({
   const [scope, setScope] = useAtom(chatScopeAtom);
   const { data: chapterList, error: chaptersError } = useChapters(book?.id);
   const face = useAtomValue(chatFaceAtom);
-  const { highlights, removeHighlight } = useHighlights(book?.id, undefined, deleteHighlight);
+  const { highlights, removeHighlight, updateHighlight } = useHighlights(
+    book?.id,
+    undefined,
+    deleteHighlight,
+    changeHighlight,
+  );
   const { query, setQuery, submit, matchedIds, searchError } = useHighlightSearch(
     book?.id,
     searchHighlights,
@@ -94,11 +107,21 @@ export function ChatArea({
   // A quote is a passage of the conversation it was taken from, so opening
   // another one leaves it behind. Adjusted during the render that brings the
   // new thread in, so the input never shows the old quote under it.
+  /** Whether the open highlight's colour and note are up for changing. */
+  const [editing, setEditing] = useState(false);
   const [quotedFrom, setQuotedFrom] = useState(thread);
   if (thread !== quotedFrom) {
     setQuotedFrom(thread);
     setQuote(null);
+    // The editor belongs to the highlight it was opened on, like the quote.
+    setEditing(false);
   }
+  /**
+   * The open highlight as stored, colour and note included. Read from the book
+   * rather than from `activeSelection`, which only names the passage: a change
+   * made here, or in the list, is then on screen the moment the cache has it.
+   */
+  const marked = selection === null ? undefined : highlights.find((h) => h.id === selection.id);
 
   const handleSend = async (content: string) => {
     if (!book || face === "list") return;
@@ -159,6 +182,7 @@ export function ChatArea({
         // Leaving the chat is the store's to decide once the server answers:
         // the reader can have opened one while the request was in flight.
         onDelete={(id) => removeHighlight(book.id, id).map(() => selectionDeleted(id))}
+        onUpdate={(id, change) => updateHighlight(book.id, id, change)}
         onOpenBookChat={onOpenBookChat}
       />
     );
@@ -174,6 +198,21 @@ export function ChatArea({
         >
           <span aria-hidden="true">←</span> 一覧に戻る
         </button>
+        {marked && (
+          <button
+            type="button"
+            aria-expanded={editing}
+            onClick={() => setEditing((open) => !open)}
+            className="ml-auto flex h-11 cursor-pointer items-center gap-2 rounded px-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            <span
+              aria-hidden="true"
+              style={{ backgroundColor: marked.color }}
+              className="h-3 w-3 shrink-0 rounded-full"
+            />
+            メモと色
+          </button>
+        )}
         {face === "book" && (
           <ChatScopeMenu
             chapters={chapterList?.chapters ?? []}
@@ -184,6 +223,27 @@ export function ChatArea({
           />
         )}
       </div>
+      {marked &&
+        (editing ? (
+          <HighlightEditor
+            color={marked.color}
+            note={marked.note}
+            onChange={(change) => updateHighlight(book.id, marked.id, change)}
+            onClose={() => setEditing(false)}
+          />
+        ) : (
+          marked.note !== null && (
+            // The reader's own words about the passage, above what the AI said
+            // about it. Clamped, so a long note does not push the thread away.
+            <p
+              style={{ borderColor: marked.color }}
+              className="mx-4 mt-2 line-clamp-3 shrink-0 whitespace-pre-wrap border-l-4 pl-2 text-xs text-gray-600"
+            >
+              <span className="sr-only">メモ: </span>
+              {marked.note}
+            </p>
+          )
+        ))}
       <ChatMessageList
         messages={messages}
         streamingContent={streamingContent}

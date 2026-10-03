@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useId, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useAtom } from "jotai";
 import useSWR from "swr";
@@ -11,7 +11,9 @@ import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
+import { groupProgress } from "../lib/readingProgress";
 import {
+  filterShelf,
   groupShelf,
   splitHidden,
   titleOf,
@@ -153,6 +155,60 @@ function memberLabel(title: string, member: ShelfMember): string {
   return member.kind === "dropbox" ? `${title} を Dropbox から開く` : `${title} を開く`;
 }
 
+/**
+ * How far the reader has got in an entry, as the shelf says it: a share for a
+ * title opened before, "unread" for one never opened, and nothing for one that
+ * is only files waiting in Dropbox — those already say 未読み込み, and have no
+ * reading place to report.
+ */
+type EntryProgress = { kind: "read"; percent: number } | { kind: "unread" } | null;
+
+function progressOf(group: ShelfGroup): EntryProgress {
+  if (!group.members.some((m) => m.kind === "book")) return null;
+  const percent = groupProgress(group);
+  return percent === null ? { kind: "unread" } : { kind: "read", percent };
+}
+
+/**
+ * The share read, which the entry's button names as its description. The bar
+ * beside it is drawn for the eye only: inside a button its role would not
+ * reach a screen reader, so the words carry it.
+ */
+function ProgressText({ id, progress }: { id: string; progress: EntryProgress }) {
+  if (progress === null) return null;
+  if (progress.kind === "unread") {
+    return (
+      <span
+        id={id}
+        className="inline-block rounded-sm bg-amber-400 px-1 text-[10px] font-bold leading-4 text-amber-950"
+      >
+        未読
+      </span>
+    );
+  }
+  return (
+    <span id={id} className="font-medium text-gray-700">
+      {progress.percent}%<span className="sr-only">読了</span>
+    </span>
+  );
+}
+
+/** A thin track filled as far as the reader has got, Kindle-like. */
+function ProgressBar({ percent, className }: { percent: number; className: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block h-1 overflow-hidden rounded-full bg-gray-200 ${className}`}
+    >
+      <span
+        data-progress
+        className="block h-full rounded-full bg-gray-700"
+        style={{ width: `${percent}%` }}
+      />
+    </span>
+  );
+}
+
 interface EntryActions {
   onOpen: (member: ShelfMember) => void;
   onHide: (group: ShelfGroup) => void;
@@ -243,12 +299,15 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
   const primary = group.members[0];
   const single = group.members.length === 1;
   const onlyDropbox = group.members.every((m) => m.kind === "dropbox");
+  const progress = progressOf(group);
+  const progressId = useId();
 
   return (
     <div className="relative group/card">
       <button
         type="button"
         aria-label={memberLabel(group.title, primary)}
+        aria-describedby={progress ? progressId : undefined}
         onClick={() => onOpen(primary)}
         className="group flex w-full flex-col text-left cursor-pointer focus:outline-none"
       >
@@ -281,9 +340,25 @@ function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & 
               Dropbox
             </span>
           )}
+          {progress?.kind === "unread" && (
+            // Kindle's "NEW": the corner the reader's eye starts from. The
+            // buttons take the other top corner.
+            <span className="absolute left-1.5 top-1.5">
+              <ProgressText id={progressId} progress={progress} />
+            </span>
+          )}
         </div>
+        {progress?.kind === "read" && (
+          <ProgressBar percent={progress.percent} className="mt-1.5 w-full" />
+        )}
         <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{group.title}</p>
-        {single && <p className="truncate text-xs text-gray-500">{singleMemberCaption(primary)}</p>}
+        {(progress?.kind === "read" || single) && (
+          <p className="truncate text-xs text-gray-500">
+            {progress?.kind === "read" && <ProgressText id={progressId} progress={progress} />}
+            {progress?.kind === "read" && single && " · "}
+            {single && singleMemberCaption(primary)}
+          </p>
+        )}
       </button>
       {!single && <FormatChips group={group} onOpen={onOpen} />}
 
@@ -309,12 +384,15 @@ function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & E
   const showCover = cover !== undefined && !coverFailed;
   const primary = group.members[0];
   const single = group.members.length === 1;
+  const progress = progressOf(group);
+  const progressId = useId();
 
   return (
     <div className="flex items-center rounded-md border border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40">
       <button
         type="button"
         aria-label={memberLabel(group.title, primary)}
+        aria-describedby={progress ? progressId : undefined}
         onClick={() => onOpen(primary)}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-md p-2 text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
       >
@@ -331,8 +409,15 @@ function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & E
         </div>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-gray-800">{group.title}</span>
-          {single && (
-            <span className="block text-xs text-gray-500">{singleMemberCaption(primary)}</span>
+          {(progress || single) && (
+            <span className="block truncate text-xs text-gray-500">
+              <ProgressText id={progressId} progress={progress} />
+              {progress && single && " · "}
+              {single && singleMemberCaption(primary)}
+            </span>
+          )}
+          {progress?.kind === "read" && (
+            <ProgressBar percent={progress.percent} className="mt-1 w-full max-w-40" />
           )}
         </span>
       </button>
@@ -455,6 +540,13 @@ export function ShelfPage({
     () => splitHidden(groupShelf(books ?? [], dropboxFiles), new Set(hidden?.keys ?? [])),
     [books, dropboxFiles, hidden],
   );
+  // What the reader typed to find a book. Narrowed on every keystroke, input
+  // method composition included: it is a filter over what is already here, so
+  // a half-converted word costs nothing and breaks nothing.
+  const [query, setQuery] = useState("");
+  const visible = useMemo(() => filterShelf(shown, query), [shown, query]);
+  const visibleHidden = useMemo(() => filterShelf(putAway, query), [putAway, query]);
+  const noMatch = `「${query.trim()}」に一致する本はありません`;
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
@@ -668,6 +760,18 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
+        {/* Out of the header: on a phone it already holds three buttons. */}
+        {(shown.length > 0 || putAway.length > 0 || query !== "") && (
+          <input
+            type="search"
+            aria-label="本棚を検索"
+            placeholder="題名で検索"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="mb-5 w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+          />
+        )}
+
         {showingHidden && (
           <section aria-label="非表示の本">
             <p className="mb-3 text-sm text-gray-500">
@@ -675,9 +779,11 @@ export function ShelfPage({
             </p>
             {putAway.length === 0 ? (
               <p className="text-sm text-gray-500">非表示の本はありません</p>
+            ) : visibleHidden.length === 0 ? (
+              <p className="text-sm text-gray-500">{noMatch}</p>
             ) : (
               <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-                {putAway.map((group) => (
+                {visibleHidden.map((group) => (
                   <HiddenRow
                     key={group.id}
                     group={group}
@@ -703,6 +809,10 @@ export function ShelfPage({
             whatever the list did — while it loads, and when it could not be
             read at all — because adding a book does not go through it, and a
             shelf that answered with an error would otherwise have no way in. */}
+        {!showingHidden && shown.length > 0 && visible.length === 0 && (
+          <p className="mb-4 text-sm text-gray-500">{noMatch}</p>
+        )}
+
         {!showingHidden && (
           <ul
             className={
@@ -711,7 +821,7 @@ export function ShelfPage({
                 : "grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-5"
             }
           >
-            {shown.map((group) => (
+            {visible.map((group) => (
               <li key={group.id}>
                 {compact ? (
                   <GroupRow {...entryActions} group={group} />

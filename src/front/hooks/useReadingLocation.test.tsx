@@ -30,6 +30,7 @@ function highlight(id: string, selectedText: string, pageNumber: number): Select
     pageNumber,
     positionData: { rects: [] },
     color: "#FFEB3B",
+    note: null,
     createdAt: "2026-08-01T10:00:00.000Z",
   };
 }

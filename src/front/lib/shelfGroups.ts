@@ -33,7 +33,12 @@ export function titleOf(fileName: string): string {
  * decomposed kana, a download gives composed ones, and a reader sees one name.
  */
 function groupIdOf(fileName: string): string {
-  return titleOf(fileName).normalize("NFC").trim().toLowerCase();
+  return comparable(titleOf(fileName));
+}
+
+/** Text the way titles are compared: composed, trimmed, and in one case. */
+function comparable(text: string): string {
+  return text.normalize("NFC").trim().toLowerCase();
 }
 
 function formatOfName(fileName: string): BookFormat {
@@ -96,4 +101,18 @@ export function splitHidden(
     (group.members.every((m) => hiddenKeys.has(m.key)) ? hidden : shown).push(group);
   }
   return { shown, hidden };
+}
+
+/**
+ * The entries whose title holds what the reader typed, in the shelf's order.
+ *
+ * Compared the way names are when the shelf gathers them (see `groupIdOf`), so
+ * a title is found whatever case or Unicode form the reader typed it in. The
+ * extension is not part of a title and does not match. An empty query, or one
+ * of spaces only, keeps everything.
+ */
+export function filterShelf(groups: ShelfGroup[], query: string): ShelfGroup[] {
+  const wanted = comparable(query);
+  if (wanted === "") return groups;
+  return groups.filter((group) => group.id.includes(wanted));
 }

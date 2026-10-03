@@ -1,5 +1,6 @@
 import { useAtom } from "jotai";
 import { outlineOpenAtom } from "../../atoms/pdfAtom";
+import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { PageStepper } from "./PageStepper";
 
 /** Apple and Android both put the floor for a tappable control here. */
@@ -33,6 +34,7 @@ export function PageToolbar({
   onToggleChat,
 }: PageToolbarProps) {
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
+  const [searchOpen, setSearchOpen] = useAtom(bookSearchOpenAtom);
 
   return (
     <nav
@@ -43,10 +45,29 @@ export function PageToolbar({
         type="button"
         aria-label="目次"
         aria-pressed={outlineOpen}
-        onClick={() => setOutlineOpen((open) => !open)}
+        onClick={() => {
+          if (!outlineOpen) setSearchOpen(false);
+          setOutlineOpen(!outlineOpen);
+        }}
         className={`${TAP_TARGET} rounded-lg px-2 text-xs text-gray-600 aria-pressed:text-blue-600`}
       >
         目次
+      </button>
+
+      {/* Beside the outline, the other way of finding a place in the book. One
+          drawer over the page at a time: the search is laid over the outline's
+          spot, so opening it puts the outline away. */}
+      <button
+        type="button"
+        aria-label="本文検索"
+        aria-pressed={searchOpen}
+        onClick={() => {
+          if (!searchOpen) setOutlineOpen(false);
+          setSearchOpen(!searchOpen);
+        }}
+        className={`${TAP_TARGET} rounded-lg px-2 text-xs text-gray-600 aria-pressed:text-blue-600`}
+      >
+        検索
       </button>
 
       <PageStepper pageCount={pageCount} />

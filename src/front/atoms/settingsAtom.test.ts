@@ -166,3 +166,53 @@ describe("zoomAtomFor", () => {
     expect(localStorage.getItem("chatbook:zoom:book-1")).toBe("2");
   });
 });
+
+describe("epubTypographyAtom", () => {
+  const TYPOGRAPHY_KEY = "chatbook:epub-typography";
+
+  /** The typography a new session starts with, given what the last one stored. */
+  async function restoredTypography(stored: string | null) {
+    localStorage.clear();
+    if (stored !== null) localStorage.setItem(TYPOGRAPHY_KEY, stored);
+    vi.resetModules();
+    const { epubTypographyAtom } = await import("./settingsAtom");
+    return createStore().get(epubTypographyAtom);
+  }
+
+  const DEFAULTS = {
+    fontSizeStep: 4,
+    lineHeight: "normal",
+    textAlign: "start",
+    fontFamily: "sans",
+    margin: "normal",
+  };
+
+  it("draws a reader who has never chosen anything at the defaults", async () => {
+    expect(await restoredTypography(null)).toStrictEqual(DEFAULTS);
+  });
+
+  it("brings back what a previous session chose", async () => {
+    const chosen = {
+      fontSizeStep: 7,
+      lineHeight: "loose",
+      textAlign: "justify",
+      fontFamily: "serif",
+      margin: "wide",
+    };
+    expect(await restoredTypography(JSON.stringify(chosen))).toStrictEqual(chosen);
+  });
+
+  it.each([
+    { holds: "something that is not JSON", stored: "{oops" },
+    { holds: "something that is not a setting", stored: JSON.stringify("large") },
+    { holds: "nothing at all", stored: JSON.stringify(null) },
+  ])("falls back to the defaults when storage holds $holds", async ({ stored }) => {
+    expect(await restoredTypography(stored)).toStrictEqual(DEFAULTS);
+  });
+
+  it("keeps the rest of the choices when one of them is out of range", async () => {
+    expect(
+      await restoredTypography(JSON.stringify({ ...DEFAULTS, fontSizeStep: 42, margin: "wide" })),
+    ).toStrictEqual({ ...DEFAULTS, margin: "wide" });
+  });
+});

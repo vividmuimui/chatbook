@@ -31,6 +31,8 @@ const STORED: CreatedSelection = {
   selectedText: PASSAGE,
   pageNumber: 42,
   positionData: { rects: [{ x: 10, y: 20, width: 100, height: 16 }], pageWidth: 600 },
+  color: "#FFEB3B",
+  note: null,
   createdAt: "2026-08-01T10:00:00.000Z",
 };
 
@@ -190,5 +192,58 @@ describe("useAskAboutSelection", () => {
     expect(store.get(activeSelectionAtom)).toBeNull();
     expect(store.get(chatMessagesAtom)).toStrictEqual([]);
     expect(store.get(chatSheetAtom)).toBe("closed");
+  });
+
+  describe("marking a passage without asking", () => {
+    it("stores the colour and note chosen and shows the highlight, opening no chat", async () => {
+      setViewportWidth(PHONE_WIDTH);
+      const { fetchFn, calls } = streamingFetchStub();
+      vi.stubGlobal("fetch", fetchFn);
+      const drafts: unknown[] = [];
+      const marked = { ...STORED, color: "#42A5F5", note: "あとで読む" };
+      const { store, added, view } = renderAsk(
+        (_pdfId, draft) => {
+          drafts.push(draft);
+          return okAsync(marked);
+        },
+        (seeded) => seeded.set(chatPanelOpenAtom, false),
+      );
+
+      await act(async () => {
+        await view.result.current.markSelection(PDF_ID, {
+          ...DRAFT,
+          color: "#42A5F5",
+          note: "あとで読む",
+        });
+      });
+
+      expect(drafts).toStrictEqual([{ ...DRAFT, color: "#42A5F5", note: "あとで読む" }]);
+      expect(added).toStrictEqual([marked]);
+      // A highlight is the whole of what was asked for: nothing to read in a
+      // chat, so neither the sheet nor the panel moves and nothing is sent.
+      expect(store.get(activeSelectionAtom)).toBeNull();
+      expect(store.get(chatSheetAtom)).toBe("closed");
+      expect(store.get(chatPanelOpenAtom)).toBe(false);
+      expect(calls).toStrictEqual([]);
+      expect(view.result.current.saveError).toBeNull();
+    });
+
+    it("says the highlight could not be saved, in the same place an ask does", async () => {
+      const { added, view } = renderAsk(() =>
+        errAsync(new ApiError("Unexpected server error", "INTERNAL_ERROR", 500)),
+      );
+
+      let marked!: Awaited<ReturnType<typeof view.result.current.markSelection>>;
+      await act(async () => {
+        marked = await view.result.current.markSelection(PDF_ID, {
+          ...DRAFT,
+          color: "#FF9800",
+        });
+      });
+
+      expect(marked.isErr()).toBe(true);
+      expect(view.result.current.saveError).toBe("Unexpected server error");
+      expect(added).toStrictEqual([]);
+    });
   });
 });

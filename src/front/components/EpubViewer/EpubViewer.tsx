@@ -3,12 +3,18 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
-import { useWebSearchAtom } from "../../atoms/settingsAtom";
+import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
+import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
+import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail } from "../../../shared/schemas/book";
-import type { PositionData } from "../../../shared/schemas/selection";
+import type { HighlightColor, PositionData } from "../../../shared/schemas/selection";
 import { PdfOutline } from "../PdfViewer/PdfOutline";
 import { PageStepper } from "../PdfViewer/PageStepper";
-import { SelectionPopover } from "../PdfViewer/SelectionPopover";
+import {
+  POPOVER_LIFT_PX,
+  SelectionPopover,
+  type SelectionBoxMode,
+} from "../PdfViewer/SelectionPopover";
 import { SelectionActionBar } from "../PdfViewer/SelectionActionBar";
 import { HighlightOverlay } from "../PdfViewer/HighlightOverlay";
 import type { MeasureSelection, SelectionPopoverState } from "../PdfViewer/PdfViewer";
@@ -107,13 +113,19 @@ export function EpubViewer({
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const citedPassage = useAtomValue(citedPassageAtom);
   const setCitedPassage = useSetAtom(citedPassageAtom);
+  const setBookSearchOpen = useSetAtom(bookSearchOpenAtom);
   const activeSelection = useAtomValue(activeSelectionAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
+  const typography = useAtomValue(epubTypographyAtom);
+  const typographyStyle = useMemo(() => epubTypographyStyle(typography), [typography]);
   const isNarrow = useIsNarrow();
 
   const { epub, error: documentError } = useEpubDocument(pdfId);
   const { highlights, addHighlight } = useHighlights(book?.id);
-  const { askAboutSelection, saveError } = useAskAboutSelection(addHighlight, saveSelection);
+  const { askAboutSelection, markSelection, saveError } = useAskAboutSelection(
+    addHighlight,
+    saveSelection,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -122,7 +134,9 @@ export function EpubViewer({
   const pendingAnchorRef = useRef<string | null>(null);
 
   const [popoverState, setPopoverState] = useState<SelectionPopoverState | null>(null);
-  const [questionOpen, setQuestionOpen] = useState(false);
+  // As in PdfViewer: which use the box was opened on, and a mark in flight.
+  const [boxOpen, setBoxOpen] = useState<SelectionBoxMode | null>(null);
+  const [marking, setMarking] = useState(false);
   const [chosenByFinger, setChosenByFinger] = useState(false);
   const offerFirst = isNarrow || chosenByFinger;
   /** The chapter's drawn size, which every rect over it is measured at. */
@@ -207,7 +221,10 @@ export function EpubViewer({
           };
         }),
     );
-  }, [highlights, chapterElement, currentPage, drawnSize]);
+    // `typography` is here for what the observer cannot see: justifying the
+    // text, or a face of the same metrics, moves the words without changing the
+    // size of the box they are in.
+  }, [highlights, chapterElement, currentPage, drawnSize, typography]);
 
   // The passage a citation quoted, marked and brought into view. A chapter is
   // far longer than a page, so turning to it is not enough to show it.
@@ -222,9 +239,29 @@ export function EpubViewer({
       setCitedPassage(null);
       return;
     }
-    const range = rangeOfQuote(chapterElement, citedPassage.text);
+    const range = rangeOfQuote(chapterElement, citedPassage.text, citedPassage.context);
     setCitedSelection(range ? selectionOnPage(range, page) : null);
-  }, [citedPassage, chapterElement, currentPage, drawnSize, setCitedPassage]);
+  }, [citedPassage, chapterElement, currentPage, drawnSize, typography, setCitedPassage]);
+
+  // Larger type makes the chapter taller, and the same scrollTop then lands
+  // earlier in it: kept as the share of the chapter read so far, the reader
+  // stays about where they were rather than being carried back a few screens.
+  const readShareRef = useRef(0);
+  const typographyRef = useRef(typography);
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (typographyRef.current === typography || !container) return;
+    typographyRef.current = typography;
+    container.scrollTop =
+      readShareRef.current * Math.max(0, container.scrollHeight - container.clientHeight);
+  }, [typography]);
+
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const scrollable = container.scrollHeight - container.clientHeight;
+    readShareRef.current = scrollable > 0 ? container.scrollTop / scrollable : 0;
+  }, []);
 
   const citedRef = useRef(citedPassage);
   useEffect(() => {
@@ -267,9 +304,12 @@ export function EpubViewer({
         case "toggleOutline":
           setOutlineOpen((open) => !open);
           break;
+        case "openSearch":
+          setBookSearchOpen(true);
+          break;
       }
     },
-    [pageCount, setCurrentPage, setOutlineOpen],
+    [pageCount, setCurrentPage, setOutlineOpen, setBookSearchOpen],
   );
   useKeyboardShortcuts(handleShortcut);
 
@@ -315,30 +355,19 @@ export function EpubViewer({
       },
       [measureSelection],
     ),
-    { enabled: !questionOpen },
+    { enabled: boxOpen === null },
   );
 
   const handlePopoverSubmit = useCallback(
     async (question: string) => {
       if (!popoverState || !book) return;
-      const { startIndex, endIndex, pageNumber, rects, pageWidth } = popoverState.selectionPosition;
-
-      const asked = await askAboutSelection(
-        book.id,
-        {
-          selectedText: popoverState.selectedText,
-          pageNumber,
-          positionData: { rects, pageWidth, textRange: { start: startIndex, end: endIndex } },
-        },
-        question,
-        useWebSearch,
-      );
+      const asked = await askAboutSelection(book.id, draftOf(popoverState), question, useWebSearch);
 
       // As on a PDF page: the popover closes on the stored highlight, and one
       // that was not stored keeps the question for another try.
       if (asked.isOk()) {
         setPopoverState(null);
-        setQuestionOpen(false);
+        setBoxOpen(null);
       }
     },
     [popoverState, book, askAboutSelection, useWebSearch],
@@ -346,9 +375,27 @@ export function EpubViewer({
 
   const handlePopoverDismiss = useCallback(() => {
     setPopoverState(null);
-    setQuestionOpen(false);
+    setBoxOpen(null);
     window.getSelection()?.removeAllRanges();
   }, []);
+
+  // A highlight and nothing more, closed on the stored highlight as on a PDF page.
+  const handleMark = useCallback(
+    async (color: HighlightColor, note: string | null) => {
+      if (!popoverState || !book) return;
+
+      setMarking(true);
+      const marked = await markSelection(book.id, {
+        ...draftOf(popoverState),
+        color,
+        ...(note === null ? {} : { note }),
+      });
+      setMarking(false);
+
+      if (marked.isOk()) handlePopoverDismiss();
+    },
+    [popoverState, book, markSelection, handlePopoverDismiss],
+  );
 
   const handleHighlightClick = useCallback(
     (selectionId: string) => {
@@ -425,8 +472,18 @@ export function EpubViewer({
               outlinePanel
             ))}
 
-          <div ref={containerRef} className="flex-1 overflow-auto px-3 py-4 md:px-6">
-            <article className="mx-auto max-w-2xl rounded-sm bg-white px-5 py-8 shadow-sm md:px-10">
+          <div
+            ref={containerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-auto px-3 py-4 md:px-6"
+          >
+            {/* The reader's type is set here as custom properties, which
+                `index.css` reads: the chapter inside is built by hand rather
+                than by React, so this is the one element React can style. */}
+            <article
+              style={typographyStyle}
+              className="epubPage mx-auto max-w-2xl rounded-sm bg-white py-8 shadow-sm"
+            >
               <div ref={pageRef} data-page-container={currentPage} className="relative">
                 {/* Filled by hand with the chapter `renderChapter` built, never
                     by React: the markup is the book's, rebuilt from an
@@ -457,12 +514,13 @@ export function EpubViewer({
                           ),
                           Math.max(0, drawnSize.width - 320),
                         ),
-                        top: Math.max(0, popoverState.position.y - 130),
+                        top: Math.max(0, popoverState.position.y - POPOVER_LIFT_PX),
                       }}
                     >
                       <SelectionPopover
                         quote={popoverState.selectedText}
                         onSubmit={handlePopoverSubmit}
+                        onMark={handleMark}
                         onDismiss={handlePopoverDismiss}
                       />
                     </div>
@@ -481,26 +539,45 @@ export function EpubViewer({
         </div>
       )}
 
-      {offerFirst && popoverState && !questionOpen && (
+      {offerFirst && popoverState && boxOpen === null && (
         <SelectionActionBar
           quote={popoverState.selectedText}
-          onAsk={() => setQuestionOpen(true)}
+          onAsk={() => setBoxOpen("ask")}
+          onNote={() => setBoxOpen("note")}
+          onMark={(color) => void handleMark(color, null)}
           onDismiss={handlePopoverDismiss}
+          marking={marking}
         />
       )}
 
-      {offerFirst && popoverState && questionOpen && (
+      {offerFirst && popoverState && boxOpen !== null && (
         <div className="absolute inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-gray-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-6px_24px_rgba(19,26,41,0.18)]">
           <SelectionPopover
             quote={popoverState.selectedText}
             onSubmit={handlePopoverSubmit}
-            onDismiss={() => setQuestionOpen(false)}
+            onMark={handleMark}
+            onDismiss={() => setBoxOpen(null)}
+            initialMode={boxOpen}
             floating={false}
           />
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * What is stored for a passage chosen in a chapter: where it sits in the
+ * chapter's text, which is what the highlight is drawn from, beside the rects
+ * measured at the width it was chosen at.
+ */
+function draftOf(chosen: SelectionPopoverState) {
+  const { startIndex, endIndex, pageNumber, rects, pageWidth } = chosen.selectionPosition;
+  return {
+    selectedText: chosen.selectedText,
+    pageNumber,
+    positionData: { rects, pageWidth, textRange: { start: startIndex, end: endIndex } },
+  };
 }
 
 /**

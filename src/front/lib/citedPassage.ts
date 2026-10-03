@@ -78,11 +78,41 @@ function matchRange(pageText: string, needle: string): { start: number; end: num
 }
 
 /**
+ * The text a passage sat between on its page, where that is known.
+ *
+ * A search hit is a word, and a word is on a page as often as it is written
+ * there; what was around it is what says which of them the reader picked.
+ */
+export interface PassageContext {
+  before: string;
+  after: string;
+}
+
+/** Where the needle sits between the text around it, or null when that is not on the page. */
+function matchWithin(
+  pageText: string,
+  needle: string,
+  context: PassageContext,
+): { start: number; end: number } | null {
+  const head = normalize(context.before);
+  const at = pageText.indexOf(head + needle + normalize(context.after));
+  if (at < 0) return null;
+  return { start: at + head.length, end: at + head.length + needle.length };
+}
+
+/**
  * The text items a quoted passage covers, or null when the page does not hold
  * it — a quote the model wrote in its own words, or a page the reader was sent
  * to by the position of the passage rather than by its text.
+ *
+ * With `context`, the occurrence that sits between that text is the one
+ * located; a page that no longer reads that way falls back to the first.
  */
-export function locateQuoteInSpans(spanTexts: string[], quote: string): QuoteLocation | null {
+export function locateQuoteInSpans(
+  spanTexts: string[],
+  quote: string,
+  context?: PassageContext,
+): QuoteLocation | null {
   const needle = normalize(quote);
   if (!needle) return null;
 
@@ -99,7 +129,7 @@ export function locateQuoteInSpans(spanTexts: string[], quote: string): QuoteLoc
     }
   });
 
-  const at = matchRange(pageText, needle);
+  const at = (context && matchWithin(pageText, needle, context)) ?? matchRange(pageText, needle);
   if (!at) return null;
 
   const start = origins[at.start];
@@ -133,6 +163,7 @@ export function citedPassageOnPage(
   const location = locateQuoteInSpans(
     spans.map((span) => span.textContent ?? ""),
     passage.text,
+    passage.context,
   );
   if (!location) return null;
 

@@ -24,6 +24,9 @@ export const bookSummarySchema = z.object({
   // Whether the book is a file in the Dropbox folder. Deleting it from the
   // shelf leaves that file alone, and the reader is told so before agreeing.
   inDropbox: z.boolean(),
+  // The page the reader last had open, for the shelf's progress. `null` for a
+  // book never opened in a reader — which is not the same as page 1.
+  lastReadPage: z.number().int().nullable(),
 });
 
 export type BookSummary = z.infer<typeof bookSummarySchema>;

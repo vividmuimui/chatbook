@@ -1,21 +1,29 @@
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SelectionPopover } from "./SelectionPopover";
+import { SelectionPopover, type SelectionBoxMode } from "./SelectionPopover";
 
 const PASSAGE = "行間を読むという言い方がある";
 
-function renderPopover(quote = PASSAGE) {
+function renderPopover(quote = PASSAGE, initialMode?: SelectionBoxMode) {
   const onSubmit = vi.fn();
+  const onMark = vi.fn();
   const onDismiss = vi.fn();
   const { unmount } = render(
-    <SelectionPopover quote={quote} onSubmit={onSubmit} onDismiss={onDismiss} />,
+    <SelectionPopover
+      quote={quote}
+      onSubmit={onSubmit}
+      onMark={onMark}
+      onDismiss={onDismiss}
+      initialMode={initialMode}
+    />,
   );
   return {
     onSubmit,
+    onMark,
     onDismiss,
     unmount,
-    input: screen.getByPlaceholderText("選択した文章について質問する..."),
+    input: screen.getByRole("textbox"),
   };
 }
 
@@ -67,7 +75,9 @@ describe("SelectionPopover", () => {
           finishAsking = resolve;
         }),
     );
-    render(<SelectionPopover quote={PASSAGE} onSubmit={onSubmit} onDismiss={vi.fn()} />);
+    render(
+      <SelectionPopover quote={PASSAGE} onSubmit={onSubmit} onMark={vi.fn()} onDismiss={vi.fn()} />,
+    );
     const input = screen.getByPlaceholderText("選択した文章について質問する...");
     await userEvent.type(input, "この段落を一言で要約して");
 
@@ -97,7 +107,9 @@ describe("SelectionPopover", () => {
           failAsking = () => reject(new Error("Server exploded"));
         }),
     );
-    render(<SelectionPopover quote={PASSAGE} onSubmit={onSubmit} onDismiss={vi.fn()} />);
+    render(
+      <SelectionPopover quote={PASSAGE} onSubmit={onSubmit} onMark={vi.fn()} onDismiss={vi.fn()} />,
+    );
     const input = screen.getByPlaceholderText("選択した文章について質問する...");
     await userEvent.type(input, "この段落を一言で要約して");
 
@@ -184,6 +196,116 @@ describe("SelectionPopover", () => {
     dispatchCopy(document.body, setData);
 
     expect(setData.mock.calls).toStrictEqual([["text/plain", PASSAGE]]);
+  });
+
+  describe("marking without asking", () => {
+    it("keeps the passage in the colour picked, with no note and no question", async () => {
+      const { onMark, onSubmit } = renderPopover();
+
+      await userEvent.click(screen.getByRole("button", { name: "青でマーク" }));
+
+      expect(onMark.mock.calls).toStrictEqual([["#42A5F5", null]]);
+      expect(onSubmit.mock.calls).toStrictEqual([]);
+    });
+
+    it("turns the box to a note, and keeps it in the colour chosen for it", async () => {
+      const { onMark, onSubmit } = renderPopover();
+
+      await userEvent.click(screen.getByRole("button", { name: "メモを書く" }));
+      const field = screen.getByPlaceholderText("選択した文章にメモを書く...");
+      // The swatches pick rather than act once the box is for a note, and say
+      // which one is picked; yellow until the reader picks another.
+      expect(screen.getByRole("button", { name: "黄を選ぶ" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await userEvent.click(screen.getByRole("button", { name: "ピンクを選ぶ" }));
+      expect(onMark.mock.calls).toStrictEqual([]);
+      await userEvent.type(field, "  設計レビューで引用する  ");
+
+      await userEvent.click(screen.getByRole("button", { name: "メモ付きでマーク" }));
+
+      expect(onMark.mock.calls).toStrictEqual([["#EC407A", "設計レビューで引用する"]]);
+      expect(onSubmit.mock.calls).toStrictEqual([]);
+    });
+
+    it("keeps what was typed as a question when the box turns to a note", async () => {
+      const { input } = renderPopover();
+      await userEvent.type(input, "あとで調べる");
+
+      await userEvent.click(screen.getByRole("button", { name: "メモを書く" }));
+
+      expect(screen.getByPlaceholderText("選択した文章にメモを書く...")).toHaveValue(
+        "あとで調べる",
+      );
+    });
+
+    it("opens on the note when it is asked to, with the field ready to type in", () => {
+      renderPopover(PASSAGE, "note");
+
+      const field = screen.getByPlaceholderText("選択した文章にメモを書く...");
+      expect(field).toHaveFocus();
+      expect(screen.getByRole("button", { name: "質問を書く" })).toBeInTheDocument();
+    });
+
+    it("marks nothing while a question about the passage is still being stored", async () => {
+      // The ask stores a highlight of the same passage; a mark on top of it
+      // would be a second one.
+      let finishAsking!: () => void;
+      const onSubmit = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishAsking = resolve;
+          }),
+      );
+      const onMark = vi.fn();
+      render(
+        <SelectionPopover
+          quote={PASSAGE}
+          onSubmit={onSubmit}
+          onMark={onMark}
+          onDismiss={vi.fn()}
+        />,
+      );
+      await userEvent.type(
+        screen.getByPlaceholderText("選択した文章について質問する..."),
+        "要約して",
+      );
+      await userEvent.click(screen.getByRole("button", { name: "質問する" }));
+
+      const swatch = screen.getByRole("button", { name: "黄でマーク" });
+      expect(swatch).toBeDisabled();
+      await userEvent.click(swatch);
+
+      expect(onMark.mock.calls).toStrictEqual([]);
+      await act(async () => {
+        finishAsking();
+      });
+    });
+
+    it("lets the reader mark again once a failed mark has finished", async () => {
+      let failMarking!: () => void;
+      const onMark = vi.fn(
+        () =>
+          new Promise<void>((_, reject) => {
+            failMarking = () => reject(new Error("Server exploded"));
+          }),
+      );
+      render(
+        <SelectionPopover quote={PASSAGE} onSubmit={vi.fn()} onMark={onMark} onDismiss={vi.fn()} />,
+      );
+
+      await userEvent.click(screen.getByRole("button", { name: "黄でマーク" }));
+      await act(async () => {
+        failMarking();
+      });
+      await userEvent.click(screen.getByRole("button", { name: "黄でマーク" }));
+
+      expect(onMark.mock.calls).toStrictEqual([
+        ["#FFEB3B", null],
+        ["#FFEB3B", null],
+      ]);
+    });
   });
 
   it("stays open when the reader right-clicks outside it", async () => {

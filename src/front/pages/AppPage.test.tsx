@@ -29,6 +29,7 @@ function highlight(id: string, selectedText: string, pageNumber = 1): SelectionH
     pageNumber,
     positionData: { rects: [] },
     color: "#FFEB3B",
+    note: null,
     createdAt: "2026-08-01T10:00:00.000Z",
   };
 }
@@ -496,6 +497,49 @@ describe("AppPage", () => {
     expect(within(header).getByRole("button", { name: "目次を表示" })).toBeInTheDocument();
   });
 
+  it("offers the type settings in the header for an EPUB, and not for a PDF", async () => {
+    const epub: BookDetail = { ...BOOK_B, format: "epub" };
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A, [bookKey(epub.id)]: epub });
+
+    const header = await screen.findByRole("banner");
+    await screen.findByText(BOOK_A.fileName);
+    expect(within(header).queryByRole("button", { name: "表示の設定" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "別の本を開く" }));
+
+    // The reader is built again for the next book, header and all
+    const settings = await screen.findByRole("button", { name: "表示の設定" });
+    expect(screen.getByRole("banner")).toContainElement(settings);
+  });
+
+  it("puts the search through the book's text beside the page from the header", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+
+    const header = await screen.findByRole("banner");
+    const toggle = within(header).getByRole("button", { name: "本文検索" });
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
+
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("region", { name: "本文の検索" })).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // Beside the page, not over it: nothing to tap away
+    expect(screen.queryByRole("button", { name: "検索を閉じる" })).toBeNull();
+
+    await userEvent.click(toggle);
+
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
+  });
+
+  it("opens the search on vim's / without typing the slash into it", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+    await screen.findByRole("banner");
+
+    await userEvent.keyboard("/");
+
+    expect(screen.getByLabelText("本文から探す語")).toHaveValue("");
+  });
+
   it("puts the page out of sight on the maximize toggle, and has it back on the way out", async () => {
     // Reading an answer through is what the toggle is for, so the page goes out
     // of sight — but not out of the tree: taking the viewer down would take the
@@ -590,6 +634,24 @@ describe("AppPage on a screen too narrow for two panes", () => {
     expect(screen.queryByText(A_PASSAGE)).toBeNull();
   });
 
+  it("lays the search over the page from the toolbar, putting the outline away", async () => {
+    setViewportWidth(PHONE_WIDTH);
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+
+    const outline = await screen.findByRole("button", { name: "目次" });
+    await userEvent.click(outline);
+    expect(outline).toHaveAttribute("aria-pressed", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "本文検索" }));
+
+    expect(screen.getByRole("region", { name: "本文の検索" })).toBeInTheDocument();
+    expect(outline).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(screen.getByRole("button", { name: "検索を閉じる" }));
+
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
+  });
+
   it("brings the chat up from the toolbar", async () => {
     setViewportWidth(PHONE_WIDTH);
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
@@ -645,6 +707,18 @@ describe("AppPage on a screen too narrow for two panes", () => {
 
     expect(await screen.findByText(BOOK_A.fileName)).toBeInTheDocument();
     expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("keeps the type settings of an EPUB in the header, within reach on a phone", async () => {
+    setViewportWidth(PHONE_WIDTH);
+    const epub: BookDetail = { ...BOOK_A, format: "epub" };
+
+    renderReader(epub.id, { [bookKey(epub.id)]: epub });
+
+    const settings = await screen.findByRole("button", { name: "表示の設定" });
+    expect(screen.getByRole("banner")).toContainElement(settings);
+    await userEvent.click(settings);
+    expect(screen.getByRole("button", { name: "文字を大きく" })).toBeInTheDocument();
   });
 
   it("brings the chat up on the highlight a link named", async () => {

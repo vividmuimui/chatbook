@@ -36,6 +36,36 @@ export const positionDataSchema = z.object({
 
 export type PositionData = z.infer<typeof positionDataSchema>;
 
+/**
+ * The colours a highlight can be, as stored. Kindle's four: yellow, blue, pink
+ * and orange. Yellow comes first because it is the column's default — every
+ * row stored before colours could be chosen is yellow, and so is a highlight
+ * made by asking a question, which picks no colour of its own.
+ *
+ * An allowlist rather than any `#RRGGBB`: the screen offers these four, and a
+ * colour it cannot offer is one the reader could never pick again once it is
+ * changed away from.
+ */
+export const HIGHLIGHT_COLORS = ["#FFEB3B", "#42A5F5", "#EC407A", "#FF9800"] as const;
+
+export const DEFAULT_HIGHLIGHT_COLOR = HIGHLIGHT_COLORS[0];
+
+export const highlightColorSchema = z.enum(HIGHLIGHT_COLORS);
+
+export type HighlightColor = z.infer<typeof highlightColorSchema>;
+
+/** A page of thoughts, not an essay: long enough to write in, short enough to bound LIKE. */
+export const MAX_NOTE_LENGTH = 2000;
+
+/**
+ * A note as the reader sends it. Blank is no note: it is stored as null, so a
+ * note emptied in the editor is a note taken away rather than an empty one kept.
+ */
+const noteInputSchema = z
+  .string()
+  .max(MAX_NOTE_LENGTH)
+  .transform((note) => (note.trim() === "" ? null : note.trim()));
+
 /** A highlight of the open book, as the viewer draws it and the list shows it. */
 export const selectionHighlightSchema = z.object({
   id: z.string(),
@@ -43,30 +73,55 @@ export const selectionHighlightSchema = z.object({
   pageNumber: z.number().int().positive(),
   positionData: positionDataSchema,
   color: z.string(),
+  /** What the reader wrote against the passage. Null when they wrote nothing. */
+  note: z.string().nullable(),
   createdAt: z.string(),
 });
 
 export type SelectionHighlight = z.infer<typeof selectionHighlightSchema>;
 
-/** What the viewer sends when the reader highlights a passage. */
+/**
+ * What the viewer sends when the reader highlights a passage.
+ *
+ * Colour and note are both optional: a highlight made by asking a question
+ * names neither, and is stored yellow with no note.
+ */
 export const createSelectionRequestSchema = z.object({
   selectedText: z.string().min(1),
   pageNumber: z.number().int().positive(),
   positionData: positionDataSchema,
+  color: highlightColorSchema.optional(),
+  note: noteInputSchema.nullable().optional(),
 });
 
-export type CreateSelectionRequest = z.infer<typeof createSelectionRequestSchema>;
+export type CreateSelectionRequest = z.input<typeof createSelectionRequestSchema>;
 
-/** The highlight as it comes back from its own creation, before it has a colour. */
-export const createdSelectionSchema = z.object({
-  id: z.string(),
-  selectedText: z.string(),
-  pageNumber: z.number().int().positive(),
-  positionData: positionDataSchema,
-  createdAt: z.string(),
-});
+/** The highlight as it comes back from its own creation: the stored row. */
+export const createdSelectionSchema = selectionHighlightSchema;
 
 export type CreatedSelection = z.infer<typeof createdSelectionSchema>;
+
+/**
+ * A change to a highlight the reader already made. Either field may be left
+ * out to keep what is stored; a note of null (or blank) takes the note away.
+ */
+export const updateSelectionRequestSchema = z
+  .object({
+    color: highlightColorSchema.optional(),
+    note: noteInputSchema.nullable().optional(),
+  })
+  .refine((change) => change.color !== undefined || change.note !== undefined);
+
+export type UpdateSelectionRequest = z.input<typeof updateSelectionRequestSchema>;
+
+/** The highlight's colour and note as they stand after a change. */
+export const selectionUpdatedSchema = z.object({
+  id: z.string(),
+  color: z.string(),
+  note: z.string().nullable(),
+});
+
+export type SelectionUpdated = z.infer<typeof selectionUpdatedSchema>;
 
 export const selectionDeletedSchema = z.object({ deleted: z.literal(true) });
 

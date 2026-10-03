@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import type { PassageContext } from "../lib/citedPassage";
 
 export const currentPageAtom = atom<number>(1);
 
@@ -32,10 +33,18 @@ export const UNDRAWN_PAGE: PageViewport = { width: 800, height: 1000, baseWidth:
  */
 export const outlineOpenAtom = atom<boolean>(false);
 
-/** The passage a citation quoted, to be marked on the page it was found on. */
+/**
+ * The passage a citation quoted — or a search of the book's text found — to be
+ * marked on the page it was found on.
+ */
 export interface CitedPassage {
   pageNumber: number;
   text: string;
+  /**
+   * The text around it on the page, for a passage that may be there more than
+   * once: a searched-for word is, and the reader picked one of them.
+   */
+  context?: PassageContext;
 }
 
 /**

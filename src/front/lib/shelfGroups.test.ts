@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { groupShelf, splitHidden, titleOf } from "./shelfGroups";
+import { filterShelf, groupShelf, splitHidden, titleOf } from "./shelfGroups";
 import type { BookSummary } from "../../shared/schemas/book";
 import type { DropboxFile } from "../../shared/schemas/dropbox";
 
@@ -12,6 +12,7 @@ function book(id: string, fileName: string, format: "pdf" | "epub" = "pdf"): Boo
     updatedAt: "2026-01-01T00:00:00Z",
     hasThumbnail: false,
     inDropbox: false,
+    lastReadPage: null,
   };
 }
 
@@ -90,6 +91,48 @@ describe("splitHidden", () => {
 
     expect(hidden.map((g) => g.title)).toStrictEqual(["two"]);
     expect(shown.map((g) => g.title)).toStrictEqual(["one"]);
+  });
+});
+
+describe("filterShelf", () => {
+  const groups = groupShelf(
+    [
+      book("a", "Rust入門.pdf"),
+      book("b", "Cloudflare Workers 入門.pdf"),
+      book("c", "がくしゅう.epub", "epub"),
+    ],
+    [file("id:1", "TypeScript ハンドブック.pdf")],
+  );
+  const titles = (query: string) => filterShelf(groups, query).map((g) => g.title);
+
+  it("keeps everything for an empty query, or one of spaces only", () => {
+    expect(titles("")).toHaveLength(4);
+    expect(titles("  ")).toHaveLength(4);
+  });
+
+  it("keeps the entries whose title holds the query anywhere", () => {
+    expect(titles("入門")).toStrictEqual(["Rust入門", "Cloudflare Workers 入門"]);
+    expect(titles("Workers")).toStrictEqual(["Cloudflare Workers 入門"]);
+  });
+
+  it("ignores case, the same way names are compared", () => {
+    expect(titles("rust")).toStrictEqual(["Rust入門"]);
+    expect(titles("TYPESCRIPT")).toStrictEqual(["TypeScript ハンドブック"]);
+  });
+
+  it("ignores Unicode normalization, the same way names are compared", () => {
+    // が typed as か plus the combining mark finds the composed が, and back.
+    expect(titles("\u304b\u3099く")).toStrictEqual(["がくしゅう"]);
+    const decomposed = groupShelf([book("d", "\u304b\u3099くしゅう.pdf")], []);
+    expect(filterShelf(decomposed, "がく")).toHaveLength(1);
+  });
+
+  it("matches the title, not the extension it was stored under", () => {
+    expect(titles("pdf")).toStrictEqual([]);
+  });
+
+  it("keeps the order the shelf had", () => {
+    expect(titles("入")).toStrictEqual(["Rust入門", "Cloudflare Workers 入門"]);
   });
 });
 
