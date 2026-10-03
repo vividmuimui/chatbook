@@ -7,6 +7,7 @@ import {
   bookFormatSchema,
   type BookFormat,
   type BookOutline,
+  type BookRenamed,
   type BookSummary,
   type PdfMetadata,
   type ReadingState,
@@ -131,6 +132,7 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
       updatedAt: pdfs.updatedAt,
       dropboxId: pdfs.dropboxId,
       lastReadPage: pdfs.lastReadPage,
+      title: pdfs.title,
     })
     .from(pdfs)
     .orderBy(desc(pdfs.updatedAt))
@@ -203,9 +205,10 @@ async function storePdf(
     }
 
     // Refresh the metadata: the caller just re-extracted it, so it supersedes
-    // whatever was stored before. Selections, chats and the reader's place stay
-    // attached to the id — the columns set here are listed one by one so that
-    // re-opening a book never costs the reader their place in it.
+    // whatever was stored before. Selections, chats, the reader's place and the
+    // title they gave the book stay attached to the id — the columns set here
+    // are listed one by one so that re-opening a book never costs the reader
+    // their place in it, or the name they gave it.
     await d1Db
       .update(pdfs)
       .set({
@@ -227,6 +230,7 @@ async function storePdf(
       pageCount,
       fullText,
       readingState: readingStateOf(existing),
+      title: existing.title,
     };
   }
 
@@ -249,7 +253,7 @@ async function storePdf(
     updatedAt: now,
   });
 
-  return { id, fileName, format, pageCount, fullText, readingState: null };
+  return { id, fileName, format, pageCount, fullText, readingState: null, title: null };
 }
 
 /**
@@ -316,6 +320,29 @@ async function writeReadingState(
     .all();
 
   return updated.length > 0;
+}
+
+/**
+ * Give a book the title the reader chose, or — with null — take it away so the
+ * book is called by its file name again.
+ *
+ * `updatedAt` is left alone for the same reason as with the reading place: the
+ * shelf is ordered by it, and renaming a book is not opening it.
+ */
+export function renameBook(
+  db: D1Database,
+  pdfId: string,
+  title: string | null,
+): ResultAsync<BookRenamed, ServiceError> {
+  return ResultAsync.fromPromise(
+    drizzle(db)
+      .update(pdfs)
+      .set({ title })
+      .where(eq(pdfs.id, pdfId))
+      .returning({ id: pdfs.id, title: pdfs.title })
+      .get(),
+    storageFailure,
+  ).andThen((renamed) => (renamed ? ok(renamed) : err(notFound())));
 }
 
 /**
@@ -511,6 +538,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
     hasThumbnail: thumbnail !== null,
     hasOutline: pdf.outline !== null,
     readingState: readingStateOf(pdf),
+    title: pdf.title,
     selections: selRows.map((s) => ({
       id: s.id,
       selectedText: s.selectedText,

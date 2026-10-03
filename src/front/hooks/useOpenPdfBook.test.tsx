@@ -55,8 +55,10 @@ async function openAPdf(
     readingState = SAVED_PLACE,
     onProgress = () => {},
     outline = null,
+    title = null,
   }: {
     refuse?: boolean;
+    title?: string | null;
     readingState?: BookDetail["readingState"];
     onProgress?: (ratio: number) => void;
     outline?: ExtractedPdfData["outline"];
@@ -103,6 +105,7 @@ async function openAPdf(
       pageCount: PAGE_COUNT,
       fullText: FULL_TEXT,
       readingState,
+      title,
     });
   }
 
@@ -134,7 +137,14 @@ describe("useOpenPdfBook", () => {
       hasOutline: true,
       selections: [],
       readingState: SAVED_PLACE,
+      title: null,
     } satisfies BookDetail);
+  });
+
+  it("keeps the title the reader gave the book when it is added again from its file", async () => {
+    const { cache } = await openAPdf(COVER, { title: "付けた題名" });
+
+    expect(cache.get(bookKey(PDF_ID))?.data).toMatchObject({ title: "付けた題名" });
   });
 
   it("records that a book whose cover could not be rendered has none", async () => {
@@ -150,6 +160,7 @@ describe("useOpenPdfBook", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      title: null,
     } satisfies BookDetail);
   });
 

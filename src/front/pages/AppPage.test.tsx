@@ -35,6 +35,7 @@ function highlight(id: string, selectedText: string, pageNumber = 1): SelectionH
 }
 
 const BOOK_A: BookDetail = {
+  title: null,
   id: "bookA",
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
@@ -48,6 +49,7 @@ const BOOK_A: BookDetail = {
 };
 
 const BOOK_B: BookDetail = {
+  title: null,
   id: "bookB",
   fileName: "Durable Objects.pdf",
   format: "pdf",

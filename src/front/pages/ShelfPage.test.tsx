@@ -16,6 +16,7 @@ import { fakeUpload } from "../../test/fakeUpload";
 
 function book(overrides: Partial<BookSummary> = {}): BookSummary {
   return {
+    title: null,
     id: "book-1",
     fileName: "Cloudflare Workers 入門.pdf",
     format: "pdf",
@@ -98,6 +99,7 @@ const STORED_BOOK = {
   pageCount: 209,
   fullText: "エッジはサーバーレス実行基盤です。",
   readingState: null,
+  title: null,
 };
 
 /** Hands the hidden input a file, the way clicking the tile ends up doing. */

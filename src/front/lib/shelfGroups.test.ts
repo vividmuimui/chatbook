@@ -5,6 +5,7 @@ import type { DropboxFile } from "../../shared/schemas/dropbox";
 
 function book(id: string, fileName: string, format: "pdf" | "epub" = "pdf"): BookSummary {
   return {
+    title: null,
     id,
     fileName,
     format,
