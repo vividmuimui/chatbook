@@ -207,11 +207,11 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`                                   |
-| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                         |
+| 置き場所          | 内容                                                                                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`                                                                                      |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                            |
 
 **チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
 必ず持ち、`selection_id` を持つのはハイライトの会話だけ。本そのものへの質問（要約・章ごとの
@@ -225,7 +225,11 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 同一性は **内容の SHA-256** で判定する。同じ本を開き直すと同じ `pdfs.id` を返しつつ、
 `fileName` / `fullText` / `pageCount` / `outline` を最新の抽出結果で**上書き**する
 (`src/server/services/pdfService.ts` の `openPdf`)。ここを「既存レコードをそのまま返す」に
-戻すと、古いメタデータが残り続ける不具合になる。
+戻すと、古いメタデータが残り続ける不具合になる。**`outline` だけは、抽出が目次を持って
+こなかったときに保存済みのものを残す**——同じバイト列なので、保存済みの目次は前回の抽出が
+読めたもの（今回読めなかっただけ）か、しおりの無い PDF に AI が作ったもの（下記「目次の無い
+PDF に AI で目次を作る」。費用を払って作った）のどちらかで、どちらも消す理由が無い。
+読書位置とページめくりの向き（`page_direction`）は列挙から外してあるので、開き直しても残る。
 
 #### Dropbox 連携
 
@@ -360,7 +364,8 @@ union + `satisfies` で固定する。
   （`useHighlights` の `updateHighlight`）・ハイライトの削除（`useHighlights`）・
   チャット履歴の取得（`AppPage`）・読書位置の保存（`useReadingStateSync`）・
   ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
-  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 9 つ。
+  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・ページめくりの向きの保存
+  （`usePageDirection`）・目次の生成（`useReaderOutline`）の 11 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -406,6 +411,8 @@ union + `satisfies` で固定する。
 | PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
 | ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
 | 目次の取得                                   | `usePdfOutline` の `error`                            | 目次パネル                                                                           |
+| 目次の生成（AI）                             | `useReaderOutline` の `generation.error`              | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
+| ページめくりの向きの保存                     | `usePageDirection` の `error`                         | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
 | ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
 | ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                          | 編集欄の中（開いたまま。打ったメモも残る）                                           |
 | ハイライトの削除                             | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
@@ -799,10 +806,11 @@ HTML はそこを通せない。
 書かせる」の `MERMAID_RULE` / `TABLE_RULE` / `CITATION_RULES` が区間の区切りで、テストが
 その 2 つの区間の中身を固定している。
 
-| モード      | エンドポイント                                                              |
-| ----------- | --------------------------------------------------------------------------- |
-| 通常        | `<LLM_BASE_URL>/chat/completions`（OpenAI SDK 経由）                        |
-| Web 検索 ON | `<LLM_BASE_URL>/responses` に `tools: [{ type: "web_search" }]`（生 fetch） |
+| モード             | エンドポイント                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| 通常               | `<LLM_BASE_URL>/chat/completions`（OpenAI SDK 経由）                                  |
+| Web 検索 ON        | `<LLM_BASE_URL>/responses` に `tools: [{ type: "web_search" }]`（生 fetch）           |
+| 目次の生成（下記） | `<LLM_BASE_URL>/chat/completions`（`completeChat`。ストリームしない・SDK の再試行 0） |
 
 `/v1` を含めるかはプロバイダの流儀次第（既定の DeepSeek は付けない）。**`LLM_BASE_URL` に
 末尾スラッシュを付けると Web 検索だけが壊れる**——通常モードは SDK が正規化するが、
@@ -814,12 +822,12 @@ HTML はそこを通せない。
 DeepSeek に向く**。`vars` を足すと `worker-configuration.d.ts` が変わるので、
 `vp exec wrangler types` で再生成して commit する。
 
-| 変数                       | 空 / 未設定のとき                                          |
-| -------------------------- | ---------------------------------------------------------- |
-| `LLM_API_KEY`              | チャットが 500（`CONFIG_ERROR` / `"LLM_API_KEY not set"`） |
-| `LLM_BASE_URL`             | `https://api.deepseek.com`                                 |
-| `LLM_MODEL`                | `deepseek-v4-flash`                                        |
-| `LLM_WEB_SEARCH_SUPPORTED` | 対応しているものとして扱う（`"false"` / `"0"` だけが否定） |
+| 変数                       | 空 / 未設定のとき                                                      |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `LLM_API_KEY`              | チャットと目次の生成が 500（`CONFIG_ERROR` / `"LLM_API_KEY not set"`） |
+| `LLM_BASE_URL`             | `https://api.deepseek.com`                                             |
+| `LLM_MODEL`                | `deepseek-v4-flash`                                                    |
+| `LLM_WEB_SEARCH_SUPPORTED` | 対応しているものとして扱う（`"false"` / `"0"` だけが否定）             |
 
 **Web 検索の可否はプロバイダの性質であって読者の設定ではない。** 読者のトグル
 （`useWebSearchAtom`、既定 ON）は localStorage にあるので、プロバイダを替えても消えない。
@@ -901,8 +909,8 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 `--- HIGHLIGHTED PASSAGE ---` のブロックごと出さない（無いハイライトを探させない）。
 
 目次はクライアント（`pdfLoader` → `pdfOutline.ts` の `toStoredOutline`）がアップロード時に
-トップレベル章だけを送り、再アップロードで他のメタデータと同様に**上書き**される（目次の
-無い抽出は NULL に戻す）。**既存の本（列が NULL）は窓で動くが、リーダーで開けば後追いで
+トップレベル章だけを送り、再アップロードで他のメタデータと同様に**上書き**される（ただし
+目次の無い抽出は保存済みの目次を消さない。上記「ストレージの分担」）。**既存の本（列が NULL）は窓で動くが、リーダーで開けば後追いで
 章が入る**——表紙の後追い保存と同じ形で、`usePdfDocument` の `storeOutlineIfMissing` が、
 開いているドキュメントから抽出した目次を `PUT /api/pdf/:pdfId/outline` に書く（本が目次を
 持つかは `GET /api/pdf/:pdfId` の `hasOutline` が言う。アップロード直後のキャッシュ先充填も
@@ -920,6 +928,58 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 全文を載せていた頃は 200 ページ級で最初のトークンまで 10 秒前後かかった。抜粋でも最初の
 トークンまで数秒待つことはあるので、ストリーミングが壊れているのと区別すること
 （`read()` が複数回に分かれるかで判別できる）。
+
+#### 目次の無い PDF に AI で目次を作る
+
+しおり（PDF の outline）を持たない本——スキャンした本や、書き出し時に落ちた本——には、
+目次パネルの「この本には目次がありません」の下に**「AIで目次を作る」**が出る。押すと
+`POST /api/pdf/:pdfId/outline/generate`（`routes/pdf.ts`）が LLM に章立てを尋ね、
+**既存の目次と同じ形（`BookOutline`）で `pdfs.outline` に書く**。以後は PDF のしおりから
+抽出した目次と区別しない——チャットの抜粋（`selectExcerpt`）も範囲メニュー
+（`/chapters`）も同じ列を読む。
+
+| 何を                                   | どこが                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 送る中身・返答の検証と正規化（純関数） | `src/server/services/outlineGeneration.ts`（`buildOutlineMessages` / `readGeneratedOutline`） |
+| LLM の呼び出し（非ストリーム）         | `llmService.ts` の `completeChat`                                                             |
+| 受け口・409 / 502 の判定・保存         | `routes/pdf.ts` の `POST /pdf/:pdfId/outline/generate`                                        |
+| 目次パネルへの表示とボタンの配線       | `src/front/hooks/useReaderOutline.ts` → `PdfOutline` の `generation`                          |
+
+- **モデルに見せるのはページごとの先頭だけ**（`pageHeads`。`\f` で割ったページを空白を
+  畳んで 1 行にし、`p.N: …` と番号を振る。既定 200 文字、全体で 60,000 文字に収まるよう
+  長い本ほど 1 ページの取り分を減らす。下限 40 文字）。章は始まるページの頭に名乗るので
+  それで足り、全文を送ると 1 冊で数十万トークンになる。空のページは行ごと落とすが番号は
+  詰めない
+- **プロンプトはチャットの `buildSystemPrompt` とは別物**（上記の区間の制約は関係しない）。
+  JSON（`{"chapters":[{"title","page"}]}`）だけを返せと言うが、`response_format` は使わない
+  ——OpenAI 互換の前提に含めない。代わりに**読み手が寛容**で、コードフェンスや前後の文に
+  包まれた JSON・裸の配列も読む（`jsonIn`）
+- **正規化**: タイトルを trim して空なら落とし、`MAX_OUTLINE_TITLE_LENGTH` で切る。ページは
+  丸めて **1..`page_count` にクランプ**し、昇順に並べ、**同じページの 2 つ目以降は捨てる**
+  （章は始まるページで切られるので、同じページの 2 章は 1 章に 2 つの名前があるだけ）。
+  `MAX_OUTLINE_CHAPTERS` まで。何も残らなければ「目次ではない」扱い
+- **失敗の言い分け**: キーが無い → 500 `CONFIG_ERROR`、本が無い → 404、**既に目次がある →
+  409 `OUTLINE_EXISTS`（上書きしない。LLM も呼ばない）**、プロバイダが拒否・不通 → 502
+  `AI_API_ERROR`、返答が目次として読めない → 502 `AI_RESPONSE_INVALID`。どの失敗でも
+  何も保存しない。**SDK の自動再試行は切ってある**（`maxRetries: 0`）——ボタンを押した読者を
+  3 回分待たせるより、失敗を言って押し直してもらう
+- **画面側は PDF 自身のしおりが優先**（`useReaderOutline`）。しおりが空のときだけ、本が
+  `hasOutline` を言っていれば `/chapters`（`useChapters`）を読んで `chaptersAsOutline`
+  （`pdfOutline.ts`。先頭の無題区間を除いたトップレベルだけ）で目次パネルに出す。
+  `hasOutline` が false なら尋ねずに「目次がありません」とボタンを出す。本がまだ届いて
+  いなければ「読み込み中」のまま（ボタンを一瞬見せない）
+- **生成が成功したら 2 つのキャッシュを動かす**——`chaptersKey` は再取得（区間を解くのは
+  サーバ）、`bookKey` は `hasOutline: true` を書くだけ。これで目次パネルとチャットの範囲
+  メニューが同時に章を持ち、`usePdfDocument` の後追い保存も空撃ちしない
+- **EPUB には出さない**（`PdfViewer` だけが配線する。EPUB は自分の目次を持つ）
+
+守っているのは worker の `test/worker/outlineGeneration.test.ts`（msw で `https://llm.test` の
+chat completions を止める。保存・`/chapters` への反映・409・502 の 2 種・404・`CONFIG_ERROR`・
+再試行しないこと）、jsdom の `outlineGeneration.test.ts`（送る中身と正規化）、
+`useReaderOutline.test.tsx`（しおり優先・保存済みの章の表示・生成後の反映・失敗）、
+`PdfOutline.test.tsx`（ボタン・生成中・失敗表示）、`pdfOutline.test.ts` の `chaptersAsOutline`。
+**実際のモデルが良い章立てを返すかはどのテストも見ていない**（E2E は実キーが要るので無い）。
+手で見るなら、メインクローンの `.dev.vars` の実キーで、しおりの無い PDF を開いて押す。
 
 ### 状態管理とルーティング
 
@@ -1092,7 +1152,7 @@ Dropbox から現れたら、読者がまだ判断していないファイルな
 | 入力                           | どう分けるか                                                                                                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ピンチ・スワイプ               | `touchstart` / `gesturestart` の購読だけ。指のときしか発火しない                                                                                                      |
-| 左右タップでのページ送り       | 分けない（マウスのクリックでも送る）                                                                                                                                  |
+| 左右タップでのページ送り       | 分けない（マウスのクリックでも送る）。どちらの端が次かは本の向きで決まる（下記「ページめくりの向きは本ごとに持つ」）                                                  |
 | 中央のダブルタップでの拡大     | `pointerType !== "mouse"` のときだけ（マウスには Ctrl+ホイールがある）                                                                                                |
 | 選択の確定                     | 分けない。常に `useSettledSelection`（`src/front/hooks/useSettledSelection.ts`。`selectionchange` が止まり、**かつ**ポインタが離れてから `SELECTION_SETTLE_MS` 待つ） |
 | 選択したあとに何を出すか       | 指なら `SelectionActionBar`、マウスなら入力欄（狭い画面はマウスでもバー。320px の入力欄が収まらないため）                                                             |
@@ -1220,15 +1280,65 @@ E2E の 1 つのアサーションだけ**——縮小側のテストが「左�
 `nextZoom`、指と Safari の `pinchZoom`、ダブルタップのリテラル、そして localStorage を読み戻す
 `settingsAtom.ts` の validator の 4 つ。倍率の書き手を足すときはここを通すこと。
 
-**現在ページが常に左**（`visiblePages`）。引用リンクやハイライトで p.7 へ飛べば [7|8] になり、
-名指されたページが必ず左に来る。最終ページに相方が無ければ 1 枚だけ描く。
+**現在ページが常に先に読む側**（`visiblePages`。左開きの本なら左、右開きの本なら右）。
+引用リンクやハイライトで p.7 へ飛べば [7|8]（右開きなら [8|7]）になり、名指されたページが
+必ず読み始めの側に来る。最終ページに相方が無ければ 1 枚だけ描く。`visiblePages` が返すのは
+**画面の左から右の順**なので、右開きでは番号が降順に並ぶ。`PageStepper` の「7-8 / 12」は
+画面の順ではなく本の数え方で書く。
 
 **ページ送りは出ている枚数だけ動く**（`turnTo`。端のクリック・スワイプ・`←` / `→`・`h` / `l`・
 `PageStepper` が全部ここを通る唯一の算術）。**送り先が本の終わりを越えるなら動かない**——
 12 ページの本の [11|12] からの送りは 13 ページ目を指すので、そこが本の終わり。**ただし余った
 1 ページは「終わり」ではない**——[10|11]（リンクや目次で飛ぶと起こる）からの送りは 12 ページ目に
 着き、読者がまだ見ていないその 1 枚を単独で出す。ここを見開き単位で止めると、最後の 1 ページが
-どの操作からも届かなくなる。`G`（最終ページ）は最後の見開きの左（`lastSpreadStart`）へ着地する。
+どの操作からも届かなくなる。`G`（最終ページ）は最後の見開きの読み始めの側（`lastSpreadStart`）へ着地する。
+
+#### ページめくりの向きは本ごとに持つ
+
+縦書きの日本語の本や漫画は右から左へ読む（右開き）。**向きは本ごとの値**で、D1 の
+`pdfs.page_direction`（`'ltr'` / `'rtl'`、既定 `'ltr'`。`migrations/0012_add_page_direction.sql`）
+に置き、`GET /api/pdf/:pdfId` と `POST /api/pdf/open` の応答の `pageDirection` に載る。変えるのは
+`PUT /api/pdf/:pdfId/page-direction`（`{ pageDirection }`。`updatedAt` は動かさない。本棚の並びが
+変わるので）。PDF は自分の向きを言わないので、ファイルから推測はしない。
+
+**変わるのは画面の左右と前後の対応だけ**で、**「次のページ」が何ページかは変わらない**
+（`turnTo` は向きを知らない）。左右→前後の写像は `src/front/lib/touchNavigation.ts` の
+**`turnToward(side, direction)` 1 箇所**で、次を全部ここに通す:
+
+| 入力                        | 右開きでは                                                     | 純関数                                            |
+| --------------------------- | -------------------------------------------------------------- | ------------------------------------------------- |
+| 端のタップ・クリック        | 左端が次、右端が前                                             | `resolveTapZone(x, direction)`                    |
+| スワイプ                    | 指を右へ動かすと次（紙と同じく、左にある次のページを引き込む） | `resolveSwipe(swipe, direction)`                  |
+| `←` / `→`・vim の `h` / `l` | `←` / `h` が次                                                 | `resolveAction(mode, stroke, pending, direction)` |
+| emacs の `C-f` / `C-b`      | **変えない**（forward / back は画面の左右を指さない）          | 同上                                              |
+| 見開きの並び                | 現在ページが右、次のページが左                                 | `visiblePages(…, direction)`                      |
+| `PageStepper` の前後ボタン  | 左のシェブロンが「次のページ」（aria-label は前後のまま）      | `turnToward` を直接                               |
+| 設定メニューのキー一覧      | 「←/→ 次 / 前のページ」「h 次のページ」                        | `keybindingHelp(mode, direction)`                 |
+
+- **向きは props で配る**（`book.pageDirection` → `PdfViewer` / `PageToolbar` / `PageStepper`）。
+  SWR の本が正で、atom に写さない（上記「`useEffect` の扱い」の「写し」）。キーボードは
+  `useKeyboardShortcuts(onAction, direction)`、スワイプは購読の外にある `directionRef` で読む
+- **変える口はリーダーの ⚙（`SettingsMenu`）の「ページめくり」**（左開き / 右開き）。値は本の
+  ものなので、メニューは `pdfId` を受け取ったときだけこの欄を出す。保存は `usePageDirection`
+  （`resultFetcher`）で、**サーバが受け取ってから** `bookKey` のキャッシュに書く（楽観的に
+  書かない。拒否されたらページが読者の目の前で逆に戻ることになる）
+- **形式を問わず選べる**。EPUB は今は章の縦スクロールなので向きは何も変えないが、値は
+  保存されている。**EPUB をページめくり式にするときは、上の純関数（`turnToward` /
+  `resolveTapZone` / `resolveSwipe` / `visiblePages`）に `book.pageDirection` を渡すだけで
+  よいように作ってある**
+- **向きは読書位置（`readingState`）ではない**。端末ごとの値でも開閉でもなく本の性質なので、
+  `PUT /reading-state` とは別の口で、`useReadingStateSync` は触らない
+
+守っているのは jsdom の `touchNavigation.test.ts` / `spread.test.ts` / `keybindings.test.ts`
+（写像そのもの）、`PageStepper.test.tsx`（ボタンの並び）、`useKeyboardShortcuts.test.tsx` と
+`PdfViewer.test.tsx` の「turns on with ← in a book that opens on the right」（配線）、
+`usePageDirection.test.tsx` と `SettingsMenu.test.tsx`（保存と失敗表示）、worker の
+`PUT /api/pdf/:pdfId/page-direction`。画面に出る結果は E2E の 3 本——desktop の
+「a book turned to open on the right goes on from its left edge…」（端クリックとリロード後）と
+「lays a spread of a book that opens on the right out from the right…」（見開きの並びと `←`）、
+tablet の「turns a book that opens on the right on from the left…」（タップ・スワイプ・
+ステッパー）。`pnpm run test:e2e -g "open on the right|opens on the right"` で 3 本まとめて走る。
+**3 spec の `openTestBook` は向きも左開きに戻す**（同じ本を共有するため）。
 
 **判定に要るページの素の寸法は `usePageBaseSize` が取る**（`getViewport({scale: 1})`）。
 描かれた大きさから逆算できないのは、描かれた大きさこそがこの判定の結果だから。
@@ -1829,7 +1939,8 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 
 **マイグレーションを当ててから動かす**。`readPdf` / `storePdf` は drizzle が `pdfs` の全列を
 明示列挙するので、`0002_add_reading_state.sql` / `0003_add_reading_state_chat_panel.sql` /
-`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` / `0008_add_book_format.sql` が未適用の D1 に新しいコードを
+`0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` / `0008_add_book_format.sql` /
+`0012_add_page_direction.sql` が未適用の D1 に新しいコードを
 載せると本を開く経路ごと 500 になる（列を絞って読む本棚一覧だけは生き残る。
 `saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `bookChat` は省略なら
 `set` にも現れない。チャットは `outline` 列を select するので `0004` 未適用では 500）。
@@ -1857,7 +1968,11 @@ vim の `/` は本文検索を開く（`openSearch`。上記「本文の検索�
 戻せば「なし」を選んだ読者からキーボードが消える）。**修飾キーが付いていたら渡さない**——
 とくに Shift + 方向キーは文字の選択を伸ばす操作で、ポップオーバーが読者に頼んでいるものそのもの。
 設定メニューのヘルプも `ARROW_KEYBINDING_HELP` を全モード共通で先頭に出し、モード別の
-`KEYBINDING_HELP` をその下に continue する（方向キーを 3 モード分書き写さないため）。
+`KEYBINDING_HELP` をその下に continue する（方向キーを 3 モード分書き写さないため）。組み立てる
+のは `keybindingHelp(mode, direction)` で、右開きの本では `←` / `h` を「次」と書き換える。
+**`←` / `→` と vim の `h` / `l` は画面の左右を指すので、どのページへ行くかは本の向きで決まる**
+（右開きでは `←` が次。上記「ページめくりの向きは本ごとに持つ」）。emacs の `C-f` / `C-b` は
+前後を指すので向きによらない。
 **拡大中でもページを送る**——タップとスワイプは `ENLARGED_ABOVE` 超で送らないが、キーボードは
 `h` / `l` を含めてその規約の外にある（拡大中に動かしたいのは `↑` / `↓` が担う）。
 
@@ -2021,7 +2136,7 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   経路。パネルの開閉はどう開いてもサーバから来る——ただし狭い画面は復元しないので `mobile`
   には効かない）。各 spec が
   持つ `openTestBook`（`chatbook.spec.ts` / `tablet.spec.ts` / `mobile.spec.ts` に別々の実装が
-  ある。共有していない）が開始前に selection を全削除し、読書位置をページ 1・両パネル開に
+  ある。共有していない）が開始前に selection を全削除し、ページめくりの向きを左開きに、読書位置をページ 1・両パネル開に
   戻す。**畳んだ状態から始めたいテストは URL ではなくサーバへ書いてから本を開き直す**
   （`chatbook.spec.ts` の `foldChatPane` → `page.goto`。復元は本の到着ごとに 1 回だけなので、
   `openTestBook` で本を開いたあとに書いただけでは畳まれない）
