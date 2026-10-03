@@ -52,7 +52,10 @@ describe("groupShelf", () => {
   });
 
   it("keeps different names apart, in the order they first appeared", () => {
-    const groups = groupShelf([book("a", "one.pdf"), book("b", "two.pdf")], [file("id:1", "three.pdf")]);
+    const groups = groupShelf(
+      [book("a", "one.pdf"), book("b", "two.pdf")],
+      [file("id:1", "three.pdf")],
+    );
 
     expect(groups.map((g) => g.title)).toStrictEqual(["one", "two", "three"]);
   });

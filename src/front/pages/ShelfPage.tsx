@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useAtom } from "jotai";
 import useSWR from "swr";
@@ -11,7 +11,20 @@ import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
-import { bookDeletedSchema, bookListSchema, type BookSummary } from "../../shared/schemas/book";
+import {
+  groupShelf,
+  splitHidden,
+  titleOf,
+  type ShelfGroup,
+  type ShelfMember,
+} from "../lib/shelfGroups";
+import {
+  bookDeletedSchema,
+  bookListSchema,
+  type BookFormat,
+  type BookSummary,
+} from "../../shared/schemas/book";
+import { hiddenBooksSchema, type HiddenBooks } from "../../shared/schemas/shelf";
 import {
   dropboxFolderListingSchema,
   dropboxSettingsSchema,
@@ -46,6 +59,21 @@ const requestFolderSave: SaveDropboxFolder = (folder) =>
     body: JSON.stringify({ folder }),
   });
 
+/** Cache key of the entries the reader has put away. */
+const HIDDEN_KEY = "/api/shelf/hidden";
+
+const fetchHidden = () => fetcher(HIDDEN_KEY, hiddenBooksSchema);
+
+/** Puts books away or brings them back; answers with everything now put away. */
+export type SetHidden = (keys: string[], hidden: boolean) => ResultAsync<HiddenBooks, ApiError>;
+
+const requestHidden: SetHidden = (keys, hidden) =>
+  resultFetcher(HIDDEN_KEY, hiddenBooksSchema, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys, hidden }),
+  });
+
 interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
@@ -56,6 +84,8 @@ interface ShelfPageProps {
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
   saveDropboxFolder?: SaveDropboxFolder;
   downloadDropbox?: DownloadDropboxFile;
+  loadHidden?: () => Promise<HiddenBooks>;
+  setHidden?: SetHidden;
 }
 
 /**
@@ -86,9 +116,7 @@ function importWording(importing: Importing): string {
   }
 }
 
-function bookTitle(fileName: string): string {
-  return fileName.replace(/\.(pdf|epub)$/i, "");
-}
+const FORMAT_LABEL: Record<BookFormat, string> = { pdf: "PDF", epub: "EPUB" };
 
 /**
  * How long a book is, in what it is made of: an EPUB has no pages of its own,
@@ -98,89 +126,202 @@ function bookLength(book: BookSummary): string {
   return book.format === "epub" ? `${book.pageCount} 章` : `${book.pageCount} ページ`;
 }
 
-function BookCard({
-  book,
-  onOpen,
+/** The books of an entry — the part of it a deletion can reach. */
+function booksOf(group: ShelfGroup): BookSummary[] {
+  return group.members.flatMap((m) => (m.kind === "book" ? [m.book] : []));
+}
+
+/** The first book with a cover to show, if any. */
+function coverOf(group: ShelfGroup): BookSummary | undefined {
+  return booksOf(group).find((b) => b.hasThumbnail);
+}
+
+/** The folder a Dropbox file sits in under the chosen one, or nothing for its top. */
+function subfolderOf(file: DropboxFile): string {
+  return file.path.slice(0, file.path.lastIndexOf("/"));
+}
+
+/** What an entry says under its title when it has a single file. */
+function singleMemberCaption(member: ShelfMember): string {
+  if (member.kind === "book") return bookLength(member.book);
+  const subfolder = subfolderOf(member.file);
+  return `${subfolder ? `${subfolder} · ` : ""}未読み込み`;
+}
+
+/** What the reader presses to read one file of an entry. */
+function memberLabel(title: string, member: ShelfMember): string {
+  return member.kind === "dropbox" ? `${title} を Dropbox から開く` : `${title} を開く`;
+}
+
+interface EntryActions {
+  onOpen: (member: ShelfMember) => void;
+  onHide: (group: ShelfGroup) => void;
+  onDelete: (books: BookSummary[]) => void;
+}
+
+/**
+ * The buttons of an entry that are not "open". Hiding is always there; deleting
+ * only where the entry holds a book, since a file waiting in Dropbox is not
+ * ours to delete.
+ */
+function EntryButtons({
+  group,
+  onHide,
   onDelete,
+  className,
+  buttonClassName,
+  hideClassName,
 }: {
-  book: BookSummary;
-  onOpen: (id: string) => void;
-  onDelete: (book: BookSummary) => void;
+  group: ShelfGroup;
+  onHide: EntryActions["onHide"];
+  onDelete: EntryActions["onDelete"];
+  className: string;
+  buttonClassName: string;
+  hideClassName: string;
 }) {
+  const books = booksOf(group);
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        aria-label={`${group.title} を非表示`}
+        onClick={() => onHide(group)}
+        className={`${buttonClassName} ${hideClassName}`}
+      >
+        非表示
+      </button>
+      {books.length > 0 && (
+        <button
+          type="button"
+          aria-label={`${group.title} を削除`}
+          onClick={() => onDelete(books)}
+          className={buttonClassName}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The files of an entry that holds more than one, each a button of its own.
+ * The cover and title open the first; these open the others.
+ */
+function FormatChips({ group, onOpen }: { group: ShelfGroup } & Pick<EntryActions, "onOpen">) {
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {group.members.map((member) => (
+        <button
+          key={member.key}
+          type="button"
+          aria-label={`${group.title} を ${FORMAT_LABEL[member.format]} で開く${
+            member.kind === "dropbox" ? "（Dropbox・未読み込み）" : ""
+          }`}
+          onClick={() => onOpen(member)}
+          className={`rounded border px-1.5 py-0.5 text-[11px] font-medium cursor-pointer ${
+            member.kind === "dropbox"
+              ? "border-sky-300 text-sky-700 hover:bg-sky-50"
+              : "border-gray-300 text-gray-700 hover:bg-gray-100"
+          }`}
+        >
+          {FORMAT_LABEL[member.format]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One title on the shelf, however many files it is in. The cover and title open
+ * the first file; when there are more, a chip per file opens each.
+ */
+function GroupCard({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
-  const showCover = book.hasThumbnail && !coverFailed;
-  const title = bookTitle(book.fileName);
+  const cover = coverOf(group);
+  const showCover = cover !== undefined && !coverFailed;
+  const primary = group.members[0];
+  const single = group.members.length === 1;
+  const onlyDropbox = group.members.every((m) => m.kind === "dropbox");
 
   return (
     <div className="relative group/card">
       <button
         type="button"
-        aria-label={`${title} を開く`}
-        onClick={() => onOpen(book.id)}
+        aria-label={memberLabel(group.title, primary)}
+        onClick={() => onOpen(primary)}
         className="group flex w-full flex-col text-left cursor-pointer focus:outline-none"
       >
-        <div className="relative aspect-3/4 w-full overflow-hidden rounded-r-md rounded-l-sm border-l-4 border-gray-300 bg-gray-100 shadow-md transition-all group-hover:-translate-y-1 group-hover:shadow-xl group-focus-visible:ring-2 group-focus-visible:ring-blue-500">
+        <div
+          className={`relative aspect-3/4 w-full overflow-hidden rounded-r-md rounded-l-sm border-l-4 shadow-md transition-all group-hover:-translate-y-1 group-hover:shadow-xl group-focus-visible:ring-2 group-focus-visible:ring-blue-500 ${
+            onlyDropbox ? "border-sky-300" : "border-gray-300 bg-gray-100"
+          }`}
+        >
           {showCover ? (
             <img
-              src={`/api/pdf/${book.id}/thumbnail`}
-              alt={`${title} の表紙`}
+              src={`/api/pdf/${cover.id}/thumbnail`}
+              alt={`${group.title} の表紙`}
               loading="lazy"
               onError={() => setCoverFailed(true)}
               className="h-full w-full object-cover"
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-slate-600 to-slate-800 p-3">
+            <div
+              className={`flex h-full w-full items-center justify-center p-3 bg-linear-to-br ${
+                onlyDropbox ? "from-sky-500 to-blue-700" : "from-slate-600 to-slate-800"
+              }`}
+            >
               <span className="line-clamp-5 text-center text-xs font-medium text-white/90">
-                {title}
+                {group.title}
               </span>
             </div>
           )}
+          {onlyDropbox && (
+            <span className="absolute left-1.5 top-1.5 rounded bg-white/85 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+              Dropbox
+            </span>
+          )}
         </div>
-        <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{title}</p>
-        <p className="text-xs text-gray-500">{bookLength(book)}</p>
+        <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{group.title}</p>
+        {single && <p className="truncate text-xs text-gray-500">{singleMemberCaption(primary)}</p>}
       </button>
+      {!single && <FormatChips group={group} onOpen={onOpen} />}
 
       {/* Kept out of the way until the pointer arrives — but only where there
           is a pointer to arrive. A finger never hovers, so on a touch-sized
-          screen the button is simply there, at a size a thumb can hit. */}
-      <button
-        type="button"
-        aria-label={`${title} を削除`}
-        onClick={() => onDelete(book)}
-        className="absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-lg leading-normal text-white transition-opacity cursor-pointer hover:bg-red-600 md:h-auto md:w-auto md:px-2 md:py-0.5 md:text-sm md:opacity-0 md:focus-visible:opacity-100 md:group-hover/card:opacity-100 [@media(hover:none)]:opacity-100"
-      >
-        ×
-      </button>
+          screen the buttons are simply there, at a size a thumb can hit. */}
+      <EntryButtons
+        group={group}
+        onHide={onHide}
+        onDelete={onDelete}
+        className="absolute right-1.5 top-1.5 flex gap-1 transition-opacity md:opacity-0 md:focus-within:opacity-100 md:group-hover/card:opacity-100 [@media(hover:none)]:opacity-100"
+        buttonClassName="flex h-11 items-center justify-center rounded-full bg-black/55 px-3 text-lg leading-normal text-white cursor-pointer hover:bg-red-600 md:h-auto md:px-2 md:py-0.5 md:text-sm"
+        hideClassName="!text-xs hover:!bg-gray-700"
+      />
     </div>
   );
 }
 
-/** The compact shelf's entry: a small cover, the title and the page count on one row. */
-function BookRow({
-  book,
-  onOpen,
-  onDelete,
-}: {
-  book: BookSummary;
-  onOpen: (id: string) => void;
-  onDelete: (book: BookSummary) => void;
-}) {
+/** The compact shelf's entry: a small cover, the title and its length on one row. */
+function GroupRow({ group, onOpen, onHide, onDelete }: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
-  const showCover = book.hasThumbnail && !coverFailed;
-  const title = bookTitle(book.fileName);
+  const cover = coverOf(group);
+  const showCover = cover !== undefined && !coverFailed;
+  const primary = group.members[0];
+  const single = group.members.length === 1;
 
   return (
     <div className="flex items-center rounded-md border border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40">
       <button
         type="button"
-        aria-label={`${title} を開く`}
-        onClick={() => onOpen(book.id)}
+        aria-label={memberLabel(group.title, primary)}
+        onClick={() => onOpen(primary)}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-md p-2 text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
       >
         <div className="h-12 w-9 shrink-0 overflow-hidden rounded-sm border-l-2 border-gray-300 bg-slate-700">
           {showCover && (
             <img
-              src={`/api/pdf/${book.id}/thumbnail`}
+              src={`/api/pdf/${cover.id}/thumbnail`}
               alt=""
               loading="lazy"
               onError={() => setCoverFailed(true)}
@@ -189,61 +330,45 @@ function BookRow({
           )}
         </div>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium text-gray-800">{title}</span>
-          <span className="block text-xs text-gray-500">{book.pageCount} ページ</span>
+          <span className="block truncate text-sm font-medium text-gray-800">{group.title}</span>
+          {single && (
+            <span className="block text-xs text-gray-500">{singleMemberCaption(primary)}</span>
+          )}
         </span>
       </button>
+      {!single && <FormatChips group={group} onOpen={onOpen} />}
       {/* Always shown: a row has room for it, and a finger never hovers. */}
-      <button
-        type="button"
-        aria-label={`${title} を削除`}
-        onClick={() => onDelete(book)}
-        className="mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
-      >
-        ×
-      </button>
+      <EntryButtons
+        group={group}
+        onHide={onHide}
+        onDelete={onDelete}
+        className="ml-1 flex shrink-0 items-center gap-1 pr-1"
+        buttonClassName="flex h-11 min-w-11 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
+        hideClassName="!px-2 !text-xs hover:!bg-gray-100 hover:!text-gray-700"
+      />
     </div>
   );
 }
 
-/**
- * A PDF or EPUB in the Dropbox folder that has not been opened here yet. It has no
- * cover and no page count until it has been read, so it says where it is
- * instead — and looks unlike the books, so it is not mistaken for one.
- */
-function DropboxFileCard({
-  file,
-  onOpen,
-}: {
-  file: DropboxFile;
-  onOpen: (file: DropboxFile) => void;
-}) {
-  const title = bookTitle(file.name);
-  // The folder under the chosen one, or nothing for a file at its top.
-  const subfolder = file.path.slice(0, file.path.lastIndexOf("/"));
-
+/** One row of the list of hidden books, with the way back to the shelf. */
+function HiddenRow({ group, onShow }: { group: ShelfGroup; onShow: (group: ShelfGroup) => void }) {
   return (
-    <button
-      type="button"
-      aria-label={`${title} を Dropbox から開く`}
-      onClick={() => onOpen(file)}
-      className="group flex w-full flex-col text-left cursor-pointer focus:outline-none"
-    >
-      <div className="relative aspect-3/4 w-full overflow-hidden rounded-r-md rounded-l-sm border-l-4 border-sky-300 shadow-md transition-all group-hover:-translate-y-1 group-hover:shadow-xl group-focus-visible:ring-2 group-focus-visible:ring-blue-500">
-        <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-sky-500 to-blue-700 p-3">
-          <span className="line-clamp-5 text-center text-xs font-medium text-white/90">
-            {title}
-          </span>
-        </div>
-        <span className="absolute left-1.5 top-1.5 rounded bg-white/85 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-          Dropbox
+    <li className="flex items-center gap-3 rounded-md border border-gray-200 bg-white p-2 pl-3">
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-gray-800">{group.title}</span>
+        <span className="block text-xs text-gray-500">
+          {group.members.map((m) => FORMAT_LABEL[m.format]).join(" / ")}
         </span>
-      </div>
-      <p className="mt-2 line-clamp-2 text-sm font-medium text-gray-800">{title}</p>
-      <p className="truncate text-xs text-gray-500">
-        {subfolder ? `${subfolder} · ` : ""}未読み込み
-      </p>
-    </button>
+      </span>
+      <button
+        type="button"
+        aria-label={`${group.title} を表示に戻す`}
+        onClick={() => onShow(group)}
+        className="shrink-0 rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 cursor-pointer hover:bg-gray-50"
+      >
+        表示に戻す
+      </button>
+    </li>
   );
 }
 
@@ -309,6 +434,8 @@ export function ShelfPage({
   loadDropboxFolder = fetchDropboxFolder,
   saveDropboxFolder = requestFolderSave,
   downloadDropbox = downloadDropboxFile,
+  loadHidden = fetchHidden,
+  setHidden = requestHidden,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { data: books, error: loadError, mutate } = useSWR(SHELF_KEY, loadBooks);
@@ -319,6 +446,15 @@ export function ShelfPage({
   } = useSWR(DROPBOX_KEY, loadDropboxFolder);
   const dropboxFiles = dropbox?.state === "ready" ? dropbox.files : [];
   const [choosingFolder, setChoosingFolder] = useState(false);
+  const { data: hidden, error: hiddenError, mutate: mutateHidden } = useSWR(HIDDEN_KEY, loadHidden);
+  // Whether the list of books put away is what the page shows, in place of the shelf.
+  const [showingHidden, setShowingHidden] = useState(false);
+  // Until the list arrives nothing is taken to be put away: the shelf does not
+  // wait for it, and one that could not be read leaves every book in view.
+  const { shown, hidden: putAway } = useMemo(
+    () => splitHidden(groupShelf(books ?? [], dropboxFiles), new Set(hidden?.keys ?? [])),
+    [books, dropboxFiles, hidden],
+  );
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
@@ -332,7 +468,8 @@ export function ShelfPage({
   // What the reader's last action did wrong: adding a book, or removing one.
   // Both are worded by whoever detected them and shown in the same place.
   const [actionError, setActionError] = useState<string | null>(null);
-  const [bookPendingDeletion, setBookPendingDeletion] = useState<BookSummary | null>(null);
+  // The books of the entry the reader pressed × on, all of which go together.
+  const [booksPendingDeletion, setBooksPendingDeletion] = useState<BookSummary[] | null>(null);
   // How many elements of the shelf the drag is currently inside. Every card it
   // passes over sends a leave of its own, so a plain boolean would flicker off
   // halfway across the shelf.
@@ -340,7 +477,8 @@ export function ShelfPage({
 
   const error =
     actionError ??
-    (loadError ? `本棚の読み込みに失敗しました: ${(loadError as Error).message}` : null);
+    (loadError ? `本棚の読み込みに失敗しました: ${(loadError as Error).message}` : null) ??
+    (hiddenError ? `非表示の本の一覧を読めませんでした: ${(hiddenError as Error).message}` : null);
 
   const openBook = useCallback((id: string) => navigate(`/books/${id}`), [navigate]);
 
@@ -407,21 +545,55 @@ export function ShelfPage({
     if (dropped.kind === "refused") setActionError(dropped.reason);
   };
 
-  const removeBook = async (book: BookSummary) => {
-    setActionError(null);
-    setBookPendingDeletion(null);
+  const openMember = (member: ShelfMember) =>
+    member.kind === "book" ? openBook(member.book.id) : void handleDropboxFile(member.file);
 
-    const removal = await deleteBook(book.id);
-    if (removal.isErr()) {
-      setActionError(`削除に失敗しました: ${removal.error.message}`);
-      return;
+  /** Removes every book of an entry, stopping at the first the server refuses. */
+  const removeBooks = async (doomed: BookSummary[]) => {
+    setActionError(null);
+    setBooksPendingDeletion(null);
+
+    const gone = new Set<string>();
+    let failure: string | null = null;
+    for (const book of doomed) {
+      const removal = await deleteBook(book.id);
+      if (removal.isErr()) {
+        failure = `削除に失敗しました: ${removal.error.message}`;
+        break;
+      }
+      gone.add(book.id);
     }
 
-    // The server has already dropped it, so re-reading the shelf would only
+    // The server has already dropped these, so re-reading the shelf would only
     // confirm what this list can work out for itself.
-    await mutate((current) => current?.filter((b) => b.id !== book.id), { revalidate: false });
-    // Its Dropbox file is still in the folder, and goes back to waiting there.
-    if (book.inDropbox) void mutateDropbox();
+    if (gone.size > 0) {
+      await mutate((current) => current?.filter((b) => !gone.has(b.id)), { revalidate: false });
+      // Their Dropbox files are still in the folder, and go back to waiting there.
+      if (doomed.some((b) => gone.has(b.id) && b.inDropbox)) void mutateDropbox();
+    }
+    if (failure) setActionError(failure);
+  };
+
+  /** Puts an entry away or brings it back — every file in it, so it moves as one. */
+  const setGroupHidden = async (group: ShelfGroup, hide: boolean) => {
+    setActionError(null);
+    const result = await setHidden(
+      group.members.map((m) => m.key),
+      hide,
+    );
+    result.match(
+      (now) => void mutateHidden(now, { revalidate: false }),
+      (failure) =>
+        setActionError(
+          `${hide ? "非表示にする" : "表示に戻す"}ことに失敗しました: ${failure.message}`,
+        ),
+    );
+  };
+
+  const entryActions = {
+    onOpen: openMember,
+    onHide: (group: ShelfGroup) => void setGroupHidden(group, true),
+    onDelete: setBooksPendingDeletion,
   };
 
   return (
@@ -438,6 +610,16 @@ export function ShelfPage({
               className="min-w-0 truncate rounded-md border border-gray-300 px-2.5 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-50"
             >
               {dropbox?.state === "ready" ? `Dropbox: ${dropbox.folder}` : "Dropboxフォルダを設定"}
+            </button>
+          )}
+          {(putAway.length > 0 || showingHidden) && (
+            <button
+              type="button"
+              aria-pressed={showingHidden}
+              onClick={() => setShowingHidden(!showingHidden)}
+              className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
+            >
+              非表示の本 ({putAway.length})
             </button>
           )}
           <button
@@ -486,7 +668,28 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
-        {books?.length === 0 && dropboxFiles.length === 0 && (
+        {showingHidden && (
+          <section aria-label="非表示の本">
+            <p className="mb-3 text-sm text-gray-500">
+              本棚に出していない本です。「表示に戻す」で本棚に戻ります。
+            </p>
+            {putAway.length === 0 ? (
+              <p className="text-sm text-gray-500">非表示の本はありません</p>
+            ) : (
+              <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                {putAway.map((group) => (
+                  <HiddenRow
+                    key={group.id}
+                    group={group}
+                    onShow={(g) => setGroupHidden(g, false)}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {!showingHidden && books?.length === 0 && dropboxFiles.length === 0 && (
           <div className="pt-10 pb-8 text-center">
             <p className="text-lg font-medium text-gray-700">まだ本がありません</p>
             <p className="mt-1 text-sm text-gray-500">
@@ -500,35 +703,32 @@ export function ShelfPage({
             whatever the list did — while it loads, and when it could not be
             read at all — because adding a book does not go through it, and a
             shelf that answered with an error would otherwise have no way in. */}
-        <ul
-          className={
-            compact
-              ? "grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
-              : "grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-5"
-          }
-        >
-          {(books ?? []).map((book) => (
-            <li key={book.id}>
-              {compact ? (
-                <BookRow book={book} onOpen={openBook} onDelete={setBookPendingDeletion} />
-              ) : (
-                <BookCard book={book} onOpen={openBook} onDelete={setBookPendingDeletion} />
-              )}
+        {!showingHidden && (
+          <ul
+            className={
+              compact
+                ? "grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
+                : "grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-5"
+            }
+          >
+            {shown.map((group) => (
+              <li key={group.id}>
+                {compact ? (
+                  <GroupRow {...entryActions} group={group} />
+                ) : (
+                  <GroupCard {...entryActions} group={group} />
+                )}
+              </li>
+            ))}
+            <li>
+              <AddBookTile
+                onFileChosen={handleFile}
+                disabled={importing !== null}
+                compact={compact}
+              />
             </li>
-          ))}
-          {dropboxFiles.map((file) => (
-            <li key={file.dropboxId}>
-              <DropboxFileCard file={file} onOpen={handleDropboxFile} />
-            </li>
-          ))}
-          <li>
-            <AddBookTile
-              onFileChosen={handleFile}
-              disabled={importing !== null}
-              compact={compact}
-            />
-          </li>
-        </ul>
+          </ul>
+        )}
       </main>
 
       {importing && (
@@ -539,18 +739,23 @@ export function ShelfPage({
         </div>
       )}
 
-      {bookPendingDeletion && (
+      {booksPendingDeletion && (
         <ConfirmDialog
           message={
-            `「${bookTitle(bookPendingDeletion.fileName)}」を削除しますか？ハイライトとチャット履歴も削除されます。` +
-            (bookPendingDeletion.inDropbox
+            (booksPendingDeletion.length === 1
+              ? `「${titleOf(booksPendingDeletion[0].fileName)}」を削除しますか？`
+              : `「${titleOf(booksPendingDeletion[0].fileName)}」の${booksPendingDeletion
+                  .map((b) => (b.format === "epub" ? "EPUB" : "PDF"))
+                  .join("・")}をすべて削除しますか？`) +
+            "ハイライトとチャット履歴も削除されます。" +
+            (booksPendingDeletion.some((b) => b.inDropbox)
               ? "Dropbox のファイルは削除されず、未読み込みの本として本棚に残ります。"
               : "")
           }
           dialogLabel="本の削除"
           confirmLabel="削除する"
-          onConfirm={() => removeBook(bookPendingDeletion)}
-          onCancel={() => setBookPendingDeletion(null)}
+          onConfirm={() => removeBooks(booksPendingDeletion)}
+          onCancel={() => setBooksPendingDeletion(null)}
         />
       )}
 
