@@ -823,3 +823,162 @@ describe("ShelfPage: putting books away", () => {
     expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
   });
 });
+
+describe("ShelfPage: how far each book has been read", () => {
+  afterEach(() => localStorage.clear());
+
+  it("shows the share read under the cover of a book that has been opened", async () => {
+    renderShelf({ loadBooks: async () => [book({ pageCount: 200, lastReadPage: 24 })] });
+
+    const card = await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" });
+    expect(card).toHaveTextContent("12%");
+    expect(card).toHaveAccessibleDescription("12%読了");
+    expect(card.querySelector("[data-progress]")).toHaveStyle({ width: "12%" });
+  });
+
+  it("marks a book never opened as unread rather than 0%", async () => {
+    renderShelf({ loadBooks: async () => [book({ lastReadPage: null })] });
+
+    const card = await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" });
+    expect(card).toHaveAccessibleDescription("未読");
+    expect(card).not.toHaveTextContent("%");
+    expect(card.querySelector("[data-progress]")).toBeNull();
+  });
+
+  it("calls the last page 100%", async () => {
+    renderShelf({ loadBooks: async () => [book({ pageCount: 200, lastReadPage: 200 })] });
+
+    expect(
+      await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" }),
+    ).toHaveAccessibleDescription("100%読了");
+  });
+
+  it("says nothing of progress for a file still waiting in Dropbox", async () => {
+    renderShelf({ loadBooks: async () => [], loadDropboxFolder: FOLDER_WITH_ONE_BOOK });
+
+    const card = await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" });
+    expect(card).toHaveTextContent("/lang · 未読み込み");
+    expect(card).not.toHaveAccessibleDescription();
+    expect(card.querySelector("[data-progress]")).toBeNull();
+  });
+
+  it("gives an entry of several files the progress of the furthest read", async () => {
+    renderShelf({
+      loadBooks: async () => [
+        book({ id: "pdf", fileName: "Rust 入門.pdf", pageCount: 200, lastReadPage: 20 }),
+        book({
+          id: "epub",
+          fileName: "Rust 入門.epub",
+          format: "epub",
+          pageCount: 10,
+          lastReadPage: 5,
+        }),
+      ],
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "Rust 入門 を開く" }),
+    ).toHaveAccessibleDescription("50%読了");
+  });
+
+  it("shows the share read on a compact row too", async () => {
+    localStorage.setItem("chatbook:shelf-layout", JSON.stringify("compact"));
+    renderShelf({
+      loadBooks: async () => [
+        book({ pageCount: 200, lastReadPage: 24 }),
+        book({ id: "book-2", fileName: "Rust 入門.pdf", lastReadPage: null }),
+      ],
+    });
+
+    const read = await screen.findByRole("button", { name: "Cloudflare Workers 入門 を開く" });
+    expect(read).toHaveTextContent("12%");
+    expect(read).toHaveAccessibleDescription("12%読了");
+    expect(read.querySelector("[data-progress]")).toHaveStyle({ width: "12%" });
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toHaveAccessibleDescription(
+      "未読",
+    );
+  });
+});
+
+describe("ShelfPage: finding a book", () => {
+  const THREE_BOOKS = async () => [
+    book(),
+    book({ id: "book-2", fileName: "Rust 入門.pdf" }),
+    book({ id: "book-3", fileName: "TypeScript ハンドブック.pdf" }),
+  ];
+
+  const searchBox = () => screen.findByRole("searchbox", { name: "本棚を検索" });
+
+  it("narrows the shelf to the titles holding what is typed, whatever its case", async () => {
+    renderShelf({ loadBooks: THREE_BOOKS });
+
+    await userEvent.type(await searchBox(), "rust");
+
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Cloudflare Workers 入門 を開く" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "TypeScript ハンドブック を開く" }),
+    ).not.toBeInTheDocument();
+    // Adding a book does not go through the list, so the way in stays.
+    expect(screen.getByRole("button", { name: "本を追加" })).toBeInTheDocument();
+  });
+
+  it("brings the whole shelf back once the box is emptied", async () => {
+    renderShelf({ loadBooks: THREE_BOOKS });
+
+    const box = await searchBox();
+    await userEvent.type(box, "rust");
+    await userEvent.clear(box);
+
+    expect(screen.getAllByRole("button", { name: / を開く$/ })).toHaveLength(3);
+  });
+
+  it("says nothing matched, and keeps the way to add a book", async () => {
+    renderShelf({ loadBooks: THREE_BOOKS });
+
+    await userEvent.type(await searchBox(), "Go 言語");
+
+    expect(screen.getByText("「Go 言語」に一致する本はありません")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: / を開く$/ })).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "本を追加" })).toBeInTheDocument();
+    expect(screen.queryByText("まだ本がありません")).not.toBeInTheDocument();
+  });
+
+  it("narrows while an input method is still composing the word", async () => {
+    renderShelf({ loadBooks: THREE_BOOKS });
+
+    const box = await searchBox();
+    fireEvent.compositionStart(box);
+    fireEvent.change(box, { target: { value: "ハンド" } });
+
+    expect(box).toHaveValue("ハンド");
+    expect(
+      screen.getByRole("button", { name: "TypeScript ハンドブック を開く" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rust 入門 を開く" })).not.toBeInTheDocument();
+
+    fireEvent.compositionEnd(box);
+    expect(box).toHaveValue("ハンド");
+  });
+
+  it("narrows the list of hidden books by the same words", async () => {
+    renderShelf({
+      loadBooks: THREE_BOOKS,
+      loadHidden: async () => ({ keys: ["book-2", "book-3"] }),
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "非表示の本 (2)" }));
+    await userEvent.type(await searchBox(), "type");
+
+    const list = screen.getByRole("region", { name: "非表示の本" });
+    expect(list).toHaveTextContent("TypeScript ハンドブック");
+    expect(list).not.toHaveTextContent("Rust 入門");
+
+    const box = screen.getByRole("searchbox", { name: "本棚を検索" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "zig");
+    expect(list).toHaveTextContent("「zig」に一致する本はありません");
+  });
+});
