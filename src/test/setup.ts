@@ -38,3 +38,11 @@ afterEach(resetViewport);
 if (!("DOMMatrix" in globalThis)) {
   (globalThis as { DOMMatrix?: unknown }).DOMMatrix = class {};
 }
+
+// Nor can a Range report where it was laid out. The EPUB reader measures its
+// highlights from ranges over the drawn chapter, and in jsdom there is nothing
+// to measure: no boxes is the honest answer, and the highlight is drawn empty.
+if (typeof (Range.prototype as Partial<Range>).getClientRects !== "function") {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}

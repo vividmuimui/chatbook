@@ -536,7 +536,7 @@ test("gives the chat the window on the maximize toggle, and the page back on the
   // second pane beside it left to size.
   await expect(page.locator("canvas.block").first()).toBeHidden();
   await expect(page.getByRole("separator", { name: "PDFとチャットの幅を変更" })).toBeHidden();
-  await expect(chatPane.getByText("PDF内のテキストを選択して質問してください")).toBeVisible();
+  await expect(chatPane.getByText("本文のテキストを選択して質問してください")).toBeVisible();
   expect((await chatPane.boundingBox())!.width).toBeCloseTo(paneRow, 0);
 
   await page.getByRole("button", { name: "最大化を解除" }).click();

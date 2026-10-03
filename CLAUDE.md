@@ -1607,7 +1607,8 @@ jsdom テストと Workers pool テストは同一プロセスで共存できな
 
 jsdom はレイアウトを持たないので、幅にまつわる API がどれも無い。`setup.ts` が
 `scrollIntoView` / `DOMMatrix` に加えて `ResizeObserver`（何も報せないスタブ）と
-`matchMedia`（`src/test/viewport.ts` の差し替え可能なスタブ）を置く。あわせて
+`matchMedia`（`src/test/viewport.ts` の差し替え可能なスタブ）、`Range` の
+`getClientRects` / `getBoundingClientRect`（空の箱を返す。EPUB のハイライトの計測用）を置く。あわせて
 `asyncUtilTimeout` を 5000ms にしている——選択の確定を 250ms 待つ経路があり、既定の
 1000ms だと並列実行の負荷で毎回違うテストが落ちるため。
 

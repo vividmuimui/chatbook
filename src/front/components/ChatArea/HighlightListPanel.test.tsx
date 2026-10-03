@@ -110,7 +110,7 @@ describe("HighlightListPanel", () => {
     renderPanel([]);
 
     expect(screen.getByText("チャットを開始するには")).toBeInTheDocument();
-    expect(screen.getByText("PDF内のテキストを選択して質問してください")).toBeInTheDocument();
+    expect(screen.getByText("本文のテキストを選択して質問してください")).toBeInTheDocument();
   });
 
   it("offers the book itself to ask about where there is no passage to pick", async () => {

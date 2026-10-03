@@ -106,3 +106,96 @@
   height: 0;
   display: none;
 }
+
+/*
+ * An EPUB chapter, drawn in the reader's own type. The publisher's stylesheet
+ * is never loaded (`renderChapter` drops it), so every book reads the same way
+ * and none of them can restyle the app around it.
+ */
+.epubChapter {
+  color: #1f2937;
+  font-size: 1.0625rem;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.epubChapter p {
+  margin: 0 0 1em;
+}
+.epubChapter h1,
+.epubChapter h2,
+.epubChapter h3,
+.epubChapter h4,
+.epubChapter h5,
+.epubChapter h6 {
+  margin: 1.6em 0 0.7em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.epubChapter h1 {
+  font-size: 1.6em;
+}
+.epubChapter h2 {
+  font-size: 1.35em;
+}
+.epubChapter h3 {
+  font-size: 1.15em;
+}
+.epubChapter ul,
+.epubChapter ol {
+  margin: 0 0 1em;
+  padding-left: 1.6em;
+}
+.epubChapter ul {
+  list-style: disc;
+}
+.epubChapter ol {
+  list-style: decimal;
+}
+.epubChapter blockquote {
+  margin: 0 0 1em;
+  padding-left: 1em;
+  border-left: 3px solid #d1d5db;
+  color: #4b5563;
+}
+.epubChapter pre {
+  margin: 0 0 1em;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  background: #f3f4f6;
+  border-radius: 4px;
+  font-size: 0.875em;
+  line-height: 1.6;
+}
+.epubChapter code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+.epubChapter img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+}
+.epubChapter table {
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.epubChapter th,
+.epubChapter td {
+  padding: 0.3em 0.6em;
+  border: 1px solid #d1d5db;
+}
+.epubChapter hr {
+  margin: 1.5em 0;
+  border-color: #e5e7eb;
+}
+.epubChapter a[href],
+.epubChapter a[data-epub-href] {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.epubChapter rt {
+  font-size: 0.5em;
+}

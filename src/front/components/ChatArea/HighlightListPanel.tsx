@@ -98,7 +98,7 @@ export function HighlightListPanel({
       <div className="flex items-center justify-center h-full bg-white">
         <div className="text-center">
           <p className="text-gray-500 text-sm font-medium mb-1">チャットを開始するには</p>
-          <p className="text-gray-400 text-sm">PDF内のテキストを選択して質問してください</p>
+          <p className="text-gray-400 text-sm">本文のテキストを選択して質問してください</p>
           <BookChatEntry
             onClick={onOpenBookChat}
             className="mt-4 cursor-pointer rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
