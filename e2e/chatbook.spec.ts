@@ -216,7 +216,7 @@ test("app loads and shows the shelf", async ({ page }) => {
   await logIn(page);
   await page.goto("/");
   await expect(page.locator("text=chatbook")).toBeVisible();
-  await expect(page.getByRole("button", { name: "PDFを追加" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "本を追加" })).toBeVisible();
 });
 
 /** Console output naming a pdf.js asset the viewer failed to fetch. */
