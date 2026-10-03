@@ -1,6 +1,7 @@
 import { useSWRConfig } from "swr";
 import { ResultAsync } from "neverthrow";
-import { extractPdfData, type ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractedPdfData } from "../lib/pdfLoader";
+import { extractBookData } from "../lib/bookLoader";
 import { postWithProgress } from "../lib/fetcher";
 import { bookKey } from "./useBook";
 import { rememberUploadedFile } from "../lib/uploadedFileHandoff";
@@ -28,7 +29,7 @@ export type OpenPdfBook = (file: File, dropboxId?: string) => ResultAsync<string
  * would be left with a picker that appeared to do nothing.
  */
 export function useOpenPdfBook(
-  extract: (file: File) => Promise<ExtractedPdfData> = extractPdfData,
+  extract: (file: File) => Promise<ExtractedPdfData> = extractBookData,
   onProgress: (ratio: number) => void = () => {},
   createRequest?: () => XMLHttpRequest,
 ): OpenPdfBook {

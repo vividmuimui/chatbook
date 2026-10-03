@@ -13,7 +13,8 @@ export interface ExtractedPdfData {
   outline: BookOutline | null; // top-level chapters for chat excerpts, null if the PDF has none
 }
 
-const THUMBNAIL_WIDTH = 240;
+/** How wide a cover is drawn for the shelf, whatever the book's format. */
+export const THUMBNAIL_WIDTH = 240;
 
 /**
  * Render the first page as a small webp image to use as the book cover.
@@ -47,14 +48,14 @@ export async function renderCoverThumbnail(doc: PDFDocumentProxy): Promise<Blob 
 /**
  * Compute SHA-256 hash of binary data using Web Crypto.
  */
-async function computeHash(data: Uint8Array): Promise<string> {
+export async function computeHash(data: Uint8Array): Promise<string> {
   const hashBuffer = await crypto.subtle.digest("SHA-256", data as BufferSource);
   return Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) {
     binary += String.fromCharCode(bytes[i]);
