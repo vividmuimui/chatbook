@@ -13,8 +13,10 @@ describe("epubTypographyStyle", () => {
       "--epub-font-size": "17px",
       "--epub-line-height": "1.9",
       "--epub-text-align": "start",
-      "--epub-font-family": expect.stringMatching(/^"Hiragino Sans".*sans-serif$/),
-      "--epub-page-margin": "8%",
+      "--epub-font-family": expect.stringMatching(
+        /^ui-sans-serif, system-ui, "Hiragino Sans".*sans-serif$/,
+      ),
+      "--epub-page-margin": "clamp(1.25rem, 5.2vw, 2.5rem)",
     });
   });
 
@@ -32,7 +34,7 @@ describe("epubTypographyStyle", () => {
       "--epub-line-height": "2.2",
       "--epub-text-align": "justify",
       "--epub-font-family": expect.stringMatching(/^"Hiragino Mincho ProN".*serif$/),
-      "--epub-page-margin": "14%",
+      "--epub-page-margin": "clamp(2rem, 9vw, 4.5rem)",
     });
   });
 });

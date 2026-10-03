@@ -24,27 +24,35 @@ export type EpubTextAlign = "start" | "justify";
 
 /**
  * The faces, named by kind rather than by font: no web font is loaded, so each
- * is a stack of what Mac, Windows and Linux already have, Japanese faces first
- * — Latin glyphs in them are fine, but a Latin face first would leave the kana
- * to whatever the system falls back to.
+ * is a stack of what Mac, Windows and Linux already have.
+ *
+ * The gothic one starts from the system's own UI face, which is what the
+ * chapter was drawn in before the reader could choose (Tailwind's `font-sans`)
+ * — every OS pairs it with its own Japanese gothic for the kana. The Japanese
+ * names behind it only matter where there is no UI face to ask for. The mincho
+ * one names Japanese faces first: a Latin serif first would leave the kana to
+ * whatever the system falls back to, which is a gothic.
  */
 export const EPUB_FONT_FAMILIES = {
-  sans: '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", YuGothic, "Noto Sans JP", "Noto Sans CJK JP", Meiryo, system-ui, sans-serif',
+  sans: 'ui-sans-serif, system-ui, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", YuGothic, "Noto Sans JP", "Noto Sans CJK JP", Meiryo, sans-serif',
   serif:
     '"Hiragino Mincho ProN", "Yu Mincho", YuMincho, "Noto Serif JP", "Noto Serif CJK JP", "Times New Roman", serif',
 } as const;
 export type EpubFontFamily = keyof typeof EPUB_FONT_FAMILIES;
 
 /**
- * The page's side margins, as a share of the page's own width. A share rather
- * than a length so a phone and a wide window both keep their proportions; the
- * page itself stops growing at its maximum width, so on a wide window the
- * margins stop growing with it.
+ * The page's side margins, inside the page (which itself stops growing at
+ * `max-w-2xl`, so wider margins take from the line, never add to the page).
+ *
+ * Each grows with the window up to the width of a tablet and then holds, so a
+ * phone is not left with a column of a few characters. The standard one is the
+ * margin the page had before the reader could choose: 20px on a phone, 40px
+ * from the `md` breakpoint (768px) up — 5.2vw is 40px at 768px.
  */
 export const EPUB_MARGINS = {
-  narrow: "4%",
-  normal: "8%",
-  wide: "14%",
+  narrow: "clamp(0.75rem, 2.6vw, 1.25rem)",
+  normal: "clamp(1.25rem, 5.2vw, 2.5rem)",
+  wide: "clamp(2rem, 9vw, 4.5rem)",
 } as const;
 export type EpubMargin = keyof typeof EPUB_MARGINS;
 

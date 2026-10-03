@@ -115,7 +115,7 @@
 /* The reader's choices (`epubTypographyStyle`) arrive as custom properties on
    the page; the fallbacks are the defaults, for a page drawn without them. */
 .epubPage {
-  padding-inline: var(--epub-page-margin, 8%);
+  padding-inline: var(--epub-page-margin, clamp(1.25rem, 5.2vw, 2.5rem));
 }
 .epubChapter {
   color: #1f2937;
