@@ -2398,15 +2398,36 @@ test("a passage of an EPUB offers to ask about it, and its highlight follows the
     return { lines: drawn.length, drawn, laidOut };
   };
 
-  const wide = await highlightAgainstText();
-  await page.getByRole("button", { name: "目次を隠す" }).click();
-  await page.getByRole("button", { name: "チャットを隠す" }).click();
-  // The chapter reflows onto fewer lines once the pane is wider
-  await expect.poll(async () => (await highlightAgainstText()).lines).toBeLessThan(wide.lines);
+  /** Whether the highlight is drawn over its text as the text is laid out now. */
+  const onItsText = async () => {
+    const { drawn, laidOut } = await highlightAgainstText();
+    return (
+      Math.abs(drawn[0].top - laidOut.top) <= 2 &&
+      Math.abs(drawn.at(-1)!.bottom - laidOut.bottom) <= 2
+    );
+  };
 
-  const folded = await highlightAgainstText();
-  expect(folded.drawn[0].top).toBeGreaterThanOrEqual(folded.laidOut.top - 2);
-  expect(folded.drawn.at(-1)!.bottom).toBeLessThanOrEqual(folded.laidOut.bottom + 2);
+  // The outline out of the way, so the splitter below has the pane to narrow.
+  // A wide pane lays the chapter out two screens to a spread, whose lines are
+  // no longer than one screen's: narrowing the pane is what reflows it.
+  await page.getByRole("button", { name: "目次を隠す" }).click();
+  await expect.poll(onItsText).toBe(true);
+  const wide = await highlightAgainstText();
+
+  const splitter = (await page
+    .getByRole("separator", { name: "PDFとチャットの幅を変更" })
+    .boundingBox())!;
+  const splitterY = splitter.y + splitter.height / 2;
+  await page.mouse.move(splitter.x + splitter.width / 2, splitterY);
+  await page.mouse.down();
+  await page.mouse.move(splitter.x + splitter.width / 2 - 300, splitterY, { steps: 20 });
+  await page.mouse.up();
+  // The chapter reflows onto more lines once the pane is narrower
+  await expect.poll(async () => (await highlightAgainstText()).lines).toBeGreaterThan(wide.lines);
+
+  const narrowed = await highlightAgainstText();
+  expect(narrowed.drawn[0].top).toBeGreaterThanOrEqual(narrowed.laidOut.top - 2);
+  expect(narrowed.drawn.at(-1)!.bottom).toBeLessThanOrEqual(narrowed.laidOut.bottom + 2);
 });
 
 test("an EPUB is drawn larger on the type settings, keeps its highlight on the text, and stays larger through a reload", async ({
@@ -2482,7 +2503,9 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
   await search.getByRole("button", { name: new RegExp(`^p\\.${lastChapter + 1}`) }).click();
 
   await expect(chapterHeading(page, lastChapter)).toBeVisible();
-  await expect(page.locator(".citedPassage").first()).toBeVisible();
+  // On the screen being read: the words are screens into their chapter, and the
+  // screens around the one up are drawn too, only clipped out of sight
+  await expect(page.locator(".citedPassage").first()).toBeInViewport();
   // Over the words, not merely somewhere in the chapter
   const covered = await page.evaluate((wanted) => {
     const marked = document.querySelector(".citedPassage")!.getBoundingClientRect();
@@ -2492,4 +2515,86 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
     return marked.top >= paragraph.top - 2 && marked.bottom <= paragraph.bottom + 2;
   }, words);
   expect(covered).toBe(true);
+});
+
+/** The screen of its chapter the stepper says the reader is on, and how many the chapter fills. */
+async function epubScreen(page: Page): Promise<{ screen: number; count: number }> {
+  const label = await page.getByText(/^\d+ \/ \d+$/).textContent();
+  const [screen, count] = label!.split("/").map((n) => Number(n.trim()));
+  return { screen, count };
+}
+
+/** To the second chapter from the outline, which fills several screens. */
+async function openLongChapter(page: Page): Promise<number> {
+  const outline = page.getByRole("navigation", { name: "目次" });
+  await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
+  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
+  const { count } = await epubScreen(page);
+  expect(count).toBeGreaterThan(2);
+  return count;
+}
+
+/** A paragraph of the chapter, by the words it starts with. */
+const chapterParagraph = (page: Page, text: string) =>
+  page.locator(".epubChapter p", { hasText: text });
+
+test("an EPUB turns a screen at a time, and from the last screen of a chapter on into the next", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  const count = await openLongChapter(page);
+  const chapter = EPUB_CHAPTERS[1].paragraphs;
+
+  const opening = chapterParagraph(page, chapter[0]);
+  await expect(opening).toBeInViewport();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByText(`2 / ${count}`, { exact: true })).toBeVisible();
+  // The screen itself moved on, not only the number under it
+  await expect(opening).not.toBeInViewport();
+
+  for (let screen = 3; screen <= count; screen++) {
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByText(`${screen} / ${count}`, { exact: true })).toBeVisible();
+  }
+  const closing = chapterParagraph(page, chapter.at(-1)!);
+  await expect(closing).toBeInViewport();
+
+  // On from the chapter's last screen is the next chapter's first
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByText(`3 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+  await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
+
+  // And back from there is the end of the chapter before, not its start
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(page.getByText(`${count} / ${count}`, { exact: true })).toBeVisible();
+  await expect(closing).toBeInViewport();
+});
+
+test("an EPUB stays on the words being read when the pane changes width", async ({ page }) => {
+  await openTestEpub(page);
+  const count = await openLongChapter(page);
+  for (let screen = 2; screen <= 4; screen++) {
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByText(`${screen} / ${count}`, { exact: true })).toBeVisible();
+  }
+
+  // The paragraph the screen starts in, which may have begun on the one before
+  const reading = await page.evaluate(() => {
+    const paper = document.querySelector("article")!.getBoundingClientRect();
+    return Array.from(document.querySelectorAll(".epubChapter p")).find((p) =>
+      Array.from(p.getClientRects()).some(
+        (line) => line.left >= paper.left - 1 && line.right <= paper.right + 1,
+      ),
+    )!.textContent!;
+  });
+
+  // Folding the chat away lays the chapter out again, two screens to a spread:
+  // the fourth screen there is somewhere else in the chapter altogether.
+  await page.getByRole("button", { name: "チャットを隠す" }).click();
+  await expect.poll(async () => (await epubScreen(page)).count).not.toBe(count);
+
+  await expect(chapterParagraph(page, reading)).toBeInViewport();
 });

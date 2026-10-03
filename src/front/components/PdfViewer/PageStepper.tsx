@@ -71,7 +71,7 @@ export function PageStepper({ pageCount, step = 1 }: PageStepperProps) {
   );
 }
 
-function ChevronIcon({ direction }: { direction: "left" | "right" }) {
+export function ChevronIcon({ direction }: { direction: "left" | "right" }) {
   return (
     <svg
       viewBox="0 0 24 24"

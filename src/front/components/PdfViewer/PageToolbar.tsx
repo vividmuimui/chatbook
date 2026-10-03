@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useAtom } from "jotai";
 import { outlineOpenAtom } from "../../atoms/pdfAtom";
 import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
@@ -12,6 +13,12 @@ interface PageToolbarProps {
   highlightCount: number;
   chatOpen: boolean;
   onToggleChat: () => void;
+  /**
+   * What steps through the book between the panel buttons. `PageStepper` over
+   * the pages unless the book is read some other way — an EPUB a screen at a
+   * time (`EpubPageStepper`).
+   */
+  stepper?: ReactNode;
 }
 
 /**
@@ -32,6 +39,7 @@ export function PageToolbar({
   highlightCount,
   chatOpen,
   onToggleChat,
+  stepper,
 }: PageToolbarProps) {
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const [searchOpen, setSearchOpen] = useAtom(bookSearchOpenAtom);
@@ -70,7 +78,7 @@ export function PageToolbar({
         検索
       </button>
 
-      <PageStepper pageCount={pageCount} />
+      {stepper ?? <PageStepper pageCount={pageCount} />}
 
       <button
         type="button"
