@@ -1645,7 +1645,7 @@ test("searching the list narrows it to what the server matched", async ({ page }
   await chatPanel.getByLabel("ハイライトを検索").fill(wanted.slice(0, 6));
   await expect(chatPanel.getByText("ハイライト 2件", { exact: true })).toBeVisible();
 
-  await chatPanel.getByRole("button", { name: "検索" }).click();
+  await chatPanel.getByRole("button", { name: "検索", exact: true }).click();
 
   await expect(chatPanel.getByText("ハイライト 2件中 1件", { exact: true })).toBeVisible();
   await expect(chatPanel.getByText(wanted, { exact: true })).toBeVisible();
@@ -1653,7 +1653,7 @@ test("searching the list narrows it to what the server matched", async ({ page }
 
   // Emptying the box and searching again gives the whole list back
   await chatPanel.getByLabel("ハイライトを検索").fill("");
-  await chatPanel.getByRole("button", { name: "検索" }).click();
+  await chatPanel.getByRole("button", { name: "検索", exact: true }).click();
   await expect(chatPanel.getByText("ハイライト 2件", { exact: true })).toBeVisible();
   await expect(chatPanel.getByText(other, { exact: true })).toBeVisible();
 

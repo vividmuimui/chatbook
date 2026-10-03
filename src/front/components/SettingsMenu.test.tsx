@@ -99,7 +99,7 @@ describe("SettingsMenu", () => {
   // has turned that mode off — pressing them would do nothing.
   it.each([
     ["none", ["←/→", "↑/↓"]],
-    ["vim", ["←/→", "↑/↓", "l", "h", "j", "k", "t", "gg", "G"]],
+    ["vim", ["←/→", "↑/↓", "l", "h", "j", "k", "t", "/", "gg", "G"]],
     ["emacs", ["←/→", "↑/↓", "C-f", "C-b", "C-n", "C-p", "C-c t", "M-<", "M->"]],
   ] as [KeybindingMode, string[]][])(
     "lists %s mode's keys under the arrows",

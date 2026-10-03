@@ -9,6 +9,7 @@ import {
   citedPassageAtom,
 } from "../../atoms/pdfAtom";
 import type { ActiveSelection } from "../../atoms/chatAtom";
+import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import type { SelectionRect } from "../../../shared/schemas/selection";
 import type { BookDetail } from "../../../shared/schemas/book";
 import { PdfPage } from "./PdfPage";
@@ -201,6 +202,7 @@ export function PdfViewer({
   >(null);
 
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
+  const setBookSearchOpen = useSetAtom(bookSearchOpenAtom);
   // Kept per book and outside the store, which is thrown away with the book
   const [zoom, setZoom] = useAtom(zoomAtomFor(book?.id ?? ""));
 
@@ -291,9 +293,12 @@ export function PdfViewer({
         case "toggleOutline":
           setOutlineOpen((open) => !open);
           break;
+        case "openSearch":
+          setBookSearchOpen(true);
+          break;
       }
     },
-    [pageCount, pageStep, setCurrentPage, setOutlineOpen],
+    [pageCount, pageStep, setCurrentPage, setOutlineOpen, setBookSearchOpen],
   );
   useKeyboardShortcuts(handleShortcut);
 

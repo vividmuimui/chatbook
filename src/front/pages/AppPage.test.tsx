@@ -496,6 +496,34 @@ describe("AppPage", () => {
     expect(within(header).getByRole("button", { name: "目次を表示" })).toBeInTheDocument();
   });
 
+  it("puts the search through the book's text beside the page from the header", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+
+    const header = await screen.findByRole("banner");
+    const toggle = within(header).getByRole("button", { name: "本文検索" });
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
+
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("region", { name: "本文の検索" })).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // Beside the page, not over it: nothing to tap away
+    expect(screen.queryByRole("button", { name: "検索を閉じる" })).toBeNull();
+
+    await userEvent.click(toggle);
+
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
+  });
+
+  it("opens the search on vim's / without typing the slash into it", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+    await screen.findByRole("banner");
+
+    await userEvent.keyboard("/");
+
+    expect(screen.getByLabelText("本文から探す語")).toHaveValue("");
+  });
+
   it("puts the page out of sight on the maximize toggle, and has it back on the way out", async () => {
     // Reading an answer through is what the toggle is for, so the page goes out
     // of sight — but not out of the tree: taking the viewer down would take the
@@ -588,6 +616,24 @@ describe("AppPage on a screen too narrow for two panes", () => {
     // The highlight list is what the chat shows first, so its absence is the
     // chat being away rather than the book having no highlights
     expect(screen.queryByText(A_PASSAGE)).toBeNull();
+  });
+
+  it("lays the search over the page from the toolbar, putting the outline away", async () => {
+    setViewportWidth(PHONE_WIDTH);
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+
+    const outline = await screen.findByRole("button", { name: "目次" });
+    await userEvent.click(outline);
+    expect(outline).toHaveAttribute("aria-pressed", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "本文検索" }));
+
+    expect(screen.getByRole("region", { name: "本文の検索" })).toBeInTheDocument();
+    expect(outline).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(screen.getByRole("button", { name: "検索を閉じる" }));
+
+    expect(screen.queryByRole("region", { name: "本文の検索" })).toBeNull();
   });
 
   it("brings the chat up from the toolbar", async () => {

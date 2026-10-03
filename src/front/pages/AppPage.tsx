@@ -15,6 +15,8 @@ import {
 } from "../atoms/chatAtom";
 import { PdfViewer } from "../components/PdfViewer/PdfViewer";
 import { EpubViewer } from "../components/EpubViewer/EpubViewer";
+import { BookSearch } from "../components/PdfViewer/BookSearch";
+import { bookSearchOpenAtom } from "../atoms/bookSearchAtom";
 import { PageToolbar } from "../components/PdfViewer/PageToolbar";
 import { ChatArea } from "../components/ChatArea/ChatArea";
 import { ChatSheet } from "../components/ChatArea/ChatSheet";
@@ -87,6 +89,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
   const [chatMaximized, setChatMaximized] = useAtom(chatMaximizedAtom);
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const [chatSheet, setChatSheet] = useAtom(chatSheetAtom);
+  const [bookSearchOpen, setBookSearchOpen] = useAtom(bookSearchOpenAtom);
   const abortChatStream = useSetAtom(abortChatStreamAtom);
   const [leftWidth, setLeftWidth] = useState(60);
   /** Where the handle was grabbed, while it is being dragged. */
@@ -244,6 +247,14 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
             <>
               <button
                 type="button"
+                onClick={() => setBookSearchOpen((open) => !open)}
+                aria-pressed={bookSearchOpen}
+                className="px-3 py-1 bg-white border rounded cursor-pointer text-sm text-gray-600 hover:bg-gray-50"
+              >
+                本文検索
+              </button>
+              <button
+                type="button"
                 onClick={() => setOutlineOpen((open) => !open)}
                 aria-pressed={outlineOpen}
                 className="px-3 py-1 bg-white border rounded cursor-pointer text-sm text-gray-600 hover:bg-gray-50"
@@ -328,28 +339,35 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
                   visibility: chatMaximized ? "hidden" : undefined,
                 }
           }
-          className={`h-full min-w-0 ${isNarrow ? "w-full" : ""}`}
+          className={`relative flex h-full min-w-0 ${isNarrow ? "w-full" : ""}`}
         >
-          {/* A PDF is the viewer drawn until the book says otherwise: its
+          {/* The search through the book's text sits with the page rather than
+              inside either viewer: it is the same for a PDF and an EPUB, and
+              needs nothing drawn to search. Beside the page on a wide screen,
+              which refits the page as the outline does; over it on one column. */}
+          <BookSearch pdfId={pdfId} />
+          <div className="h-full min-w-0 flex-1">
+            {/* A PDF is the viewer drawn until the book says otherwise: its
               download starts on the id alone, before the book has arrived
               (`usePdfDocument`), and waiting on the book to choose would undo
               that. An EPUB's bytes are left alone by it until the book arrives
               and hands over to the viewer that can read them. */}
-          {book?.format === "epub" ? (
-            <EpubViewer
-              pdfId={pdfId}
-              book={book}
-              bookError={error as Error | undefined}
-              onSelectionClick={handleSelectionClick}
-            />
-          ) : (
-            <PdfViewer
-              pdfId={pdfId}
-              book={book}
-              bookError={error as Error | undefined}
-              onSelectionClick={handleSelectionClick}
-            />
-          )}
+            {book?.format === "epub" ? (
+              <EpubViewer
+                pdfId={pdfId}
+                book={book}
+                bookError={error as Error | undefined}
+                onSelectionClick={handleSelectionClick}
+              />
+            ) : (
+              <PdfViewer
+                pdfId={pdfId}
+                book={book}
+                bookError={error as Error | undefined}
+                onSelectionClick={handleSelectionClick}
+              />
+            )}
+          </div>
         </div>
 
         {isNarrow && (

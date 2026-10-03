@@ -19,6 +19,7 @@ describe("resolveAction in vim mode", () => {
     ["k", "scrollUp", stroke("k")],
     ["t", "toggleOutline", stroke("t")],
     ["G", "lastPage", stroke("G", { shiftKey: true })],
+    ["/", "openSearch", stroke("/")],
   ] as [string, ViewerAction, KeyStroke][])(
     "maps %s to %s, resolved on the stroke itself",
     (_key, action, pressed) => {
@@ -45,6 +46,11 @@ describe("resolveAction in vim mode", () => {
       action: "scrollDown",
       pending: null,
     });
+  });
+
+  // `/` is vim's own search; the other modes leave it to the browser
+  it.each(["none", "emacs"] as KeybindingMode[])("leaves / alone in %s mode", (mode) => {
+    expect(resolveAction(mode, stroke("/"), null)).toStrictEqual({ action: null, pending: null });
   });
 
   it("ignores emacs strokes", () => {

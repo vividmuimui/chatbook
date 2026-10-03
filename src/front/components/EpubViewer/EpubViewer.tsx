@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
+import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { useWebSearchAtom } from "../../atoms/settingsAtom";
 import type { BookDetail } from "../../../shared/schemas/book";
 import type { PositionData } from "../../../shared/schemas/selection";
@@ -107,6 +108,7 @@ export function EpubViewer({
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const citedPassage = useAtomValue(citedPassageAtom);
   const setCitedPassage = useSetAtom(citedPassageAtom);
+  const setBookSearchOpen = useSetAtom(bookSearchOpenAtom);
   const activeSelection = useAtomValue(activeSelectionAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
   const isNarrow = useIsNarrow();
@@ -267,9 +269,12 @@ export function EpubViewer({
         case "toggleOutline":
           setOutlineOpen((open) => !open);
           break;
+        case "openSearch":
+          setBookSearchOpen(true);
+          break;
       }
     },
-    [pageCount, setCurrentPage, setOutlineOpen],
+    [pageCount, setCurrentPage, setOutlineOpen, setBookSearchOpen],
   );
   useKeyboardShortcuts(handleShortcut);
 
