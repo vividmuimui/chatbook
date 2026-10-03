@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vite-plus/test";
-import { rangeOfQuote, rangeOfTextOffsets, textOffsetsOf } from "./epubTextRange";
+import { describe, it, expect, vi, afterEach } from "vite-plus/test";
+import {
+  rangeOfQuote,
+  rangeOfTextOffsets,
+  screenOfTextOffset,
+  textOffsetOfScreen,
+  textOffsetsOf,
+} from "./epubTextRange";
 
 /** A drawn chapter holding the given markup, attached so ranges can span it. */
 function chapter(markup: string): HTMLElement {
@@ -76,5 +82,55 @@ describe("rangeOfQuote", () => {
 
   it("finds nothing for a quote the chapter does not hold", () => {
     expect(rangeOfQuote(chapter("<p>本文</p>"), "どこにもない文")).toBeNull();
+  });
+});
+
+describe("textOffsetOfScreen / screenOfTextOffset", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Lays the chapter out as columns 400px apart: each character is drawn in
+   * the column its letter names (a → the first, b → the second, …), and white
+   * space between blocks is not drawn at all.
+   */
+  function laidOutInColumns() {
+    vi.spyOn(Range.prototype, "getClientRects").mockImplementation(function (this: Range) {
+      const char = this.toString();
+      if (char.trim() === "") return [] as unknown as DOMRectList;
+      const column = char.charCodeAt(0) - "a".charCodeAt(0);
+      return [new DOMRect(20 + column * 400, 10, 8, 20)] as unknown as DOMRectList;
+    });
+  }
+
+  it("finds where in the chapter's text a screen starts", () => {
+    laidOutInColumns();
+    const root = chapter("<p>aaa</p>\n<p>abb</p>\n<p>bcc</p>");
+
+    expect(textOffsetOfScreen(root, root, 400, 0)).toBe(0);
+    // "aaa" + "\n" + "a" before the first b
+    expect(textOffsetOfScreen(root, root, 400, 1)).toBe(5);
+    expect(textOffsetOfScreen(root, root, 400, 2)).toBe(9);
+  });
+
+  it("finds the screen a place in the chapter's text is drawn on", () => {
+    laidOutInColumns();
+    const root = chapter("<p>aaa</p>\n<p>abb</p>\n<p>bcc</p>");
+
+    expect(screenOfTextOffset(root, root, 400, 0)).toBe(0);
+    expect(screenOfTextOffset(root, root, 400, 5)).toBe(1);
+    // The white space between two paragraphs is where the next one starts
+    expect(screenOfTextOffset(root, root, 400, 3)).toBe(0);
+    expect(screenOfTextOffset(root, root, 400, 7)).toBe(1);
+    expect(screenOfTextOffset(root, root, 400, 10)).toBe(2);
+  });
+
+  it("knows of no screen past the end of the chapter's text", () => {
+    laidOutInColumns();
+    const root = chapter("<p>aa</p>");
+
+    expect(textOffsetOfScreen(root, root, 400, 3)).toBeNull();
+    expect(screenOfTextOffset(root, root, 400, 10)).toBeNull();
   });
 });

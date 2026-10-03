@@ -1,4 +1,5 @@
 import { locateQuoteInSpans, type PassageContext } from "./citedPassage";
+import { firstIndexAtOrAfter, screenOfX } from "./epubPaging";
 
 /**
  * Where a passage sits in a drawn chapter, as offsets into its text.
@@ -93,4 +94,80 @@ export function rangeOfQuote(root: Element, quote: string, context?: PassageCont
   range.setStart(nodes[location.startSpan], location.startOffset);
   range.setEnd(nodes[location.endSpan], location.endOffset);
   return range;
+}
+
+/**
+ * The screen each character of a chapter laid out in columns is drawn on,
+ * asked of the layout one character at a time.
+ */
+function screensOfCharacters(root: Element, page: Element, viewWidth: number) {
+  const nodes = textNodesOf(root);
+  const starts: number[] = [];
+  let total = 0;
+  for (const node of nodes) {
+    starts.push(total);
+    total += node.data.length;
+  }
+  const pageLeft = page.getBoundingClientRect().left;
+
+  /** The node a character is in, by halving over where each one starts. */
+  const nodeAt = (offset: number) => {
+    let low = 0;
+    let high = nodes.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (starts[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  };
+
+  const screenAt = (offset: number): number | null => {
+    const index = nodeAt(offset);
+    const range = document.createRange();
+    range.setStart(nodes[index], offset - starts[index]);
+    range.setEnd(nodes[index], offset - starts[index] + 1);
+    const rect = range.getClientRects()[0];
+    return rect ? screenOfX(rect.left - pageLeft, viewWidth) : null;
+  };
+
+  return { total, screenAt };
+}
+
+/**
+ * Where in the chapter's text a screen starts — the first character drawn on
+ * it — or null when the chapter's text does not reach it.
+ *
+ * What a reader's place within a chapter is kept as, since the screen it was on
+ * stops meaning anything once the chapter is laid out again at another width
+ * or in another type.
+ */
+export function textOffsetOfScreen(
+  root: Element,
+  page: Element,
+  viewWidth: number,
+  screen: number,
+): number | null {
+  const { total, screenAt } = screensOfCharacters(root, page, viewWidth);
+  const offset = firstIndexAtOrAfter(total, screenAt, screen);
+  return offset < total ? offset : null;
+}
+
+/**
+ * The screen a place in the chapter's text is drawn on, or null past the end of
+ * it. A character with nothing drawn — the white space between two paragraphs —
+ * is read as the next one that is.
+ */
+export function screenOfTextOffset(
+  root: Element,
+  page: Element,
+  viewWidth: number,
+  offset: number,
+): number | null {
+  const { total, screenAt } = screensOfCharacters(root, page, viewWidth);
+  for (let i = Math.max(0, offset); i < total; i++) {
+    const screen = screenAt(i);
+    if (screen !== null) return screen;
+  }
+  return null;
 }

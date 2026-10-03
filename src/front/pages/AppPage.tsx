@@ -16,6 +16,7 @@ import {
 import { PdfViewer } from "../components/PdfViewer/PdfViewer";
 import { EpubViewer } from "../components/EpubViewer/EpubViewer";
 import { EpubTypographyMenu } from "../components/EpubViewer/EpubTypographyMenu";
+import { EpubPageStepper } from "../components/EpubViewer/EpubPageStepper";
 import { BookSearch } from "../components/PdfViewer/BookSearch";
 import { bookSearchOpenAtom } from "../atoms/bookSearchAtom";
 import { PageToolbar } from "../components/PdfViewer/PageToolbar";
@@ -472,6 +473,9 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
           highlightCount={book.selections.length}
           chatOpen={chatSheet !== "closed"}
           onToggleChat={() => setChatSheet(chatSheet === "closed" ? "half" : "closed")}
+          stepper={
+            book.format === "epub" ? <EpubPageStepper pageCount={book.pageCount} /> : undefined
+          }
         />
       )}
     </div>

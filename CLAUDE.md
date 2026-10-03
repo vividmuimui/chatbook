@@ -71,13 +71,13 @@ commit 済みの `worker-configuration.d.ts` は `.dev.vars.example` の並び�
 現在 17 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
 このどれかに当てはまるはずで、当てはまらないなら書き方を疑うこと:
 
-| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                    |
-| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（章の `ResizeObserver` と、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
-| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                           |
-| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込みと、章の先頭・リンク先・引用箇所へのスクロール）                                                                                                                                                                                                                                               |
-| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                    |
+| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                                            |
+| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（ペインと章の `ResizeObserver`、章の画像の `load`、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
+| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                                                   |
+| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込み。画面をめくるのは DOM への書き込みではなく `translateX` の描画）                                                                                                                                                                                                                                                      |
+| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                                            |
 
 **画面幅の購読には `useEffect` を使わない**。`useIsNarrow`（`src/front/hooks/useIsNarrow.ts`）が
 `useSyncExternalStore` で `matchMedia` を購読する。購読するのは幅そのものではなく
@@ -561,14 +561,16 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 `/locate` を PDF と同じ仕組みのまま使う。`fullText` は章ごとの本文を `\f` で繋いだもので、
 サーバは形式を区別せずに抜粋と出典を扱う。
 
-| 何を                                       | どこが                                                                                              |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| 形式の判定（バイト列の先頭 `PK\x03\x04`）  | サーバ `pdfService.ts` の `bookFormatOf`、クライアント `lib/bookLoader.ts` の `isEpubFile`          |
-| zip の展開・spine・目次（nav / NCX）・表紙 | `src/front/lib/epub.ts`（`fflate`）                                                                 |
-| 章の無害化と本文の抽出                     | `src/front/lib/epubContent.ts` の `renderChapter` / `chapterPlainText`                              |
-| 取り込み（`ExtractedPdfData` を作る）      | `src/front/lib/epubLoader.ts`。`useOpenPdfBook` の既定の抽出は `extractBookData` で形式を振り分ける |
-| 表示                                       | `src/front/components/EpubViewer/EpubViewer.tsx` と `hooks/useEpubDocument.ts`                      |
-| 文字位置 ⇔ `Range`、引用の照合             | `src/front/lib/epubTextRange.ts`                                                                    |
+| 何を                                       | どこが                                                                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| 形式の判定（バイト列の先頭 `PK\x03\x04`）  | サーバ `pdfService.ts` の `bookFormatOf`、クライアント `lib/bookLoader.ts` の `isEpubFile`           |
+| zip の展開・spine・目次（nav / NCX）・表紙 | `src/front/lib/epub.ts`（`fflate`）                                                                  |
+| 章の無害化と本文の抽出                     | `src/front/lib/epubContent.ts` の `renderChapter` / `chapterPlainText`                               |
+| 取り込み（`ExtractedPdfData` を作る）      | `src/front/lib/epubLoader.ts`。`useOpenPdfBook` の既定の抽出は `extractBookData` で形式を振り分ける  |
+| 表示                                       | `src/front/components/EpubViewer/EpubViewer.tsx` と `hooks/useEpubDocument.ts`                       |
+| 文字位置 ⇔ `Range`、引用の照合             | `src/front/lib/epubTextRange.ts`                                                                     |
+| 画面への割り付けとめくりの算術（純関数）   | `src/front/lib/epubPaging.ts`（文字位置 ⇔ 画面は `epubTextRange.ts`）                                |
+| 今の画面とめくり                           | `src/front/atoms/epubAtom.ts`（`epubScreenAtom` / `turnEpubAtom`）、`EpubViewer/EpubPageStepper.tsx` |
 
 - **形式はファイル名ではなくバイト列で決める**。`pdfs.format`（`0008_add_book_format.sql`。
   既定は `'pdf'`）に保存し、R2 のキーの拡張子と `/file` の `Content-Type` もそれに従う。
@@ -590,17 +592,95 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 - **ハイライトは矩形ではなく章本文の文字オフセットで保存する**（`positionData.textRange`。
   章要素の `textContent` に対する `[start, end)`）。章は幅で折り返しが変わるので、保存時の
   矩形はすぐにずれる。`EpubViewer` は描くたびに `rangeOfTextOffsets` → `selectionOnPage`
-  で矩形を測り直す（章の `ResizeObserver` が `drawnSize` を変えると再計測。E2E の
-  「…its highlight follows the text as the pane changes width」が見張る）。`rects` は質問を
+  で矩形を測り直す（ペインと章の `ResizeObserver` が `drawnSize` を変えると再計測。E2E の
+  「…its highlight follows the text as the pane changes width」がスプリッターでペインを狭めて
+  見張る——広いペインは見開きになり 1 段の幅がほとんど変わらないので、パネルを畳む方向では
+  行が組み変わらない）。`rects` は質問を
   書いている間の仮表示と、`textRange` の無い行のためにだけ残る
 - **引用の印は `locateQuoteInSpans` をそのまま使う**。章のテキストノードを pdf.js の
-  テキスト項目に見立てる（`rangeOfQuote`）。章はページより長いので、印を付けたら見える位置まで
-  スクロールする。一覧から開いたハイライトも同じ
+  テキスト項目に見立てる（`rangeOfQuote`）。章は 1 画面に収まらないので、印を付けたら印のある
+  画面へめくる（下記「画面ごとにめくる」）。一覧から開いたハイライト・本文検索の結果・章の中への
+  リンクも同じ
 - **表紙は manifest の `cover-image`（無ければ `<meta name="cover">`）**を 240px の webp に
   する。描けなければ PDF の表紙と同じ理由で握りつぶす（`epubLoader.ts` の
   `renderEpubCover`）。目次が読めない EPUB は目次なしとして開く（`epub.ts` の `openEpub`）
-- **EPUB に無いもの**: 見開き、ピンチ・ズーム、スワイプ・端タップのページ送り。章は縦に
-  スクロールして読み、章の移動はキー・目次・下部の `PageStepper`（狭い画面は `PageToolbar`）
+- **EPUB に無いもの**: ピンチ・ズーム（中央のダブルタップも何もしない）、章の中の位置の保存
+  （リロードと別端末では章の先頭に戻る。下記）、右開き（めくる向きの写像は 1 箇所にまとめて
+  あるが、配線していない）
+
+#### 画面ごとにめくる
+
+Kindle と同じく、章を**ペインの大きさの画面に割って 1 画面ずつめくる**。割り付けはブラウザに
+任せる——章を CSS の段組み（`index.css` の `.epubColumns`。高さはペインいっぱい、
+`column-fill: auto`）で組むと、収まらない分が右へ段として並ぶので、それを `overflow: clip` の
+紙（`<article>`）で切り抜き、中の箱（`data-page-container`）を `translateX` で 1 画面ずつ送る。
+**画面はクライアントだけの概念**で、サーバ・抜粋・引用・読書位置・目次・`pageNumber`・`?page=` は
+どれも今までどおり「章 = 1 ページ」のまま。
+
+- **1 画面 = 段 1 つと段間 1 つ**。段の間隔は余白（`--epub-page-margin`）の 2 倍、章の両端にも
+  余白を 1 つずつ取るので、どの画面も左右に同じ余白を持ち、1 回のめくりはちょうど画面の幅になる。
+  画面の幅は `pagedLayout`（`epubPaging.ts`）が決め、**最大 672px**（`MAX_SCREEN_WIDTH_PX`。
+  スクロールで読んでいた頃の `max-w-2xl`）。**ペインに 440px（`SPREAD_MIN_SCREEN_WIDTH_PX`）の
+  画面が 2 つ入るなら見開き**で、段を 2 つ並べて 1 画面と数える。PDF の見開きと同じく判定は
+  ペインの実測だけで、パネルの開閉は見ない（desktop の 1280px でチャットを畳むと見開きになる）
+- **画面の数は段組みの `scrollWidth` から数える**（`screenCount`）。段は章の箱の外へはみ出して
+  並ぶので、`scrollWidth` が全段の幅になる。章の画像が届くと段が組み直されるので、`load` を
+  capture で拾って数え直す。**画像は 1 画面の高さを超えない**（`--epub-column-height`）——
+  超えると 2 画面に切れる
+- **今の画面は `epubScreenAtom`**（`{ page, screen, count }`）。`page` はどの章について数えたかで、
+  **今の章を名指していなければ先頭の画面として読む**（`shownScreen`）。目次・引用・URL・本文検索
+  など章を動かす口は `currentPageAtom` だけを書けばよく、画面を 0 に戻す書き込みを足す必要が無い。
+  両方を書くのはめくり（`turnEpubAtom`）だけで、前の章へ戻るめくりは `screen: "last"` を書いて
+  章の最後の画面に着地させる。保存も URL も持たない（本ごとのストアに載るだけ）
+- **めくりの算術は `turnEpub` 1 つ**——次の画面、章の最後なら次の章の最初、前の画面、章の最初
+  なら前の章の最後、本の両端では動かない。キー・端のタップとクリック・スワイプ・下部の
+  `EpubPageStepper`（狭い画面は `PageToolbar` の `stepper`）が全部 `turnEpubAtom` を通る。
+  `←` / `→`・`h` / `l`・emacs の `C-b` / `C-f` は画面をめくり、**`↑` / `↓`・`j` / `k` も
+  前後の画面へめくる**（emacs の `C-n` / `C-p` も。スクロールするものが無いため）。`gg` / `G`
+  （emacs の `M-<` / `M->`）と目次は章の先頭へ
+- **左右を前後に読み替えるのは `turnForSide(side, direction)` 1 箇所**（`epubPaging.ts`）。
+  端のタップ・スワイプ（どちらも `touchNavigation.ts` の左開きの答えを `sideOfLtrTurn` で左右に
+  戻してから通す）・方向キーと `h` / `l`・`EpubPageStepper` の山括弧がここを通る。`EpubViewer`
+  と `EpubPageStepper` は `direction`（既定 `"ltr"`）を prop で受けるが、**今は誰も渡していない**
+- **端のタップは PDF と同じ規則**——押した時点で送れるか（ポップオーバーが無く選択が畳まれて
+  いる）を控え、12px / 500ms 以内、2 打目以降・ボタンとリンクの上では送らない。中央は何もしない。
+  スワイプも PDF と同じ `resolveSwipe`（React の `onTouchStart` / `onTouchEnd`。止めるべき既定が
+  無いので passive でよい）
+- **読んでいる場所は画面番号ではなく章本文の文字位置で持つ**（`EpubViewer` の
+  `readingOffsetRef`）。めくったら画面の最初の文字の位置（`textOffsetOfScreen`）、引用・
+  ハイライトへ移ったらその passage の始まりを控え、**ペインの幅・高さ・見開き・書体・画像で
+  組み直したら、その文字のある画面へ戻す**（`screenOfTextOffset`）。組み直しの間は控えた位置を
+  更新しない——毎回「画面の先頭」に取り直すと、幅を変えるたびに少しずつ前へずれていく。
+  E2E の「an EPUB stays on the words being read when the pane changes width」が見張る
+- **どの経路で画面が変わったかは `placedRef`（前回の割り付け）と比べて決める**——章が替わった
+  （リンクのアンカー → `"last"` → 頼まれた画面 → 先頭）、組み直した（文字位置の画面）、それ以外
+  （atom が頼んだ画面）。どれも `useLayoutEffect` なので、読者は途中の画面を見ない
+- **ハイライト・選択・印の矩形は送る箱（`data-page-container`）基準**で、オーバーレイも同じ箱に
+  載っているので、どの画面を出していても語に張り付く。矩形の x から画面を引くのが
+  `screenOfX`（`x ÷ 画面の幅`）。浮かぶ質問ボックスは今の画面の内側に収める
+- **章の中の位置は保存しない**——`readingState` は章番号のまま（列を足さない）。リロード・
+  本棚から開き直す・別端末では**章の先頭の画面に戻る**。章は数画面〜十数画面なので許容している
+- **画面番号は表示だけ**（`EpubPageStepper` の 2 段目、`3 / 12`。1 段目は `2 / 3 章`）。見開きでは
+  2 段で 1 画面と数えるので、同じ章でも幅で総数が変わる
+
+守っているテストは次のとおり:
+
+| 何を                                                    | どのテスト                                                                             |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 画面の幅・見開き・数・めくりの算術・左右の写像          | `src/front/lib/epubPaging.test.ts`                                                     |
+| 文字位置 ⇔ 画面                                         | `epubTextRange.test.ts`「textOffsetOfScreen / screenOfTextOffset」                     |
+| atom のめくり（章をまたぐ・`"last"`・他の口で動いた章） | `src/front/atoms/epubAtom.test.ts`                                                     |
+| 表示と山括弧                                            | `EpubPageStepper.test.tsx`                                                             |
+| キーと端のタップの配線（jsdom は 1 章 1 画面）          | `EpubViewer.test.tsx`                                                                  |
+| 実際にめくれる・章をまたぐ・戻ると章の最後              | `e2e/chatbook.spec.ts`「an EPUB turns a screen at a time…」                            |
+| 幅を変えても同じ語の画面にいる                          | 同「an EPUB stays on the words being read when the pane changes width」                |
+| リンク先・検索結果の画面へめくる                        | 同「an EPUB added from the shelf…」（`toBeInViewport`）と「searching an EPUB's text…」 |
+| 指の端タップとスワイプ                                  | `e2e/mobile.spec.ts`「turns an EPUB a screen at a time at the edges and with a swipe」 |
+
+**E2E で「見えている」を言うときは `toBeVisible` ではなく `toBeInViewport`**——隣の画面の段も
+描かれていて、紙に切り抜かれているだけなので、`toBeVisible` は別の画面にある語でも通る。
+**fixture の第 2 章と第 3 章は数画面ぶんの埋め草の段落を持つ**（`testEpubManifest.ts` の
+`filler`）。第 1 章は短いまま（選択とハイライトの E2E がその最初の段落を使う）。
 
 #### 表示の設定（Kindle の「Aa」）
 
@@ -610,32 +690,33 @@ EPUB にはページが無い（幅でリフローする）。**spine の 1 項�
 `book.format === "epub"` のときだけ `AppPage` が出す。狭い画面でもヘッダーに置く（ヘッダーは
 電話でも常に画面にあり、アイコン 2 つ分の幅はある）。
 
-| 何を                                         | どこが                                                                                            |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| 段階の値・既定値・スキーマ・CSS 変数への写像 | `src/front/lib/epubTypography.ts`（`epubTypographyStyle` は純関数）                               |
-| 保存                                         | `settingsAtom.ts` の `epubTypographyAtom`（`chatbook:epub-typography`）                           |
-| 適用                                         | `EpubViewer` が `<article>` に CSS 変数を置き、`index.css` の `.epubPage` / `.epubChapter` が読む |
+| 何を                                         | どこが                                                                                               |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 段階の値・既定値・スキーマ・CSS 変数への写像 | `src/front/lib/epubTypography.ts`（`epubTypographyStyle` は純関数）                                  |
+| 保存                                         | `settingsAtom.ts` の `epubTypographyAtom`（`chatbook:epub-typography`）                              |
+| 適用                                         | `EpubViewer` が `<article>` に CSS 変数を置き、`index.css` の `.epubColumns` / `.epubChapter` が読む |
 
 - **本をまたいで残る読者の好み**なので、倍率と違って本ごとには持たない。壊れた値は
   `validatedStorage` が既定へ落とすが、**スキーマはフィールドごとに `.catch` する**——
   1 項目だけ範囲外の値（段階を減らした後の古い値など）で、ほかの選択まで失わないため。
   オブジェクトでないものは丸ごと既定値になる
-- **既定値は設定ができる前の見た目そのもの**（17px・1.9・左揃え・`.epubPage` の余白は
+- **既定値は設定ができる前の見た目そのもの**（17px・1.9・左揃え・余白は
   電話 20px / `md` 以上 40px）。**ゴシックの先頭は `ui-sans-serif, system-ui`**——日本語の
   ゴシックを先頭にすると欧文の字幅が変わって行の折り返しが動き、幅でのリフローを見る E2E
   （「…its highlight follows the text as the pane changes width」）が行数の前提ごと落ちた。
   明朝は和文フォントを先頭に置く（欧文セリフが先だと仮名がシステムのゴシックに落ちる）。
   Web フォントは読み込まない
-- **余白は `max-w-2xl` の内側**に取る。広げても本文の行が短くなるだけで、ページは広がらない
-- **設定はハイライトと引用の印の再計測のきっかけに入る**（`EpubViewer` の 2 つの
-  `useLayoutEffect` の依存に `typography`）。文字の大きさや行間は章の高さを変えるので
-  `ResizeObserver` でも気付くが、**両端揃えや同じ字幅のフォントへの切り替えは箱の寸法を
-  変えずに文字だけを動かす**ので、observer は何も聞かない。jsdom の「measures its
-  highlights again when the reader changes the type, even where the box keeps its size」が
-  唯一の見張り（E2E の文字を大きくするテストは observer 経由でも通る）
-- **設定を変えても読んでいた辺りに留まる**。スクロール位置を章の何割まで読んだかで控え
-  （`onScroll`）、設定が変わったらその割合へ戻す。行の位置までは合わない（割合なので、
-  章の先頭へ戻されない程度）
+- **設定はハイライトと引用の印の再計測と、画面の割り付け直しのきっかけに入る**（`EpubViewer`
+  の `useLayoutEffect` の依存に `typography`）。**段組みでは章の箱の寸法は画面が決める**ので、
+  文字を大きくしても行間を広げても箱は変わらず（段が増えるだけ）、`ResizeObserver` は何も
+  聞かない。jsdom の「measures its highlights again when the reader changes the type, even
+  where the box keeps its size」と、E2E の「an EPUB is drawn larger on the type settings…」が
+  これを見張る
+- **設定を変えても読んでいた語の画面に留まる**。書体を変えると章は組み直され、画面の数も
+  変わるが、読んでいた場所は画面番号ではなく章本文の文字位置で控えてあるので、その文字の
+  ある画面へ戻る（上記「画面ごとにめくる」。幅を変えたときと同じ仕組み）
+- **余白は画面ごとの左右の余白**で、段の間隔（余白の 2 倍）と章の両端の余白になる
+  （`index.css` の `.epubColumns`）。広げても画面は広がらず、1 行が短くなる
 
 ### チャットのストリーミング
 
@@ -1917,6 +1998,10 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
 | 保存・読み出しの service                | `src/server/services/pdfService.ts` の `saveReadingState` / `getPdf`                                                                                                                |
 | front と server が交わす形              | `src/shared/schemas/book.ts`。読み出しは `readingStateSchema`、書き込みは `saveReadingStateRequestSchema`（開閉の 2 つと `bookChat` が optional）、応答は `readingStateSavedSchema` |
 
+**EPUB の「ページ」は章**で、章の中のどの画面にいたかは運ばない（上記「画面ごとにめくる」）。
+画面の割り付けは窓と書体で変わるので、保存した画面番号は別の端末では別の語を指すうえ、
+文字位置を足すには `readingState` に列が要る。戻るのは章の先頭の画面。
+
 **`bookChat` は場所の側**（`selectionId` と同じ種類）。`true` なら開いていたのは本そのものの
 会話で、**同時に立つのは 2 つのうち片方だけ**。狭い画面でも送る——あちらに畳んでおく第 2 の
 ペインが無いだけで、会話は開いている。省略された場合は保存値を保つ（パネル 2 つと同じ規則）。
@@ -2211,7 +2296,9 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   `node --experimental-strip-types e2e/fixtures/generateTestEpub.ts`）。全エントリの日付を固定して
   いるので、manifest を変えない限り差分は出ない。**同梱の CSS は本文を赤くする**——読者の書体で
   描いていること（出版社の CSS を読まないこと）を E2E がそこで見ている。ファイル名を
-  `test-book` にしないこと（本棚で PDF の fixture と同じ名前になり、カードを名指せなくなる）
+  `test-book` にしないこと（本棚で PDF の fixture と同じ名前になり、カードを名指せなくなる）。
+  **第 2 章と第 3 章は埋め草の段落で数画面ぶんある**（画面をめくる E2E と、第 1 章からの
+  リンク先・本文検索の結果が章の先頭の画面に無いことのため）。埋め草に検索語を混ぜないこと
 - **テスト用 PDF はコードから生成し、生成物をコミットしてある**（`e2e/fixtures/test-book.pdf`）。
   ページ数・目次のネストとページ・図版ページ・各ページの本文は
   `e2e/fixtures/testBookManifest.ts` にあり（`PAGE_COUNT` は現在 12）、spec もそこを読むので

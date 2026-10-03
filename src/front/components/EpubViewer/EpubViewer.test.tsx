@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vite-plus/test";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { okAsync } from "neverthrow";
@@ -130,6 +130,52 @@ describe("EpubViewer", () => {
 
     expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
     expect(store.get(currentPageAtom)).toBe(2);
+  });
+
+  // jsdom lays nothing out, so every chapter here fills the one screen: a turn
+  // on from it is a turn from the chapter's last screen.
+  it("turns on from the last screen of a chapter into the next with →, and back into its end with ←", async () => {
+    vi.stubGlobal("fetch", serving());
+    const store = renderViewer();
+    await screen.findByRole("heading", { name: "第1章" });
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(2);
+    expect(screen.getByText("2 / 2 章", { exact: true })).toBeInTheDocument();
+
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(1);
+  });
+
+  // A screen read a screen at a time has nothing in it to scroll
+  it("turns with ↓ and ↑ as well", async () => {
+    vi.stubGlobal("fetch", serving());
+    const store = renderViewer();
+    await screen.findByRole("heading", { name: "第1章" });
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+    await userEvent.keyboard("{ArrowUp}");
+    expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(1);
+  });
+
+  it("turns on at a tap on the right edge of the screen, and leaves the middle alone", async () => {
+    vi.stubGlobal("fetch", serving());
+    const store = renderViewer();
+    const heading = await screen.findByRole("heading", { name: "第1章" });
+    const paper = heading.closest("article")!;
+    vi.spyOn(paper, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 400, 600));
+
+    fireEvent.pointerDown(heading, { clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(heading, { clientX: 200, clientY: 100 });
+    expect(store.get(currentPageAtom)).toBe(1);
+
+    fireEvent.pointerDown(heading, { clientX: 380, clientY: 100 });
+    fireEvent.pointerUp(heading, { clientX: 380, clientY: 100 });
+    expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
   });
 
   it("stores a highlight by where the passage sits in the chapter's text", async () => {
