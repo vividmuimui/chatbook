@@ -402,9 +402,9 @@ function GroupCard({
             </span>
           )}
           {progress?.kind === "unread" && (
-            // Kindle's "NEW": the corner the reader's eye starts from. The
-            // buttons take the other top corner.
-            <span className="absolute left-1.5 top-1.5">
+            // Kindle's "NEW", in the bottom corner: on a phone the buttons are
+            // always out and, a thumb wide each, fill the whole top of the cover.
+            <span className="absolute bottom-1.5 left-1.5">
               <ProgressText id={progressId} progress={progress} />
             </span>
           )}
