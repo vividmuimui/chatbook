@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vite-plus/test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { okAsync } from "neverthrow";
@@ -142,6 +142,8 @@ describe("EpubViewer", () => {
           selectedText: draft.selectedText,
           pageNumber: draft.pageNumber,
           positionData: draft.positionData,
+          color: "#FFEB3B",
+          note: null,
           createdAt: "2026-10-04T00:00:00.000Z",
         });
       },
@@ -203,6 +205,7 @@ describe("EpubViewer", () => {
             pageNumber: 1,
             positionData: { rects: [], textRange: { start: 3, end: 9 } },
             color: "#FFEB3B",
+            note: null,
             createdAt: "2026-10-04T00:00:00.000Z",
           },
         ],
@@ -219,6 +222,52 @@ describe("EpubViewer", () => {
 
     expect(screen.getByRole("button", { name: "ハイライトのチャットを開く" }).style.top).toBe(
       "64px",
+    );
+  });
+
+  it("keeps a passage marked in a colour by its place in the chapter's text, with its note", async () => {
+    vi.stubGlobal("fetch", serving());
+    const saved: SelectionDraft[] = [];
+    renderViewer({
+      measureSelection: () => MEASURED,
+      saveSelection: (_pdfId, draft) => {
+        saved.push(draft);
+        return okAsync({
+          id: "s1",
+          selectedText: draft.selectedText,
+          pageNumber: draft.pageNumber,
+          positionData: draft.positionData,
+          color: "#42A5F5",
+          note: "要確認",
+          createdAt: "2026-10-04T00:00:00.000Z",
+        });
+      },
+    });
+    await screen.findByRole("heading", { name: "第1章" });
+
+    document.dispatchEvent(new Event("selectionchange"));
+    await userEvent.click(await screen.findByRole("button", { name: "メモを書く" }));
+    await userEvent.click(screen.getByRole("button", { name: "青を選ぶ" }));
+    await userEvent.type(
+      screen.getByPlaceholderText("選択した文章にメモを書く..."),
+      "要確認{Enter}",
+    );
+
+    expect(saved).toStrictEqual([
+      {
+        selectedText: "エッジで動く",
+        pageNumber: 1,
+        positionData: {
+          rects: MEASURED.selectionPosition.rects,
+          pageWidth: 600,
+          textRange: { start: 3, end: 9 },
+        },
+        color: "#42A5F5",
+        note: "要確認",
+      },
+    ]);
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText("選択した文章にメモを書く...")).toBeNull(),
     );
   });
 

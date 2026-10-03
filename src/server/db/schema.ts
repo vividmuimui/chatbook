@@ -53,7 +53,11 @@ export const selections = sqliteTable("selections", {
   selectedText: text("selected_text").notNull(),
   pageNumber: integer("page_number").notNull(),
   positionData: text("position_data").notNull(),
+  // One of `HIGHLIGHT_COLORS`. Rows stored before colours could be chosen all
+  // took this default, which is the first (yellow) of them.
   color: text("color").notNull().default("#FFEB3B"),
+  // What the reader wrote against the passage; null when they wrote nothing.
+  note: text("note"),
   createdAt: text("created_at").notNull(),
 });
 

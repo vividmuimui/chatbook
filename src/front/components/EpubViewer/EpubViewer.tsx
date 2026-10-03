@@ -7,10 +7,14 @@ import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
 import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail } from "../../../shared/schemas/book";
-import type { PositionData } from "../../../shared/schemas/selection";
+import type { HighlightColor, PositionData } from "../../../shared/schemas/selection";
 import { PdfOutline } from "../PdfViewer/PdfOutline";
 import { PageStepper } from "../PdfViewer/PageStepper";
-import { SelectionPopover } from "../PdfViewer/SelectionPopover";
+import {
+  POPOVER_LIFT_PX,
+  SelectionPopover,
+  type SelectionBoxMode,
+} from "../PdfViewer/SelectionPopover";
 import { SelectionActionBar } from "../PdfViewer/SelectionActionBar";
 import { HighlightOverlay } from "../PdfViewer/HighlightOverlay";
 import type { MeasureSelection, SelectionPopoverState } from "../PdfViewer/PdfViewer";
@@ -118,7 +122,10 @@ export function EpubViewer({
 
   const { epub, error: documentError } = useEpubDocument(pdfId);
   const { highlights, addHighlight } = useHighlights(book?.id);
-  const { askAboutSelection, saveError } = useAskAboutSelection(addHighlight, saveSelection);
+  const { askAboutSelection, markSelection, saveError } = useAskAboutSelection(
+    addHighlight,
+    saveSelection,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -127,7 +134,9 @@ export function EpubViewer({
   const pendingAnchorRef = useRef<string | null>(null);
 
   const [popoverState, setPopoverState] = useState<SelectionPopoverState | null>(null);
-  const [questionOpen, setQuestionOpen] = useState(false);
+  // As in PdfViewer: which use the box was opened on, and a mark in flight.
+  const [boxOpen, setBoxOpen] = useState<SelectionBoxMode | null>(null);
+  const [marking, setMarking] = useState(false);
   const [chosenByFinger, setChosenByFinger] = useState(false);
   const offerFirst = isNarrow || chosenByFinger;
   /** The chapter's drawn size, which every rect over it is measured at. */
@@ -346,30 +355,19 @@ export function EpubViewer({
       },
       [measureSelection],
     ),
-    { enabled: !questionOpen },
+    { enabled: boxOpen === null },
   );
 
   const handlePopoverSubmit = useCallback(
     async (question: string) => {
       if (!popoverState || !book) return;
-      const { startIndex, endIndex, pageNumber, rects, pageWidth } = popoverState.selectionPosition;
-
-      const asked = await askAboutSelection(
-        book.id,
-        {
-          selectedText: popoverState.selectedText,
-          pageNumber,
-          positionData: { rects, pageWidth, textRange: { start: startIndex, end: endIndex } },
-        },
-        question,
-        useWebSearch,
-      );
+      const asked = await askAboutSelection(book.id, draftOf(popoverState), question, useWebSearch);
 
       // As on a PDF page: the popover closes on the stored highlight, and one
       // that was not stored keeps the question for another try.
       if (asked.isOk()) {
         setPopoverState(null);
-        setQuestionOpen(false);
+        setBoxOpen(null);
       }
     },
     [popoverState, book, askAboutSelection, useWebSearch],
@@ -377,9 +375,27 @@ export function EpubViewer({
 
   const handlePopoverDismiss = useCallback(() => {
     setPopoverState(null);
-    setQuestionOpen(false);
+    setBoxOpen(null);
     window.getSelection()?.removeAllRanges();
   }, []);
+
+  // A highlight and nothing more, closed on the stored highlight as on a PDF page.
+  const handleMark = useCallback(
+    async (color: HighlightColor, note: string | null) => {
+      if (!popoverState || !book) return;
+
+      setMarking(true);
+      const marked = await markSelection(book.id, {
+        ...draftOf(popoverState),
+        color,
+        ...(note === null ? {} : { note }),
+      });
+      setMarking(false);
+
+      if (marked.isOk()) handlePopoverDismiss();
+    },
+    [popoverState, book, markSelection, handlePopoverDismiss],
+  );
 
   const handleHighlightClick = useCallback(
     (selectionId: string) => {
@@ -498,12 +514,13 @@ export function EpubViewer({
                           ),
                           Math.max(0, drawnSize.width - 320),
                         ),
-                        top: Math.max(0, popoverState.position.y - 130),
+                        top: Math.max(0, popoverState.position.y - POPOVER_LIFT_PX),
                       }}
                     >
                       <SelectionPopover
                         quote={popoverState.selectedText}
                         onSubmit={handlePopoverSubmit}
+                        onMark={handleMark}
                         onDismiss={handlePopoverDismiss}
                       />
                     </div>
@@ -522,26 +539,45 @@ export function EpubViewer({
         </div>
       )}
 
-      {offerFirst && popoverState && !questionOpen && (
+      {offerFirst && popoverState && boxOpen === null && (
         <SelectionActionBar
           quote={popoverState.selectedText}
-          onAsk={() => setQuestionOpen(true)}
+          onAsk={() => setBoxOpen("ask")}
+          onNote={() => setBoxOpen("note")}
+          onMark={(color) => void handleMark(color, null)}
           onDismiss={handlePopoverDismiss}
+          marking={marking}
         />
       )}
 
-      {offerFirst && popoverState && questionOpen && (
+      {offerFirst && popoverState && boxOpen !== null && (
         <div className="absolute inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-gray-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-6px_24px_rgba(19,26,41,0.18)]">
           <SelectionPopover
             quote={popoverState.selectedText}
             onSubmit={handlePopoverSubmit}
-            onDismiss={() => setQuestionOpen(false)}
+            onMark={handleMark}
+            onDismiss={() => setBoxOpen(null)}
+            initialMode={boxOpen}
             floating={false}
           />
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * What is stored for a passage chosen in a chapter: where it sits in the
+ * chapter's text, which is what the highlight is drawn from, beside the rects
+ * measured at the width it was chosen at.
+ */
+function draftOf(chosen: SelectionPopoverState) {
+  const { startIndex, endIndex, pageNumber, rects, pageWidth } = chosen.selectionPosition;
+  return {
+    selectedText: chosen.selectedText,
+    pageNumber,
+    positionData: { rects, pageWidth, textRange: { start: startIndex, end: endIndex } },
+  };
 }
 
 /**

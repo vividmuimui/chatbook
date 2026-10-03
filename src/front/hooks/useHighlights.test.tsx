@@ -2,7 +2,7 @@ import { describe, it, expect } from "vite-plus/test";
 import { renderHook, act } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { errAsync, okAsync, type Result } from "neverthrow";
-import { useHighlights, type DeleteHighlight } from "./useHighlights";
+import { useHighlights, type DeleteHighlight, type UpdateHighlight } from "./useHighlights";
 import type { LoadBook } from "./useBook";
 import { ApiError } from "../lib/fetcher";
 import { SwrTestCache } from "../../test/swrTestCache";
@@ -19,6 +19,7 @@ function highlight(overrides: Partial<SelectionHighlight> = {}): SelectionHighli
     pageNumber: 1,
     positionData: { rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
     color: "#FFEB3B",
+    note: null,
     createdAt: "2026-08-01T10:00:00.000Z",
     ...overrides,
   };
@@ -157,20 +158,34 @@ describe("useHighlights", () => {
       selectedText: "Workers はリクエストごとに分離されます。",
       pageNumber: 12,
       positionData: { rects: [] },
+      color: "#EC407A",
+      note: "あとで読む",
       createdAt: "2026-08-03T10:00:00.000Z",
     };
     await act(async () => {
       view.result.current.viewer.addHighlight(created);
     });
 
-    expect(view.result.current.panel.highlights).toStrictEqual([
-      ...A_HIGHLIGHTS,
-      { ...created, color: "#FF9800" },
-    ]);
+    expect(view.result.current.panel.highlights).toStrictEqual([...A_HIGHLIGHTS, created]);
     expect(calls).toStrictEqual([BOOK_A_ID]);
   });
 
-  it("gives a highlight saved before colours existed one from the palette", async () => {
+  it("draws each highlight in the colour stored with it, whatever its place in the list", async () => {
+    const { load, finish } = pausableLoader();
+    const view = renderForBook(BOOK_A_ID, load);
+
+    await finish(BOOK_A_ID, [
+      highlight({ color: "#42A5F5" }),
+      highlight({ id: "a2", color: "#42A5F5" }),
+    ]);
+
+    expect(view.result.current.highlights.map((h) => h.color)).toStrictEqual([
+      "#42A5F5",
+      "#42A5F5",
+    ]);
+  });
+
+  it("draws a highlight with no colour stored in the column's default yellow", async () => {
     const { load, finish } = pausableLoader();
     const view = renderForBook(BOOK_A_ID, load);
 
@@ -178,8 +193,65 @@ describe("useHighlights", () => {
 
     expect(view.result.current.highlights.map((h) => h.color)).toStrictEqual([
       "#FFEB3B",
-      "#FF9800",
+      "#FFEB3B",
     ]);
+  });
+
+  it("recolours a highlight and rewrites its note on the viewer and the panel at once", async () => {
+    const { load, calls, finish } = pausableLoader();
+    const asked: [string, string, unknown][] = [];
+    const updateHighlight: UpdateHighlight = (pdfId, selectionId, change) => {
+      asked.push([pdfId, selectionId, change]);
+      return okAsync({ id: selectionId, color: "#FF9800", note: "書き足した" });
+    };
+    const view = renderHook(
+      () => ({
+        viewer: useHighlights(BOOK_A_ID, load, undefined, updateHighlight),
+        panel: useHighlights(BOOK_A_ID, load, undefined, updateHighlight),
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => <SwrTestCache>{children}</SwrTestCache>,
+      },
+    );
+    const other = highlight({ id: "a2" });
+    await finish(BOOK_A_ID, [highlight(), other]);
+
+    await act(async () => {
+      await view.result.current.panel.updateHighlight(BOOK_A_ID, "a1", {
+        color: "#FF9800",
+        note: "書き足した",
+      });
+    });
+
+    expect(asked).toStrictEqual([[BOOK_A_ID, "a1", { color: "#FF9800", note: "書き足した" }]]);
+    expect(view.result.current.viewer.highlights).toStrictEqual([
+      highlight({ color: "#FF9800", note: "書き足した" }),
+      other,
+    ]);
+    expect(view.result.current.panel.highlights).toStrictEqual(
+      view.result.current.viewer.highlights,
+    );
+    expect(calls).toStrictEqual([BOOK_A_ID]);
+  });
+
+  it("leaves the highlight as it was and hands back the reason when a change is refused", async () => {
+    const { load, finish } = pausableLoader();
+    const refusal = new ApiError("Selection not found", "SELECTION_NOT_FOUND", 404);
+    const view = renderHook(
+      () => useHighlights(BOOK_A_ID, load, undefined, () => errAsync(refusal)),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => <SwrTestCache>{children}</SwrTestCache>,
+      },
+    );
+    await finish(BOOK_A_ID, A_HIGHLIGHTS);
+
+    let change: Result<void, ApiError> | undefined;
+    await act(async () => {
+      change = await view.result.current.updateHighlight(BOOK_A_ID, "a1", { color: "#42A5F5" });
+    });
+
+    expect(change?.isErr() && change.error).toBe(refusal);
+    expect(view.result.current.highlights).toStrictEqual(A_HIGHLIGHTS);
   });
 
   it("takes a highlight the reader deleted out of the list without re-reading the book", async () => {

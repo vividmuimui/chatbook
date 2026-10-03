@@ -10,12 +10,12 @@ import {
 } from "../../atoms/pdfAtom";
 import type { ActiveSelection } from "../../atoms/chatAtom";
 import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
-import type { SelectionRect } from "../../../shared/schemas/selection";
+import type { HighlightColor, SelectionRect } from "../../../shared/schemas/selection";
 import type { BookDetail } from "../../../shared/schemas/book";
 import { PdfPage } from "./PdfPage";
 import { PdfOutline } from "./PdfOutline";
 import { PageStepper } from "./PageStepper";
-import { SelectionPopover } from "./SelectionPopover";
+import { POPOVER_LIFT_PX, SelectionPopover, type SelectionBoxMode } from "./SelectionPopover";
 import { SelectionActionBar } from "./SelectionActionBar";
 import { HighlightOverlay } from "./HighlightOverlay";
 import { getSelectionFromTextLayer } from "../../lib/pdfTextMatcher";
@@ -209,14 +209,17 @@ export function PdfViewer({
   const { highlights, addHighlight } = useHighlights(book?.id);
   const isNarrow = useIsNarrow();
   /**
-   * Whether the question box is up over the passage the bar is offering.
+   * Whether the box is up over the passage the bar is offering, and which of
+   * its two uses — a question or a note — the bar opened it on.
    *
    * Kept apart from `popoverState`, which stays the measured passage either
    * way: the rectangles drawn under the offer are the same ones drawn under the
    * box, and losing them at the moment the box opens would blank the highlight
    * the reader is looking at.
    */
-  const [questionOpen, setQuestionOpen] = useState(false);
+  const [boxOpen, setBoxOpen] = useState<SelectionBoxMode | null>(null);
+  /** A colour tapped on the bar is being stored; a second tap would store it twice. */
+  const [marking, setMarking] = useState(false);
   /**
    * Whether a finger chose the passage, which decides what is offered on it.
    *
@@ -237,7 +240,10 @@ export function PdfViewer({
   const offerFirst = isNarrow || chosenByFinger;
   const { pdfDocument, error: documentError } = usePdfDocument(pdfId, book);
   const { outline, error: outlineError } = usePdfOutline(pdfDocument);
-  const { askAboutSelection, saveError } = useAskAboutSelection(addHighlight, saveSelection);
+  const { askAboutSelection, markSelection, saveError } = useAskAboutSelection(
+    addHighlight,
+    saveSelection,
+  );
   // Kept with the page it happened on, so turning away from a page that could
   // not be drawn takes its message with it.
   const [renderError, setRenderError] = useState<{ page: number; message: string } | null>(null);
@@ -639,7 +645,7 @@ export function PdfViewer({
       },
       [measureSelection],
     ),
-    { enabled: !questionOpen },
+    { enabled: boxOpen === null },
   );
 
   const handlePopoverSubmit = useCallback(
@@ -665,7 +671,7 @@ export function PdfViewer({
       // the question in it, so the reader can send it again.
       if (asked.isOk()) {
         setPopoverState(null);
-        setQuestionOpen(false);
+        setBoxOpen(null);
       }
     },
     [popoverState, book, askAboutSelection, useWebSearch],
@@ -673,15 +679,43 @@ export function PdfViewer({
 
   const handlePopoverDismiss = useCallback(() => {
     setPopoverState(null);
-    setQuestionOpen(false);
+    setBoxOpen(null);
     window.getSelection()?.removeAllRanges();
   }, []);
+
+  /**
+   * Keep the passage as a highlight and nothing more: a colour from the bar or
+   * the box, and a note when the box was turned to one.
+   *
+   * Closes on the stored highlight like an ask does, and lets go of the
+   * browser's selection too — the bar never took the focus, so the passage is
+   * still selected under the highlight that now marks it. One that was not
+   * stored keeps the bar or box up, with the reason above the page.
+   */
+  const handleMark = useCallback(
+    async (color: HighlightColor, note: string | null) => {
+      if (!popoverState || !book) return;
+
+      setMarking(true);
+      const marked = await markSelection(book.id, {
+        selectedText: popoverState.selectedText,
+        pageNumber: popoverState.selectionPosition.pageNumber,
+        positionData: popoverState.selectionPosition,
+        color,
+        ...(note === null ? {} : { note }),
+      });
+      setMarking(false);
+
+      if (marked.isOk()) handlePopoverDismiss();
+    },
+    [popoverState, book, markSelection, handlePopoverDismiss],
+  );
 
   /**
    * Closing the question box leaves the passage selected and the offer up: the
    * reader changed their mind about typing, not about the passage.
    */
-  const handleQuestionClose = useCallback(() => setQuestionOpen(false), []);
+  const handleQuestionClose = useCallback(() => setBoxOpen(null), []);
 
   const handleHighlightClick = useCallback(
     (selectionId: string) => {
@@ -869,12 +903,13 @@ export function PdfViewer({
                               ),
                               Math.max(0, drawnAt.width - 320),
                             ),
-                            top: Math.max(0, popoverState.position.y - 130),
+                            top: Math.max(0, popoverState.position.y - POPOVER_LIFT_PX),
                           }}
                         >
                           <SelectionPopover
                             quote={popoverState.selectedText}
                             onSubmit={handlePopoverSubmit}
+                            onMark={handleMark}
                             onDismiss={handlePopoverDismiss}
                           />
                         </div>
@@ -903,23 +938,28 @@ export function PdfViewer({
       )}
 
       {/* What a touch reader gets instead of the popover: the offer along the
-          bottom of the pane, and the question box only once it is taken. Both
-          sit above the page rather than in it, so neither moves with a scroll
-          the reader makes while deciding. */}
-      {offerFirst && popoverState && !questionOpen && (
+          bottom of the pane, and the box only once a question or a note is
+          asked for. Both sit above the page rather than in it, so neither moves
+          with a scroll the reader makes while deciding. */}
+      {offerFirst && popoverState && boxOpen === null && (
         <SelectionActionBar
           quote={popoverState.selectedText}
-          onAsk={() => setQuestionOpen(true)}
+          onAsk={() => setBoxOpen("ask")}
+          onNote={() => setBoxOpen("note")}
+          onMark={(color) => void handleMark(color, null)}
           onDismiss={handlePopoverDismiss}
+          marking={marking}
         />
       )}
 
-      {offerFirst && popoverState && questionOpen && (
+      {offerFirst && popoverState && boxOpen !== null && (
         <div className="absolute inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-gray-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-6px_24px_rgba(19,26,41,0.18)]">
           <SelectionPopover
             quote={popoverState.selectedText}
             onSubmit={handlePopoverSubmit}
+            onMark={handleMark}
             onDismiss={handleQuestionClose}
+            initialMode={boxOpen}
             floating={false}
           />
         </div>

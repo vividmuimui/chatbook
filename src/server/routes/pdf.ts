@@ -11,6 +11,7 @@ import {
   saveReadingState,
   searchSelections,
   findInBook,
+  updateSelection,
   thumbnailObjectKey,
   BOOK_CONTENT_TYPES,
   readFormat,
@@ -29,8 +30,10 @@ import {
   type BookOutline,
 } from "../../shared/schemas/book";
 import {
+  DEFAULT_HIGHLIGHT_COLOR,
   createSelectionRequestSchema,
   selectionSearchQuerySchema,
+  updateSelectionRequestSchema,
 } from "../../shared/schemas/selection";
 import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
 import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
@@ -66,6 +69,11 @@ const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 const PDF_NOT_FOUND = {
   code: "PDF_NOT_FOUND" satisfies ErrorCode,
   message: "PDF not found",
+} as const;
+
+const SELECTION_NOT_FOUND = {
+  code: "SELECTION_NOT_FOUND" satisfies ErrorCode,
+  message: "Selection not found",
 } as const;
 
 /**
@@ -652,7 +660,10 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         // Validated, so positionData is already down to the shape the viewer
         // draws from: the measurement's other fields are stripped here rather
         // than stored and read back as an unknown blob.
-        const { selectedText, pageNumber, positionData } = c.req.valid("json");
+        const { selectedText, pageNumber, positionData, color, note } = c.req.valid("json");
+        // A highlight made by asking names no colour, and is the yellow every
+        // highlight was before colours could be chosen.
+        const stored = { color: color ?? DEFAULT_HIGHLIGHT_COLOR, note: note ?? null };
 
         const id = idClock.newId();
         const now = idClock.now();
@@ -662,11 +673,34 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           selectedText,
           pageNumber,
           positionData: JSON.stringify(positionData),
+          ...stored,
           createdAt: now,
         });
 
-        return c.json({ id, selectedText, pageNumber, positionData, createdAt: now }, 201);
+        return c.json(
+          { id, selectedText, pageNumber, positionData, ...stored, createdAt: now },
+          201,
+        );
       })
+      // Recolours a highlight or changes what is written against it. Answers
+      // with the two as they now stand, which is all a list needs to follow.
+      .patch(
+        "/pdf/:pdfId/selections/:selId",
+        validate("json", updateSelectionRequestSchema),
+        async (c) => {
+          const updated = await updateSelection(
+            c.env.DB,
+            c.req.param("pdfId"),
+            c.req.param("selId"),
+            c.req.valid("json"),
+          );
+
+          return updated.match(
+            (selection) => c.json(selection),
+            (failure) => serviceFailureResponse(c, failure, SELECTION_NOT_FOUND),
+          );
+        },
+      )
       // The book's own conversation: the one hanging off the book rather than
       // off a passage of it, and so the only one with no selection to name.
       .get("/pdf/:pdfId/chats", async (c) => {

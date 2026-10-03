@@ -1,6 +1,22 @@
 // oxlint-disable-next-line no-restricted-imports -- document への keydown / mousedown / copy 購読 (Escape と外側クリックで閉じる、コピーに抜粋を渡す) に必要
 import { useState, useRef, useEffect } from "react";
 import { isSubmitKey } from "../../lib/isSubmitKey";
+import { ColorSwatches } from "../ColorSwatches";
+import {
+  DEFAULT_HIGHLIGHT_COLOR,
+  MAX_NOTE_LENGTH,
+  type HighlightColor,
+} from "../../../shared/schemas/selection";
+
+/** What the box is for: a question to the AI, or a note kept with the highlight. */
+export type SelectionBoxMode = "ask" | "note";
+
+/**
+ * How far above the selected line a floating box is put, so it sits over the
+ * lines before the passage rather than on it: its own height — the swatch row,
+ * the field and the buttons — and the tail beneath them.
+ */
+export const POPOVER_LIFT_PX = 180;
 
 interface SelectionPopoverProps {
   /** The passage the box is about, and what a copy made while it is up yields. */
@@ -11,7 +27,15 @@ interface SelectionPopoverProps {
    * stored, and a popover that stays open is one that can be submitted twice.
    */
   onSubmit: (question: string) => void | Promise<void>;
+  /**
+   * Keeps the passage as a highlight in a colour, with a note when one was
+   * written, and asks nothing. Awaited for the same reason `onSubmit` is: the
+   * box stays up on a highlight that was not stored.
+   */
+  onMark: (color: HighlightColor, note: string | null) => void | Promise<void>;
   onDismiss: () => void;
+  /** Which of the two the box opens on: a note, when the bar's "メモ" opened it. */
+  initialMode?: SelectionBoxMode;
   /**
    * Whether it is floating over the passage, which is where its card and the
    * tail beneath it come from. Held along the bottom of the pane instead — the
@@ -22,25 +46,42 @@ interface SelectionPopoverProps {
 }
 
 /**
- * Question input shown above the selected text. The caller positions it; this
- * component owns the input, submit and dismiss behaviour, and the clipboard
- * for as long as it is up.
+ * What the reader can do with the passage they selected, shown above it: mark
+ * it in a colour, keep a note with it, or ask about it. The caller positions
+ * it; this component owns the input, submit and dismiss behaviour, and the
+ * clipboard for as long as it is up.
  */
 export function SelectionPopover({
   quote,
   onSubmit,
+  onMark,
   onDismiss,
+  initialMode = "ask",
   floating = true,
 }: SelectionPopoverProps) {
+  const [mode, setMode] = useState<SelectionBoxMode>(initialMode);
+  /**
+   * What is in the field. One text for both modes, so a reader who started
+   * typing a question and decided it was a note to self keeps what they wrote.
+   */
   const [question, setQuestion] = useState("");
-  const [asking, setAsking] = useState(false);
+  /** The colour a note is kept in. Swatches only act at once in the ask mode. */
+  const [noteColor, setNoteColor] = useState<HighlightColor>(DEFAULT_HIGHLIGHT_COLOR);
+  /**
+   * Which store is in flight. One gate for both: a highlight marked while a
+   * question about the same passage is still being stored would be a second
+   * highlight of it, and so would a second mark.
+   */
+  const [busy, setBusy] = useState<"ask" | "mark" | null>(null);
+  const asking = busy !== null;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Focus input on mount
+  // Focus the field on mount, and again when the box turns from one use to the
+  // other: the button that turned it took the focus away.
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [mode]);
 
   /**
    * Hand the passage to a copy made while this box is up.
@@ -98,24 +139,40 @@ export function SelectionPopover({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [onDismiss]);
 
-  const handleSubmit = async () => {
-    const q = question.trim();
-    // One ask at a time. Both routes in (the button and Enter) come through
-    // here, so this is the only gate needed.
-    if (!q || asking) return;
-
-    setAsking(true);
+  /** Runs one store at a time, and puts a failed one back within reach. */
+  const runStore = async (kind: "ask" | "mark", store: () => void | Promise<void>) => {
+    setBusy(kind);
     try {
-      await onSubmit(q);
+      await store();
     } catch {
       // Reporting is the asker's job — it owns the message and where it shows.
       // Swallowing here only stops a rejection escaping an event handler,
       // where nothing (not even the route's errorElement) would catch it.
     } finally {
-      // A successful ask unmounts this popover, so this only ever puts a
+      // A successful store unmounts this popover, so this only ever puts a
       // failed one back within reach of the reader.
-      setAsking(false);
+      setBusy(null);
     }
+  };
+
+  const noting = mode === "note";
+
+  const handleSubmit = async () => {
+    const q = question.trim();
+    // One store at a time. Both routes in (the button and Enter) come through
+    // here, and the swatches through `handleMark`, so these are the only gates.
+    if (!q || asking) return;
+
+    if (noting) {
+      await runStore("mark", () => onMark(noteColor, q));
+      return;
+    }
+    await runStore("ask", () => onSubmit(q));
+  };
+
+  const handleMark = (color: HighlightColor) => {
+    if (asking) return;
+    void runStore("mark", () => onMark(color, null));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -124,6 +181,14 @@ export function SelectionPopover({
       void handleSubmit();
     }
   };
+
+  const submitLabel = noting
+    ? busy === "mark"
+      ? "保存中..."
+      : "メモ付きでマーク"
+    : busy === "ask"
+      ? "送信中..."
+      : "質問する";
 
   return (
     <div
@@ -138,13 +203,33 @@ export function SelectionPopover({
           style={{ top: "calc(100% - 6px)" }}
         />
       )}
+      {/* Marking comes first, the way a reader marks a book before writing in
+          its margin. In the ask mode a swatch keeps the passage at once; once
+          the box is for a note, the swatches pick the colour it is kept in. */}
+      <div className="-mx-1 mb-1 flex items-center justify-between gap-1">
+        <ColorSwatches
+          labelOf={(name) => (noting ? `${name}を選ぶ` : `${name}でマーク`)}
+          selected={noting ? noteColor : undefined}
+          onPick={noting ? setNoteColor : handleMark}
+          disabled={asking}
+        />
+        <button
+          type="button"
+          onClick={() => setMode(noting ? "ask" : "note")}
+          disabled={asking}
+          className="h-11 shrink-0 cursor-pointer rounded-md px-2 text-xs text-blue-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {noting ? "質問を書く" : "メモを書く"}
+        </button>
+      </div>
       <textarea
         ref={inputRef}
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="選択した文章について質問する..."
+        placeholder={noting ? "選択した文章にメモを書く..." : "選択した文章について質問する..."}
         readOnly={asking}
+        maxLength={noting ? MAX_NOTE_LENGTH : undefined}
         className="w-full min-w-[280px] p-2 text-sm border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent read-only:bg-gray-50"
         rows={2}
       />
@@ -162,7 +247,7 @@ export function SelectionPopover({
           disabled={!question.trim() || asking}
           className="px-3 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
-          {asking ? "送信中..." : "質問する"}
+          {submitLabel}
         </button>
       </div>
     </div>

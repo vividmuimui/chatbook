@@ -4,12 +4,15 @@ import type { ActiveSelection } from "../../atoms/chatAtom";
 import type { ApiError } from "../../lib/fetcher";
 import { isSubmitKey } from "../../lib/isSubmitKey";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { HighlightEditor } from "./HighlightEditor";
+import type { UpdateSelectionRequest } from "../../../shared/schemas/selection";
 
 export interface HighlightListItem {
   id: string;
   selectedText: string;
   pageNumber: number;
   color: string;
+  note: string | null;
   createdAt: string;
 }
 
@@ -30,6 +33,8 @@ interface HighlightListPanelProps {
   onSelect: (selection: ActiveSelection) => void;
   /** Removes a highlight and its chat; its failure comes back in the value. */
   onDelete: (selectionId: string) => ResultAsync<void, ApiError>;
+  /** Recolours a highlight or rewrites its note; its failure comes back in the value. */
+  onUpdate: (selectionId: string, change: UpdateSelectionRequest) => ResultAsync<void, ApiError>;
   /** Opens the conversation about the book itself, which no highlight holds. */
   onOpenBookChat: () => void;
 }
@@ -73,9 +78,12 @@ export function HighlightListPanel({
   searchError,
   onSelect,
   onDelete,
+  onUpdate,
   onOpenBookChat,
 }: HighlightListPanelProps) {
   const [pendingDeletion, setPendingDeletion] = useState<HighlightListItem | null>(null);
+  /** The one highlight whose colour and note are open for changing, if any. */
+  const [editingId, setEditingId] = useState<string | null>(null);
   /** Why the last deletion did not happen, worded here for the reader. */
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -171,7 +179,7 @@ export function HighlightListPanel({
                     pageNumber: highlight.pageNumber,
                   })
                 }
-                className="flex w-full cursor-pointer items-start gap-3 border-b border-gray-100 py-3 pl-4 pr-12 text-left hover:bg-gray-50"
+                className="flex w-full cursor-pointer items-start gap-3 border-b border-gray-100 py-3 pl-4 pr-24 text-left hover:bg-gray-50"
               >
                 <span
                   aria-hidden="true"
@@ -182,8 +190,43 @@ export function HighlightListPanel({
                   <span className="line-clamp-2 block text-sm text-gray-700">
                     {highlight.selectedText}
                   </span>
+                  {/* Set off by a rule in the passage's own colour, the way a
+                      note sits in the margin beside what it is about. */}
+                  {highlight.note !== null && (
+                    <span
+                      style={{ borderColor: highlight.color }}
+                      className="mt-1 line-clamp-3 block whitespace-pre-wrap border-l-4 pl-2 text-xs text-gray-600"
+                    >
+                      <span className="sr-only">メモ: </span>
+                      {highlight.note}
+                    </span>
+                  )}
                   <span className="mt-1 block text-xs text-gray-400">{`${highlight.pageNumber}ページ`}</span>
                 </span>
+              </button>
+              {/* Beside the delete button, and never only on hover: the same
+                  list is what a finger gets in the sheet. */}
+              <button
+                type="button"
+                aria-label={`「${shortened(highlight.selectedText)}」のメモと色を変える`}
+                aria-expanded={editingId === highlight.id}
+                onClick={() =>
+                  setEditingId((open) => (open === highlight.id ? null : highlight.id))
+                }
+                className="absolute right-12 top-1 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M4 16l1-4 8-8 3 3-8 8-4 1z" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -204,6 +247,14 @@ export function HighlightListPanel({
                   <path d="M6 6l8 8M14 6l-8 8" />
                 </svg>
               </button>
+              {editingId === highlight.id && (
+                <HighlightEditor
+                  color={highlight.color}
+                  note={highlight.note}
+                  onChange={(change) => onUpdate(highlight.id, change)}
+                  onClose={() => setEditingId(null)}
+                />
+              )}
             </li>
           ))}
         </ul>
