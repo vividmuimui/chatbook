@@ -36,6 +36,7 @@ function highlight(id: string, selectedText: string, pageNumber: number): Select
 }
 
 const BOOK: BookDetail = {
+  title: null,
   id: PDF_ID,
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",

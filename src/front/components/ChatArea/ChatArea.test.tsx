@@ -51,6 +51,7 @@ const HIGHLIGHTS: SelectionHighlight[] = [
 ];
 
 const BOOK: BookDetail = {
+  title: null,
   id: "p1",
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",

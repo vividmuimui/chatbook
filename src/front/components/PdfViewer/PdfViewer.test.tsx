@@ -15,6 +15,7 @@ import type { BookDetail } from "../../../shared/schemas/book";
 import type { CreatedSelection } from "../../../shared/schemas/selection";
 
 const BOOK: BookDetail = {
+  title: null,
   id: "p1",
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",

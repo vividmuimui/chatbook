@@ -35,6 +35,7 @@ function highlight(id: string, selectedText: string, pageNumber = 1): SelectionH
 }
 
 const BOOK_A: BookDetail = {
+  title: null,
   id: "bookA",
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
@@ -48,6 +49,7 @@ const BOOK_A: BookDetail = {
 };
 
 const BOOK_B: BookDetail = {
+  title: null,
   id: "bookB",
   fileName: "Durable Objects.pdf",
   format: "pdf",
@@ -264,8 +266,19 @@ describe("AppPage", () => {
     // entry the upload filed under this key
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { holdTheBook: true });
 
-    expect(screen.getByText(BOOK_A.fileName)).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare Workers")).toBeInTheDocument();
     expect(screen.getByText(A_PASSAGE)).toBeInTheDocument();
+  });
+
+  it("heads the reader with the title the reader gave the book", async () => {
+    renderReader(
+      BOOK_A.id,
+      { [bookKey(BOOK_A.id)]: { ...BOOK_A, title: "エッジで動かす" } },
+      { holdTheBook: true },
+    );
+
+    expect(within(screen.getByRole("banner")).getByText("エッジで動かす")).toBeInTheDocument();
+    expect(screen.queryByText("Cloudflare Workers")).not.toBeInTheDocument();
   });
 
   it("leaves the chat of the book being read behind when another book is opened", async () => {
@@ -280,7 +293,7 @@ describe("AppPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "別の本を開く" }));
 
-    expect(await screen.findByText(BOOK_B.fileName)).toBeInTheDocument();
+    expect(await screen.findByText("Durable Objects")).toBeInTheDocument();
     expect(screen.getByText(B_PASSAGE)).toBeInTheDocument();
     expect(screen.queryByText(A_PASSAGE)).not.toBeInTheDocument();
   });
@@ -502,7 +515,7 @@ describe("AppPage", () => {
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A, [bookKey(epub.id)]: epub });
 
     const header = await screen.findByRole("banner");
-    await screen.findByText(BOOK_A.fileName);
+    await screen.findByText("Cloudflare Workers");
     expect(within(header).queryByRole("button", { name: "表示の設定" })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "別の本を開く" }));
@@ -628,7 +641,7 @@ describe("AppPage on a screen too narrow for two panes", () => {
 
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
 
-    expect(await screen.findByText(BOOK_A.fileName)).toBeInTheDocument();
+    expect(await screen.findByText("Cloudflare Workers")).toBeInTheDocument();
     // The highlight list is what the chat shows first, so its absence is the
     // chat being away rather than the book having no highlights
     expect(screen.queryByText(A_PASSAGE)).toBeNull();
@@ -694,7 +707,7 @@ describe("AppPage on a screen too narrow for two panes", () => {
 
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
 
-    expect(await screen.findByText(BOOK_A.fileName)).toBeInTheDocument();
+    expect(await screen.findByText("Cloudflare Workers")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /最大化/ })).toBeNull();
     // The way to the whole window on one column, in the toolbar under the page
     expect(screen.getByRole("button", { name: "チャット" })).toBeInTheDocument();
@@ -705,7 +718,7 @@ describe("AppPage on a screen too narrow for two panes", () => {
 
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
 
-    expect(await screen.findByText(BOOK_A.fileName)).toBeInTheDocument();
+    expect(await screen.findByText("Cloudflare Workers")).toBeInTheDocument();
     expect(screen.queryByRole("separator")).toBeNull();
   });
 

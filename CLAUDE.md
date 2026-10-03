@@ -225,7 +225,8 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 同一性は **内容の SHA-256** で判定する。同じ本を開き直すと同じ `pdfs.id` を返しつつ、
 `fileName` / `fullText` / `pageCount` / `outline` を最新の抽出結果で**上書き**する
 (`src/server/services/pdfService.ts` の `openPdf`)。ここを「既存レコードをそのまま返す」に
-戻すと、古いメタデータが残り続ける不具合になる。
+戻すと、古いメタデータが残り続ける不具合になる。読者が付けたもの——読書位置と題名
+（`title`）——は上書きしない。
 
 #### Dropbox 連携
 
@@ -360,7 +361,8 @@ union + `satisfies` で固定する。
   （`useHighlights` の `updateHighlight`）・ハイライトの削除（`useHighlights`）・
   チャット履歴の取得（`AppPage`）・読書位置の保存（`useReadingStateSync`）・
   ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
-  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）の 9 つ。
+  Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・
+  本の題名の変更（`ShelfPage` → `BookTitleDialog`）の 10 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -402,6 +404,7 @@ union + `satisfies` で固定する。
 | Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
 | Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
 | Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
+| 本の題名の変更                               | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
 | 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
 | PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
 | ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
@@ -1007,10 +1010,67 @@ fullText の `\f` 区切りで、D1 の `page_count` は見ない。
 未読み込みファイルを区別しない）。計算は `src/front/lib/shelfGroups.ts` の純関数
 （`groupShelf` / `splitHidden`）で、サーバには持たない。**同名の判定はファイル名から
 `.pdf` / `.epub` を除き、Unicode を NFC にそろえ、大文字小文字を無視したもの**——Mac の
-Dropbox が濃点を分解形で返すことがあるため。項目の中では取り込み済みが先、PDF が EPUB より
-先で、カードと題名は先頭のファイルを開き、2 つ以上あるときだけ形式ごとのチップが
-それぞれを開く。**1 つだけの項目も形式を言う**——題名の下の説明の先頭に押せないバッジ
+Dropbox が濃点を分解形で返すことがあるため（読者が題名を変えた本は変えた題名で比べる。
+下記「題名は読者が変えられる」）。項目の中では**優先する形式が先、同じ形式の中では
+取り込み済みが Dropbox の未読み込みより先**で、カードと題名は先頭のファイルを開き、2 つ以上
+あるときだけ形式ごとのチップがそれぞれを開く。**1 つだけの項目も形式を言う**——題名の下の説明の先頭に押せないバッジ
 （`FormatBadge`）を置く。チップが無いと、それが PDF か EPUB かを読者が知る手立てが無いため。**削除は項目の取り込み済みの本をすべて**消す（確認文が「PDF・EPUB」と言う）。
+
+**優先する形式は読者が選ぶ**（検索欄の隣の「優先する形式」の `<select>`。PDF / EPUB、
+既定は PDF）。本をまたぐ読者の好みなので `settingsAtom.ts` の `preferredFormatAtom`
+（`chatbook:preferred-format`。`validatedStorage` で、形式でない値は PDF に落ちる）が
+localStorage に持ち、`groupShelf` の第 3 引数に渡る。並びは `shelfGroups.ts` の `memberOrder`
+が決め、**優先する形式は「取り込み済み」に勝つ**——EPUB を選んだ読者が PDF だけ取り込んで
+いる題名を開くと、Dropbox から EPUB を取得して開く（取得は 1 度きりで、以後は取り込み済み）。
+取り込み済みを先にすると、ちょうど別の形式が Dropbox に現れた題名でだけ設定が効かず、
+選んでいない形式が開く。**この規則は既定（PDF）でも効く**ので、取り込み済みが EPUB だけで
+PDF が Dropbox にある題名は、設定ができる前（EPUB が開いた）と違い PDF を取得して開く。
+置き場所をヘッダーにしないのは検索欄と同じ理由（狭い画面のヘッダーはボタンで埋まっている）で、
+狭い画面では検索欄の下に折り返す。**PDF / EPUB の 2 ボタンにしない**——チップの名前
+（「… を PDF で開く」）が部分一致で当たる。表紙と進み具合は項目内の順に依らない
+（`coverOf` は表紙のある最初の本、`groupProgress` は一番進んだ本）。
+
+**題名は読者が変えられる**。`pdfs.title`（`migrations/0011_add_book_title.sql`。nullable）
+に持ち、**`null` はファイル名から作る従来の題名**。画面に出す題名は
+`src/front/lib/bookTitle.ts` の `bookTitle(book)`（`title ?? titleOf(fileName)`）1 箇所が
+決める——本棚・リーダーのヘッダー・削除の確認文がこれを読む（リーダーのヘッダーは以前
+拡張子付きのファイル名を出していたが、今は本棚と同じ題名）。
+
+- **受け口は `PATCH /api/pdf/:pdfId`**（`{ title }`。`renameBookRequestSchema`）。前後の
+  空白を除き、**空・空白だけ・`null` は `null`（元に戻す）**、200 文字
+  （`MAX_BOOK_TITLE_LENGTH`。ダイアログの入力欄も `maxLength` で同じ値）を超えると 400、
+  無い本は 404。応答は `{ id, title }`。**`updatedAt` は動かさない**（本棚の並びはそれで
+  決まり、題名を変えることは本を開くことではない）
+- **`GET /api/pdfs`・`GET /api/pdf/:pdfId`・`POST /api/pdf/open` の応答すべてに `title`
+  が載る**。アップロードの応答に要るのは `useOpenPdfBook` のキャッシュ先充填のため——
+  題名を変えた本を同じファイルからもう一度足したとき、リーダーにファイル名の題名が出ないように。
+  **`storePdf` の上書きは `title` を列挙しない**ので、再アップロードで題名は消えない
+- **口は本棚の項目の「✎」**（`aria-label` は「〈題名〉 の題名を変更」。「非表示」「削除」
+  「開く」と部分一致で当たらない名前）。取り込み済みの本がある項目にだけ出す（Dropbox の
+  未読み込みファイルの名前はファイルシステムのもの）。ダイアログは
+  `src/front/components/BookTitleDialog.tsx`。**項目のすべての本に同じ題名を付ける**——
+  1 つだけ変えると項目が 2 つに割れる（次項）。順に送り、最初の拒否で止める
+- **同名でまとめる判定は変えた題名で行う**。読者に見えている名前はそれで、読者が同じ題名を
+  付けた 2 冊は、ファイル名がどうであれ読者にとって 1 冊。**ただし、変える前の名前のままの
+  ファイルは変えた本の項目についていく**（`groupShelf` の `renamedFrom`）——Dropbox の
+  未読み込みファイルは読者のファイルシステムの名前で、題名の変更はそれに触れない。ついて
+  いかせないと、PDF の題名を変えたとたんに同じ本の EPUB が古い名前で別の項目に出る。
+  題名の付いていない本（後から Dropbox から取り込んだ EPUB など）も同じ扱い。項目の題名は
+  読者が書いた題名が優先
+- **成功したら 2 つのキャッシュを書き換える**（取り直さない）。本棚（`/api/pdfs`）と、
+  リーダーが読む `bookKey(id)`（キャッシュに無ければ何もしない）。失敗はダイアログの中に
+  出し、ダイアログは打った題名のまま開いている（下記の失敗の表）
+- **マイグレーションは先に当てる**。`readPdf` / `storePdf` は `pdfs` の全列を読むので、未適用の
+  D1 では本を開く経路と本の追加が 500 になり、本棚の一覧も `title` を select するので 500 になる。
+  nullable な列の追加なので旧コードには無害
+
+守っているのは `shelfGroups.test.ts`（優先する形式の並び・変えた題名でのまとめ方）、
+`bookTitle.test.ts`、`ShelfPage.test.tsx` の「the preferred format」と
+「renaming a book」、`AppPage.test.tsx`「heads the reader with the title…」、
+`useOpenPdfBook.test.tsx`「keeps the title…」、`test/worker/pdf.test.ts` の
+`PATCH /api/pdf/:pdfId`、desktop の E2E「a title given on the shelf is what the shelf and
+the reader say after a reload」（fixture ではなく専用の本を使う——fixture の題名は他の
+テストが名指しているので、失敗して題名が残ると全件を巻き込む）。
 
 **非表示は `hidden_books`（`migrations/0009_add_hidden_books.sql`）にサーバで持つ**——
 端末をまたいで同じ本棚にするため。キーは取り込み済みの本なら `pdfs.id`、未読み込みの
@@ -1836,6 +1896,8 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 **`0010_add_selection_note.sql`（`selections.note`）も同じ**——`readPdf` はハイライトを
 `selections` の全列で読むので、未適用の D1 では本を開く経路ごと 500、ハイライトの作成・変更・
 検索も 500 になる。nullable な列の追加なので旧コードには無害で、先に当てればよい。
+**`0011_add_book_title.sql`（`pdfs.title`）も同じ**——未適用の D1 では本を開く経路・本の追加・
+本棚の一覧（これは `title` を select する）が 500 になる。nullable な列の追加で、先に当てればよい。
 ローカルは `pnpm run db:migrate:local`、リモートは
 `vp build` → `wrangler d1 migrations apply chatbook-db --remote` → `pnpm run deploy` の順。
 **列の追加は旧コードに無害なので、先に当てるのが常に安全——ただし `0005_book_chat.sql` だけは

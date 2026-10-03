@@ -1529,13 +1529,49 @@ test("the book title stays in the reader header instead of the chat panel", asyn
   await page.reload();
   await page.getByRole("button", { name: "ハイライトのチャットを開く" }).click();
 
-  await expect(page.getByRole("banner").getByText(FIXTURE_FILE_NAME)).toBeVisible();
+  await expect(page.getByRole("banner").getByText(FIXTURE_TITLE)).toBeVisible();
 
   // The chat panel is for the conversation; repeating the title there only ate
   // vertical space
   const chatPanel = page.locator("main > div").last();
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
-  await expect(chatPanel.getByText(FIXTURE_FILE_NAME)).toBeHidden();
+  await expect(chatPanel.getByText(FIXTURE_TITLE)).toBeHidden();
+});
+
+test("a title given on the shelf is what the shelf and the reader say after a reload", async ({
+  page,
+}) => {
+  await logIn(page);
+  // A book of its own: the fixture's title is what every other test finds it
+  // by, and a rename left behind by a failure here would cost them all.
+  const stored = await page.request.post("/api/pdf/open", {
+    multipart: {
+      file: apiFixtureFile("rename-on-shelf"),
+      fullText: "A book the reader gives a title of their own.",
+      pageCount: String(PAGE_COUNT),
+    },
+  });
+  const { id } = (await stored.json()) as { id: string };
+  const given = "書棚で付けた題名";
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "rename-on-shelf の題名を変更" }).click();
+  const dialog = page.getByRole("dialog", { name: "題名の変更" });
+  await dialog.getByRole("textbox", { name: "題名" }).fill(given);
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: `${given} を開く` })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: `${given} を開く` })).toBeVisible();
+  await expect(page.getByRole("button", { name: "rename-on-shelf を開く" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: `${given} を開く` }).click();
+  await expect(page).toHaveURL(new RegExp(`/books/${id}`));
+  await expect(page.getByRole("banner").getByText(given)).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("banner").getByText(given)).toBeVisible();
 });
 
 test("the chat panel lists the highlights, opens one, and comes back to the list", async ({

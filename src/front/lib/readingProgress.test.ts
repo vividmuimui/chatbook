@@ -12,6 +12,7 @@ function book(
   format: BookFormat = "pdf",
 ): BookSummary {
   return {
+    title: null,
     id,
     fileName,
     format,

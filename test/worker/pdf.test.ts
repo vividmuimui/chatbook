@@ -13,6 +13,7 @@ import {
   type IdClock,
 } from "../../src/server/services/pdfService";
 import { MAX_NOTE_LENGTH } from "../../src/shared/schemas/selection";
+import { MAX_BOOK_TITLE_LENGTH } from "../../src/shared/schemas/book";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -205,6 +206,7 @@ describe("POST /api/pdf/open", () => {
       pageCount: 1,
       fullText: "test content",
       readingState: null,
+      title: null,
     });
   });
 
@@ -280,6 +282,7 @@ describe("POST /api/pdf/open", () => {
       pageCount: 209,
       fullText: "fresh text",
       readingState: null,
+      title: null,
     });
 
     // The refreshed values must be persisted, not just echoed back
@@ -293,6 +296,7 @@ describe("POST /api/pdf/open", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      title: null,
     });
   });
 
@@ -467,6 +471,7 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
       hasOutline: true,
       selections: [],
       readingState: null,
+      title: null,
     });
   });
 
@@ -535,6 +540,7 @@ describe("GET /api/pdf/:pdfId", () => {
       hasOutline: false,
       selections: [],
       readingState: null,
+      title: null,
     });
   });
 
@@ -647,6 +653,8 @@ describe("GET /api/pdfs", () => {
       inDropbox: false,
       // Never opened in a reader, which is not the same as being on page 1.
       lastReadPage: null,
+      // Never renamed: the shelf makes the title from the file name.
+      title: null,
     });
     expect(uncovered?.hasThumbnail).toBe(false);
   });
@@ -670,6 +678,96 @@ describe("GET /api/pdfs", () => {
     };
 
     expect(books.find((b) => b.id === book.id)).toMatchObject({ pageCount: 4, lastReadPage: 3 });
+  });
+});
+
+describe("PATCH /api/pdf/:pdfId", () => {
+  function renameBook(pdfId: string, body: unknown): Promise<Response> {
+    return apiFetch(`https://example.com/api/pdf/${pdfId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function titleOnShelf(pdfId: string): Promise<string | null | undefined> {
+    const response = await apiFetch("https://example.com/api/pdfs");
+    const { books } = (await response.json()) as { books: { id: string; title: string | null }[] };
+    return books.find((b) => b.id === pdfId)?.title;
+  }
+
+  async function titleOfBook(pdfId: string): Promise<string | null> {
+    const response = await apiFetch(`https://example.com/api/pdf/${pdfId}`);
+    return ((await response.json()) as { title: string | null }).title;
+  }
+
+  it("gives the book the title the reader wrote, on the shelf and in the book", async () => {
+    const book = await uploadBook({ tag: "rename", fileName: "scan_0001.pdf" });
+
+    const response = await renameBook(book.id, { title: "  Rust 入門  " });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({ id: book.id, title: "Rust 入門" });
+    expect(await titleOnShelf(book.id)).toBe("Rust 入門");
+    expect(await titleOfBook(book.id)).toBe("Rust 入門");
+  });
+
+  it.each([null, "", "   "])("goes back to the file name's title when sent %j", async (title) => {
+    const book = await uploadBook({
+      tag: `rename-clear-${String(title).length}`,
+      fileName: "clear.pdf",
+    });
+    await renameBook(book.id, { title: "付けた題名" });
+
+    const response = await renameBook(book.id, { title });
+
+    expect(await response.json()).toStrictEqual({ id: book.id, title: null });
+    expect(await titleOfBook(book.id)).toBeNull();
+  });
+
+  it("refuses a title longer than the limit", async () => {
+    const book = await uploadBook({ tag: "rename-long", fileName: "long.pdf" });
+
+    const response = await renameBook(book.id, { title: "あ".repeat(MAX_BOOK_TITLE_LENGTH + 1) });
+
+    expect(response.status).toBe(400);
+    expect(await titleOfBook(book.id)).toBeNull();
+  });
+
+  it("refuses a body that names no title", async () => {
+    const book = await uploadBook({ tag: "rename-empty", fileName: "empty.pdf" });
+
+    const response = await renameBook(book.id, {});
+
+    expect(response.status).toBe(400);
+  });
+
+  it("answers 404 for a book that is not on the shelf", async () => {
+    const response = await renameBook("no-such-book", { title: "x" });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "PDF_NOT_FOUND" } });
+  });
+
+  it("leaves the shelf's order alone", async () => {
+    const book = await uploadBook({ tag: "rename-order", fileName: "order.pdf" });
+    const before = await bookUpdatedAt(book.id);
+
+    await renameBook(book.id, { title: "並びは動かない" });
+
+    expect(await bookUpdatedAt(book.id)).toBe(before);
+  });
+
+  it("keeps the title when the same book is opened again from its file", async () => {
+    const book = await uploadBook({ tag: "rename-reopen", fileName: "reopen.pdf" });
+    await renameBook(book.id, { title: "残る題名" });
+
+    const reopened = await uploadBook({ tag: "rename-reopen", fileName: "reopen-renamed.pdf" });
+
+    expect(reopened.id).toBe(book.id);
+    // The upload's answer seeds the reader's cache, so it carries the title too.
+    expect((reopened as PdfResponse & { title: string | null }).title).toBe("残る題名");
+    expect(await titleOfBook(book.id)).toBe("残る題名");
   });
 });
 
@@ -1806,6 +1904,7 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 3,
       fullText: "本文",
       readingState: null,
+      title: null,
     });
     expect(await storedBookRow("book-idclock-new")).toStrictEqual({
       id: "book-idclock-new",
@@ -1849,6 +1948,7 @@ describe("openPdf with an injected IdClock", () => {
       pageCount: 4,
       fullText: "再抽出した本文",
       readingState: null,
+      title: null,
     });
     expect(await storedBookRow("book-idclock-reopen")).toStrictEqual({
       id: "book-idclock-reopen",

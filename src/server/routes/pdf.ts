@@ -12,6 +12,7 @@ import {
   searchSelections,
   findInBook,
   updateSelection,
+  renameBook,
   thumbnailObjectKey,
   BOOK_CONTENT_TYPES,
   readFormat,
@@ -26,6 +27,7 @@ import { streamChatReply, type SaveAnswer } from "../services/chatStream";
 import {
   bookOutlineSchema,
   locateQuerySchema,
+  renameBookRequestSchema,
   saveReadingStateRequestSchema,
   type BookOutline,
 } from "../../shared/schemas/book";
@@ -641,6 +643,16 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
 
         return book.match(
           (found) => c.json(found),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
+      })
+      // Gives the book a title of the reader's own, or takes it away. Answers
+      // with the title as it now stands, which is all the shelf needs.
+      .patch("/pdf/:pdfId", validate("json", renameBookRequestSchema), async (c) => {
+        const renamed = await renameBook(c.env.DB, c.req.param("pdfId"), c.req.valid("json").title);
+
+        return renamed.match(
+          (book) => c.json(book),
           (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
         );
       })

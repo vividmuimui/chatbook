@@ -28,6 +28,7 @@ import { useReadingLocation, type PassageMiss } from "../hooks/useReadingLocatio
 import { useReadingStateSync } from "../hooks/useReadingStateSync";
 import { passageFromNavigation } from "../lib/textFragment";
 import { fetcher, resultFetcher } from "../lib/fetcher";
+import { bookTitle } from "../lib/bookTitle";
 import { locatedPageSchema, type LocatedPage } from "../../shared/schemas/book";
 import { chatHistorySchema } from "../../shared/schemas/chat";
 
@@ -235,7 +236,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
         </Link>
         {book && (
           <span className="ml-3 min-w-0 flex-1 truncate text-sm text-gray-500 md:flex-none md:max-w-xs">
-            {book.fileName}
+            {bookTitle(book)}
           </span>
         )}
         {/* Both toggles live up here rather than in the panels they fold away,

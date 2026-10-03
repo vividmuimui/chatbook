@@ -7,6 +7,7 @@ import {
   epubTypographySchema,
   type EpubTypography,
 } from "../lib/epubTypography";
+import { bookFormatSchema, type BookFormat } from "../../shared/schemas/book";
 
 const keybindingModeSchema = z.enum(["none", "vim", "emacs"]);
 
@@ -86,6 +87,21 @@ export const shelfLayoutAtom = atomWithStorage<ShelfLayout>(
   "chatbook:shelf-layout",
   "grid",
   validatedStorage(z.enum(["grid", "compact"])),
+  { getOnInit: true },
+);
+
+/**
+ * Which format the shelf opens a title in when it has both a PDF and an EPUB.
+ *
+ * The reader's taste rather than a property of one book, so it is kept across
+ * books and sessions. PDF by default, which is what the shelf opened before
+ * there was a choice (`shelfGroups.ts` の `memberOrder` says how it ranks
+ * against a book being on the shelf already).
+ */
+export const preferredFormatAtom = atomWithStorage<BookFormat>(
+  "chatbook:preferred-format",
+  "pdf",
+  validatedStorage(bookFormatSchema),
   { getOnInit: true },
 );
 

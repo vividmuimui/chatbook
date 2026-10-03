@@ -15,6 +15,7 @@ import type { SaveSelection, SelectionDraft } from "../../hooks/useAskAboutSelec
 import type { BookDetail } from "../../../shared/schemas/book";
 
 const BOOK: BookDetail = {
+  title: null,
   id: "e1",
   fileName: "Workers.epub",
   format: "epub",

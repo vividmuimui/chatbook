@@ -27,6 +27,7 @@ function highlight(overrides: Partial<SelectionHighlight> = {}): SelectionHighli
 
 function book(id: string, selections: SelectionHighlight[]): BookDetail {
   return {
+    title: null,
     id,
     fileName: `${id}.pdf`,
     format: "pdf",

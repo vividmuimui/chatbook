@@ -138,6 +138,7 @@ describe("storeOutlineIfMissing", () => {
 });
 
 const BOOK: BookDetail = {
+  title: null,
   id: PDF_ID,
   fileName: "Cloudflare Workers.pdf",
   format: "pdf",
