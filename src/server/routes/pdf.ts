@@ -15,6 +15,8 @@ import {
   updateSelection,
   renameBook,
   thumbnailObjectKey,
+  ocrObjectKey,
+  OCR_CONTENT_TYPE,
   BOOK_CONTENT_TYPES,
   readFormat,
   THUMBNAIL_CONTENT_TYPE,
@@ -41,6 +43,7 @@ import {
   updateSelectionRequestSchema,
 } from "../../shared/schemas/selection";
 import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
+import { ocrTextSchema, type OcrText } from "../../shared/schemas/ocr";
 import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { storageFailure, type ServiceError } from "../services/serviceError";
@@ -298,6 +301,35 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           outline = checked.data;
         }
 
+        // Optional like the outline, and refused like it when present but
+        // unreadable: a scanned book stored without its OCR lines would open
+        // with pages nobody can select. Sent as a file of its own — it is a
+        // box per line on every page — though a plain field is read too.
+        let ocr: OcrText | undefined;
+        const ocrField = formData.ocr;
+        if (ocrField !== undefined) {
+          const raw = ocrField instanceof File ? await ocrField.text() : ocrField;
+          let parsedOcr: unknown;
+          try {
+            parsedOcr = typeof raw === "string" ? JSON.parse(raw) : null;
+          } catch {
+            parsedOcr = null;
+          }
+          const checked = ocrTextSchema.safeParse(parsedOcr);
+          if (!checked.success) {
+            return c.json(
+              {
+                error: {
+                  code: "VALIDATION_ERROR" satisfies ErrorCode,
+                  message: "Invalid OCR text",
+                },
+              },
+              400,
+            );
+          }
+          ocr = checked.data;
+        }
+
         // An uploaded book goes into the Dropbox folder before it is stored
         // here: Dropbox holds the books, so one that only made it into R2
         // would be a book the folder does not have. A book that is already a
@@ -339,6 +371,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
             arrayBuffer,
             thumbnail,
             outline,
+            ocr,
           },
           idClock,
         );
@@ -677,6 +710,43 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         // R2 leaves the body off when the condition said the file is unchanged
         if (!("body" in object)) return new Response(null, { status: 304, headers });
 
+        return new Response(object.body, { headers });
+      })
+      // The lines OCR read off a scanned book's pages, which the viewer lays
+      // over them as the text layer pdf.js could not build. Served like the
+      // book's bytes: it is stored under the same hash and written only by an
+      // upload of those bytes, so a browser keeps it rather than asking again.
+      .get("/pdf/:pdfId/ocr", async (c) => {
+        const pdf = await drizzle(c.env.DB)
+          .select({ fileHash: pdfs.fileHash })
+          .from(pdfs)
+          .where(eq(pdfs.id, c.req.param("pdfId")))
+          .get();
+        if (!pdf) return c.json({ error: PDF_NOT_FOUND }, 404);
+
+        // Handed to R2 for the same reason as `/file`: a match answers without
+        // the object being read out of storage at all.
+        const object = await c.env.PDF_BUCKET.get(ocrObjectKey(pdf.fileHash), {
+          onlyIf: c.req.raw.headers,
+        });
+        if (!object) {
+          return c.json(
+            {
+              error: {
+                code: "OCR_NOT_FOUND" satisfies ErrorCode,
+                message: "No OCR text stored for this book",
+              },
+            },
+            404,
+          );
+        }
+
+        const headers = {
+          "Content-Type": OCR_CONTENT_TYPE,
+          "Cache-Control": "private, max-age=31536000, immutable",
+          ETag: object.httpEtag,
+        };
+        if (!("body" in object)) return new Response(null, { status: 304, headers });
         return new Response(object.body, { headers });
       })
       // Narrows the highlight list by what was marked and what was said about

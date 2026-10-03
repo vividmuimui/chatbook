@@ -187,6 +187,10 @@ export const bookDetailSchema = z.object({
   // book stored before outlines were kept gets its chapters extracted from
   // the document the reader has open anyway (usePdfDocument).
   hasOutline: z.boolean(),
+  // Whether pages of the book were read by OCR at upload (a scanned book).
+  // The viewer asks `/ocr` for the lines to lay over those pages only when
+  // this says there are any, so a typeset book costs no extra request.
+  hasOcr: z.boolean(),
   selections: z.array(selectionHighlightSchema),
   readingState: readingStateSchema.nullable(),
   title: bookTitleSchema,

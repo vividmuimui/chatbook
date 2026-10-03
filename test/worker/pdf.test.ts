@@ -7,6 +7,7 @@ import { MINIMAL_PDF_BYTES } from "./fixtures/minimalPdf";
 import app from "../../src/server/index";
 import {
   bookObjectKey,
+  ocrObjectKey,
   openPdf,
   pdfObjectKey,
   thumbnailObjectKey,
@@ -39,6 +40,8 @@ async function uploadBook(options: {
   pages?: string[];
   /** Top-level chapters, sent the way the extractor serializes them. */
   outline?: { title: string; pageNumber: number }[];
+  /** What OCR read, sent as the extractor sends it: a JSON file of its own. */
+  ocr?: unknown;
 }): Promise<PdfResponse> {
   const formData = new FormData();
   formData.append(
@@ -48,6 +51,12 @@ async function uploadBook(options: {
   formData.append("fullText", options.pages ? options.pages.join("\f") : "text");
   formData.append("pageCount", String(options.pages?.length ?? 1));
   if (options.outline) formData.append("outline", JSON.stringify(options.outline));
+  if (options.ocr !== undefined) {
+    formData.append(
+      "ocr",
+      new File([JSON.stringify(options.ocr)], "ocr.json", { type: "application/json" }),
+    );
+  }
   if (options.thumbnail) {
     formData.append(
       "thumbnail",
@@ -296,6 +305,7 @@ describe("POST /api/pdf/open", () => {
       pageCount: 209,
       hasThumbnail: false,
       hasOutline: false,
+      hasOcr: false,
       selections: [],
       readingState: null,
       title: null,
@@ -492,6 +502,7 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
       pageCount: 3,
       hasThumbnail: false,
       hasOutline: true,
+      hasOcr: false,
       selections: [],
       readingState: null,
       title: null,
@@ -562,6 +573,7 @@ describe("GET /api/pdf/:pdfId", () => {
       pageCount: 1,
       hasThumbnail: false,
       hasOutline: false,
+      hasOcr: false,
       selections: [],
       readingState: null,
       title: null,
@@ -2182,5 +2194,124 @@ describe("PUT /api/pdf/:pdfId/page-direction", () => {
     expect(await response.json()).toStrictEqual({
       error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
     });
+  });
+});
+
+/** What the extractor sends for a scanned book: the lines OCR read, page by page. */
+const OCR_TEXT = {
+  pages: [
+    {
+      pageNumber: 1,
+      lines: [{ text: "the brass lantern", x: 72, y: 100, width: 200, height: 18 }],
+    },
+  ],
+};
+
+describe("OCR text of a book without its own", () => {
+  it("keeps what OCR read and says the book has it", async () => {
+    const book = await uploadBook({ tag: "ocr-stored", fileName: "scan.pdf", ocr: OCR_TEXT });
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      hasOcr: boolean;
+    };
+    expect(detail.hasOcr).toBe(true);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(await response.json()).toStrictEqual(OCR_TEXT);
+  });
+
+  it("lets the browser keep the OCR text, as it keeps the book's bytes", async () => {
+    const book = await uploadBook({ tag: "ocr-cache", fileName: "scan.pdf", ocr: OCR_TEXT });
+
+    const first = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(first.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
+    const etag = first.headers.get("ETag")!;
+    expect(etag).not.toBeNull();
+    await first.arrayBuffer();
+
+    const second = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`, {
+      headers: { "If-None-Match": etag },
+    });
+    expect(second.status).toBe(304);
+  });
+
+  it("keeps only the shape it knows", async () => {
+    const book = await uploadBook({
+      tag: "ocr-strip",
+      fileName: "scan.pdf",
+      ocr: {
+        engine: "tesseract",
+        pages: [{ ...OCR_TEXT.pages[0], confidence: 91 }],
+      },
+    });
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(await response.json()).toStrictEqual(OCR_TEXT);
+  });
+
+  it("says a book read without OCR has none, and has nothing to serve", async () => {
+    const book = await uploadBook({ tag: "ocr-absent", fileName: "typeset.pdf" });
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      hasOcr: boolean;
+    };
+    expect(detail.hasOcr).toBe(false);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "OCR_NOT_FOUND", message: "No OCR text stored for this book" },
+    });
+  });
+
+  it("answers 404 for a book that is not on the shelf", async () => {
+    const response = await apiFetch("https://example.com/api/pdf/no-such-book/ocr");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "PDF_NOT_FOUND", message: "PDF not found" },
+    });
+  });
+
+  it("follows the latest reading of the same book, dropping OCR it no longer sends", async () => {
+    const first = await uploadBook({ tag: "ocr-reopen", fileName: "scan.pdf", ocr: OCR_TEXT });
+    const again = await uploadBook({ tag: "ocr-reopen", fileName: "scan.pdf" });
+    expect(again.id).toBe(first.id);
+
+    const response = await apiFetch(`https://example.com/api/pdf/${first.id}/ocr`);
+    expect(response.status).toBe(404);
+  });
+
+  it("refuses OCR text it cannot read, rather than storing a book that draws no text", async () => {
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([uniquePdfBytes("ocr-broken")], "broken.pdf", { type: "application/pdf" }),
+    );
+    formData.append("fullText", "text");
+    formData.append("pageCount", "1");
+    formData.append("ocr", new File(["{broken"], "ocr.json", { type: "application/json" }));
+
+    const response = await apiFetch("https://example.com/api/pdf/open", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({
+      error: { code: "VALIDATION_ERROR", message: "Invalid OCR text" },
+    });
+  });
+
+  it("takes the OCR text out of storage when the book is deleted", async () => {
+    const book = await uploadBook({ tag: "ocr-delete", fileName: "scan.pdf", ocr: OCR_TEXT });
+    const fileHash = await storedFileHash(book.id);
+    expect(await env.PDF_BUCKET.head(ocrObjectKey(fileHash))).not.toBeNull();
+
+    await apiFetch(`https://example.com/api/pdf/${book.id}`, { method: "DELETE" });
+
+    expect(await env.PDF_BUCKET.head(ocrObjectKey(fileHash))).toBeNull();
   });
 });

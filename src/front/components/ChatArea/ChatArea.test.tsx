@@ -59,6 +59,7 @@ const BOOK: BookDetail = {
   hasThumbnail: true,
   hasOutline: true,
   pageDirection: "ltr",
+  hasOcr: false,
   selections: HIGHLIGHTS,
   readingState: null,
 };

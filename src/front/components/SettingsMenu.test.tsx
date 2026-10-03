@@ -21,6 +21,7 @@ const BOOK: BookDetail = {
   pageCount: 12,
   hasThumbnail: false,
   hasOutline: false,
+  hasOcr: false,
   pageDirection: "ltr",
   title: null,
   selections: [],

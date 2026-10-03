@@ -6,6 +6,8 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import { pdfjsLib } from "../../lib/pdfjsConfig";
 import { guardTextLayerSelection } from "../../lib/textLayerSelectionGuard";
 import { fitPageScale } from "../../lib/pageScale";
+import { ocrTextContent } from "../../lib/ocrText";
+import type { OcrLine } from "../../../shared/schemas/ocr";
 
 interface PdfPageProps {
   pdfDoc: PDFDocumentProxy;
@@ -23,6 +25,13 @@ interface PdfPageProps {
   /** How far the reader has zoomed in, with 1 meaning the whole page fits. */
   zoom: number;
   /**
+   * The lines OCR read off this page, when it is a scan with no text of its
+   * own. Laid out by pdf.js' own text layer in place of the (empty) text it
+   * would read off the page, so selection, highlights and the quote marks work
+   * on them unchanged. Absent for a page whose text pdf.js can read.
+   */
+  ocrLines?: OcrLine[];
+  /**
    * Called with the page that could not be drawn and why. A cancelled render is
    * not one: it is the normal path when the page or the width changes.
    *
@@ -38,6 +47,7 @@ export function PdfPage({
   containerWidth,
   containerHeight,
   zoom,
+  ocrLines,
   onError,
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -94,7 +104,11 @@ export function PdfPage({
       }
       if (cancelled) return;
 
-      const textContent = await page.getTextContent();
+      // The box each OCR line was measured in is the scale-1 viewport, so that
+      // viewport is what takes the lines back into the page's own space.
+      const textContent = ocrLines
+        ? ocrTextContent(ocrLines, base.transform)
+        : await page.getTextContent();
       if (cancelled) return;
 
       const canvas = canvasRef.current;
@@ -157,7 +171,7 @@ export function PdfPage({
       releaseSelectionGuard.current?.();
       releaseSelectionGuard.current = null;
     };
-  }, [pdfDoc, pageNumber, containerWidth, containerHeight, zoom, setViewports, onError]);
+  }, [pdfDoc, pageNumber, containerWidth, containerHeight, zoom, ocrLines, setViewports, onError]);
 
   return (
     // The margin under the page costs it no size — the scale comes from the

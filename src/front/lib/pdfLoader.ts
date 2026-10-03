@@ -2,6 +2,10 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { BookOutline } from "../../shared/schemas/book";
 import { pdfjsLib, PDFJS_ASSET_OPTIONS } from "./pdfjsConfig";
 import { readOutlineEntries, toStoredOutline } from "./pdfOutline";
+import type { OcrText } from "../../shared/schemas/ocr";
+import { ocrPageText, pagesNeedingOcr } from "./ocrText";
+import { readPagesByOcr, type CreateOcrEngine, type OcrProgress } from "./pdfOcr";
+import { createTesseractEngine } from "./tesseractEngine";
 
 export interface ExtractedPdfData {
   fileName: string;
@@ -11,7 +15,22 @@ export interface ExtractedPdfData {
   fileContentBase64: string; // base64 encoded PDF for server upload
   thumbnail: Blob | null; // cover image for the shelf, null if rendering failed
   outline: BookOutline | null; // top-level chapters for chat excerpts, null if the PDF has none
+  // The lines OCR read off the pages that had no text, null when none were read
+  ocr: OcrText | null;
 }
+
+/** What reading a book can be told and asked to do beyond reading it. */
+export interface ExtractOptions {
+  /** How far OCR has got, for a book whose pages carry no text. */
+  onOcrProgress?: (progress: OcrProgress) => void;
+  /** Stops an OCR run; the read then fails with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Injectable so a test can stand in for Tesseract. */
+  createOcrEngine?: CreateOcrEngine;
+}
+
+/** What the reader is told when even OCR found nothing to read. */
+export const NOTHING_TO_READ = "このPDFからは文字を読み取れませんでした";
 
 /** How wide a cover is drawn for the shelf, whatever the book's format. */
 export const THUMBNAIL_WIDTH = 240;
@@ -67,7 +86,10 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * Load a PDF file, extract text content, compute hash.
  * This is the client-side equivalent of what was originally server-side.
  */
-export async function extractPdfData(file: File): Promise<ExtractedPdfData> {
+export async function extractPdfData(
+  file: File,
+  { onOcrProgress, signal, createOcrEngine = createTesseractEngine }: ExtractOptions = {},
+): Promise<ExtractedPdfData> {
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
 
@@ -89,6 +111,24 @@ export async function extractPdfData(file: File): Promise<ExtractedPdfData> {
     pageTexts.push(pageText);
   }
 
+  // A scanned book: its pages are pictures of text, which pdf.js cannot read.
+  // They are read by OCR instead, and what was read takes their place in the
+  // text, so the server — which never tells the two kinds of book apart —
+  // gets a book it can search and quote like any other.
+  let ocr: OcrText | null = null;
+  const unreadable = pagesNeedingOcr(pageTexts);
+  if (unreadable.length > 0) {
+    const pages = await readPagesByOcr(doc, unreadable, createOcrEngine, {
+      onProgress: onOcrProgress,
+      signal,
+    });
+    for (const page of pages) pageTexts[page.pageNumber - 1] = ocrPageText(page.lines);
+    ocr = { pages };
+    // Said here rather than left to the server's refusal of an empty text,
+    // which reads "Missing fullText" to a reader who chose a picture book.
+    if (pageTexts.every((text) => text.trim() === "")) throw new Error(NOTHING_TO_READ);
+  }
+
   const fileHash = await hashPromise;
   const thumbnail = await renderCoverThumbnail(doc);
   // Swallowed like the cover above: the outline only trims what chat sends,
@@ -108,5 +148,6 @@ export async function extractPdfData(file: File): Promise<ExtractedPdfData> {
     fileContentBase64: bytesToBase64(bytes),
     thumbnail,
     outline,
+    ocr,
   };
 }

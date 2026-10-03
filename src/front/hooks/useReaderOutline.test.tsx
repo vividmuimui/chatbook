@@ -31,6 +31,7 @@ function book(hasOutline: boolean): BookDetail {
     pageCount: 12,
     hasThumbnail: false,
     hasOutline,
+    hasOcr: false,
     pageDirection: "ltr",
     title: null,
     selections: [],

@@ -35,6 +35,7 @@ function book(id: string, selections: SelectionHighlight[]): BookDetail {
     hasThumbnail: true,
     hasOutline: true,
     pageDirection: "ltr",
+    hasOcr: false,
     selections,
     readingState: null,
   };

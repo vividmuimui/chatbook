@@ -178,6 +178,11 @@ vp build   # dist/chatbook/wrangler.json を作り直す。これを飛ばすと
 vp exec wrangler d1 migrations apply chatbook-db --remote
 ```
 
+**OCR（テキストの無い PDF）はマイグレーションを要さない**——行は R2 の `ocr/<sha256>.json` に
+置き、有無も R2 の head で見る（下記「テキストの無い PDF（OCR）」）。そのぶんデプロイには
+`public/tesseract/`（約 17MB の静的アセット）が乗るので、`pnpm install` を済ませた（`postinstall`
+が複製した）チェックアウトから `pnpm run deploy` すること。
+
 秘密は 4 つ（Dropbox を使うならさらに 3 つ。下記「Dropbox 連携」）、`wrangler secret put <名前>` で入れる（`.dev.vars` はローカル専用でデプロイには
 乗らない）: `LLM_API_KEY` / `AUTH_USERNAME` / `AUTH_PASSWORD` / `AUTH_SESSION_SECRET`。
 接続先とモデル（`LLM_BASE_URL` / `LLM_MODEL` / `LLM_WEB_SEARCH_SUPPORTED`）は秘密ではないので、
@@ -199,8 +204,10 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<worker 名>.<アカウント>.
 pdf.js は workerd 上で動かない（native canvas を要求して落ちる）。そのため:
 
 - **テキスト抽出・表紙生成・描画はすべてクライアント**（`src/front/lib/pdfLoader.ts`）
+- **テキストの無い PDF（スキャンした本）の OCR もクライアント**（tesseract.js を Web Worker
+  で。下記「テキストの無い PDF（OCR）」）
 - クライアントが抽出済みの `fullText` / `pageCount` / 表紙 webp / 目次（トップレベル章の
-  JSON、無い本は省略）を **multipart** で
+  JSON、無い本は省略）/ OCR の行（OCR した本だけ。JSON のファイル）を **multipart** で
   `POST /api/pdf/open` に送り、Worker は保存だけを担う
 
 サーバ側で PDF を解析しようとしないこと。
@@ -210,7 +217,7 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 | 置き場所          | 内容                                                                                                                                                                  |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`                                                                                      |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                        |
 | Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                            |
 
 **チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
@@ -223,7 +230,7 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 本の会話は構造的に混ざらない。
 
 同一性は **内容の SHA-256** で判定する。同じ本を開き直すと同じ `pdfs.id` を返しつつ、
-`fileName` / `fullText` / `pageCount` / `outline` を最新の抽出結果で**上書き**する
+`fileName` / `fullText` / `pageCount` / `outline` / OCR の行を最新の抽出結果で**上書き**する
 (`src/server/services/pdfService.ts` の `openPdf`)。ここを「既存レコードをそのまま返す」に
 戻すと、古いメタデータが残り続ける不具合になる。**`outline` だけは、抽出が目次を持って
 こなかったときに保存済みのものを残す**——同じバイト列なので、保存済みの目次は前回の抽出が
@@ -300,7 +307,11 @@ immutable` と R2 の `httpEtag` を返し、`If-None-Match` は `onlyIf` で R2
   を経る往復ぶん、download の開始が遅れる
 - **応答に使わない列を select しない**。`/file` が要るのは `filePath` と `fileName` だけで、
   行ごと引くと `full_text`（実書籍で 213KB）まで D1 から読む。`readPdf` のハイライトと表紙の
-  head は互いに独立なので `Promise.all` で並べる
+  head は互いに独立なので `Promise.all` で並べる（OCR の行の有無を見る head もそこに並ぶ）
+- **OCR の行（`GET /pdf/:pdfId/ocr`）は OCR した本でしか取りに行かない**。本の `hasOcr` が
+  立っているときだけ `useOcrText` が SWR のキーを作るので、テキストのある本は 1 往復も
+  増えない。`/file` と同じく `immutable` + ETag で、アップロード直後は `useOpenPdfBook` が
+  キャッシュに先に置く（下記「テキストの無い PDF（OCR）」）
 
 **効かなかったもの**: `pdf.worker`（gzip 486KB）の先読み。`modulepreload` は destination が
 script なので worker が同じファイルをもう一度落とし、`rel="preload" as="worker"` は Chromium
@@ -311,7 +322,7 @@ script なので worker が同じファイルをもう一度落とし、`rel="pr
 
 front と server が交わす形は `src/shared/schemas/` に zod スキーマとして 1 箇所だけ置き、
 型は `z.infer` で導出する（`error.ts` / `book.ts` / `bookSearch.ts` / `config.ts` / `selection.ts` /
-`citation.ts` / `chat.ts` / `sse.ts`）。front・server どちらにも同じ概念の型を書かないこと。
+`citation.ts` / `chat.ts` / `sse.ts` / `ocr.ts`）。front・server どちらにも同じ概念の型を書かないこと。
 
 - **サーバの受け口**は `src/server/routes/validation.ts` の `validate(target, schema)`
   （`@hono/zod-validator` のラッパ）を通す。素の `zValidator` は zod のレポートをそのまま
@@ -406,6 +417,8 @@ union + `satisfies` で固定する。
 | 失敗                                         | 受け皿                                                | 出る場所                                                                             |
 | -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                     |
+| 追加する本の OCR（中止は失敗に数えない）     | `ShelfPage` の `actionError`（`importFailed`）        | 本棚上部の赤い枠                                                                     |
+| OCR の行の取得                               | `useOcrText` の `error`                               | ビューア上部（ページは描く。文字が選べないことを言う）                               |
 | Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
 | Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
 | Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
@@ -432,7 +445,7 @@ union + `satisfies` で固定する。
 
 #### 意図的に握りつぶす
 
-次の 12 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
+次の 13 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
 いれば出す）。いずれも理由をコメントに書いてあり、**理由を書かずに握りつぶしを増やさない
 こと**:
 
@@ -450,6 +463,7 @@ union + `satisfies` で固定する。
 | `useReadingStateSync.ts` の離脱時の flush                          | 送る先の画面がもう無い（本棚へ戻る・タブを閉じる）                                                               |
 | `HighlightListPanel.tsx` の削除失敗（一覧を離れていたとき）        | 出す場所がもう無い（チャットを開くと一覧ごと畳まれる）。消えなかったハイライトはそこに在るので、戻れば試し直せる |
 | `useServerConfig.ts` の取得失敗                                    | Web 検索は「あり」と仮定して進む。送ってもサーバが落とす                                                         |
+| `pdfOcr.ts` の Tesseract の後始末（`terminate`）2 箇所             | 捨てる Worker を止め損ねても、本（または読者が頼んだ中止）はそれに左右されない                                   |
 
 **報告しないためではなく報告する主体が別**という catch が 2 つある。`SelectionPopover` の
 `onSubmit` / `onMark` を囲むもの（`runStore`。質問とマークの失敗は `useAskAboutSelection` が
@@ -472,7 +486,8 @@ union + `satisfies` で固定する。
 ### pdf.js のランタイムアセット
 
 `scripts/copy-pdfjs-assets.mjs`（`postinstall` で実行）が `cmaps` と `standard_fonts` を
-`public/pdfjs/` に複製する。`src/front/lib/pdfjsConfig.ts` の `PDFJS_ASSET_OPTIONS` で
+`public/pdfjs/` に複製する（同じ `postinstall` で `scripts/copy-tesseract-assets.mjs` が OCR の
+アセットを `public/tesseract/` に複製する。下記「テキストの無い PDF（OCR）」）。`src/front/lib/pdfjsConfig.ts` の `PDFJS_ASSET_OPTIONS` で
 `cMapUrl` / `standardFontDataUrl` を渡す。
 
 **`cMapUrl` が欠けると、出版された日本語 PDF が白紙になる**——CID-keyed フォントを描くには
@@ -505,6 +520,112 @@ be iterated…」**（ネイティブの iterator を消してから本を開く
 あるので、消さずに走る他の E2E では配線の欠落が隠れる）。**legacy ビルドの選択だけは
 どのランナーも守れない**——jsdom は Node が、E2E は desktop Chromium が新しい ECMAScript API
 を持つため、既定ビルドへ戻しても素通しする。そこは古い端末の実機だけが検出する。
+
+### テキストの無い PDF（OCR）
+
+スキャンした本はページが文字の画像で、pdf.js はテキストを 1 文字も読めない。以前は `fullText` が
+空のままサーバの 400 で拒まれていた。今は**取り込み時にブラウザ内の Tesseract（tesseract.js、
+日本語＋英語）で文字を起こし**、起こした文字を `fullText` に、行ごとの箱を R2 に置く。サーバは
+形式を区別しないので、チャットの抜粋・出典・`/locate`・本文検索はそのまま動く。
+
+| 何を                                                      | どこが                                                                                 |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| OCR が要るか・行の正規化・箱の換算・text content への変換 | `src/front/lib/ocrText.ts`（純関数。`ocrText.test.ts`）                                |
+| ページを 1 枚ずつ描いて読む・進捗・中止                   | `src/front/lib/pdfOcr.ts` の `readPagesByOcr`（エンジンは `OcrEngine` で注入）         |
+| Tesseract の起動（動的 import）                           | `src/front/lib/tesseractEngine.ts`                                                     |
+| 取り込みへの組み込み                                      | `pdfLoader.ts` の `extractPdfData`（`ExtractOptions`）→ `useOpenPdfBook` → `ShelfPage` |
+| 保存・配信                                                | `routes/pdf.ts` の `POST /pdf/open`（`ocr` フィールド）と `GET /pdf/:pdfId/ocr`        |
+| front と server が交わす形                                | `src/shared/schemas/ocr.ts`（`ocrTextSchema`）                                         |
+| ページへの重ね方                                          | `PdfViewer` が `useOcrText` で読み、`PdfPage` の `ocrLines` へ渡す                     |
+| アセットの複製                                            | `scripts/copy-tesseract-assets.mjs`（`postinstall`）                                   |
+
+- **判定はページの非空白文字数**（`pagesNeedingOcr`）。`MIN_PAGE_TEXT_CHARS` = 8 未満のページを
+  「文字が無い」とし、**それが全ページの過半数のときだけ** OCR する。そのとき読むのは文字の無い
+  ページだけで、pdf.js が読めるページは自分のテキストのまま。0 ではなく 8 なのは、スキャン本には
+  ノンブルやスキャナが残したゴミ文字だけのページがあるため。過半数なのは、図版ページが数枚ある
+  普通の本を数分の OCR に巻き込まないため（図版ページは選ぶ文字が無いので失うものも無い）
+- **OCR しても全ページが空なら取り込みを止める**（`NOTHING_TO_READ`。「このPDFからは文字を
+  読み取れませんでした」）。サーバの 400（`Missing fullText`）は残っていて、読者がそれを見る
+  ことは無い
+- **1 ページずつ描いて読み、canvas を空にしてから次へ**（`readPagesByOcr`）。倍率は
+  `OCR_RENDER_SCALE` = 2（10pt の本文が約 28px になり、日本語のモデルがよく読む大きさ）で、
+  長辺を `MAX_OCR_RENDER_SIDE` = 3000px で頭打ちにする（ポスター大のページで数百 MB の canvas を
+  作らない）。canvas は `width = height = 0` にして画素を手放し、`page.cleanup()` を呼ぶ
+- **行単位で保存する**（単語単位ではない）。保存する箱はスケール 1 の viewport 座標（左上原点、
+  `/Rotate` 適用後）で、ページをどの大きさで描いても同じ数値で重なる。行の文字は
+  `normalizeOcrLine` が整える——**Tesseract は日本語の 1 文字ごとに空白を入れる**ので、和文の
+  隣の空白を落とす（引用やコピーが「日 本 語」になるのを防ぐ。英単語の間は 1 つに畳んで残す）。
+  ページの本文は行を `\n` で繋ぐ
+- **ページへの重ね方は pdf.js 公式の `TextLayer` に任せる**（`ocrTextContent` が OCR の行を
+  pdf.js の text content の形に着せ替え、`PdfPage` はそれを `getTextContent()` の代わりに
+  渡す）。自前で span を並べないので、`.textLayer` の CSS 契約（`--font-height` / `--scale-x`）・
+  `data-page-number` / `data-text-item-index` の付与・`endOfContent` のガード・
+  `pdfTextMatcher` / `locateQuoteInSpans` がそのまま効く。各行の transform は
+  スケール 1 の viewport の逆行列で**ページ自身の空間**に戻す（TextLayer はページ空間で配置し、
+  回転はコンテナに CSS で掛けるため）。行の幅は箱の幅を `width` に渡し、TextLayer が span を
+  その幅に伸ばす（代わりのフォント `sans-serif` の字幅に引きずられない）。ベースラインは
+  `OCR_ASCENT` = 0.8（pdf.js 自身の既定値）で置くので、span の上端は箱の上端から行の高さの
+  1 割程度ずれうる
+- **割り切り**: 選択の粒度は行の中で文字幅が均等という近似（`--scale-x` で伸ばすだけ）。和文は
+  ほぼ等幅なので合うが、欧文の行は語の途中で数文字ずれうる。**縦書きは読めない**（`jpn` の横書き
+  モデルだけを使い、`jpn_vert` は持たない）。手書き・低解像度のスキャンの精度は Tesseract 次第
+- **アセットはすべて自前で配る**（tesseract.js の既定は jsdelivr）。`postinstall` が
+  `public/tesseract/`（gitignore 済み）へ複製する: Worker（`worker.min.js`）、コアは LSTM 版の
+  3 つ（`tesseract-core-{,simd-,relaxedsimd-}lstm.wasm.js`。ブラウザの WebAssembly 対応で
+  Worker が 1 つ選ぶ）、言語モデルは `@tesseract.js-data/{jpn,eng}` の `4.0.0_best_int`
+  （gzip で 2MB と 3MB）。理由は 3 つ——**本の読み取りが第三者の CDN の稼働に左右されない**、
+  **Worker・コア・モデルの版がビルドしたものと必ず揃う**、**E2E がネットワーク無しで本物の OCR を
+  回せる**。代償はデプロイする静的アセットが約 17MB 増えること（OCR する本を足すときにしか
+  取りに来ない。Workers の 1 ファイル 25MiB 上限の内側）。float 版のモデル（16MB / 11MB）は
+  印刷された本では読みが変わらないので配らない。モデルは Tesseract 自身が IndexedDB に
+  キャッシュする。CSP は張っていないので制約は無い（張るなら `worker-src blob:` と
+  `wasm-unsafe-eval` が要る——Worker は blob から `importScripts` で起動する）
+- **tesseract.js は `tesseractEngine.ts` の中で動的 import する**。OCR する本を足さない読者は
+  ライブラリ（17KB のチャンク）すら読まない
+- **進捗と中止**: 本棚の覆いに `recognizing` の段階が加わり「文字を読み取り中 12/200 ページ」と
+  数える（エンジンの読み込み中は 0/N。最後のページを読み終えたら「本を読み取り中...」へ戻す——その先に中止で止まるものは無い）。この段階の間だけ覆いに「中止」ボタンが出て、押すと
+  `AbortController` が `readPagesByOcr` を止める——読みかけのページも待たない
+  （`untilAborted`）。Tesseract の Worker は `terminate` し、エンジンの起動中に中止したら
+  起動し終えたところで止める。中止は `AbortError` として `useOpenPdfBook` の結果に載り、
+  `ShelfPage` の `importFailed` は**名前で中止を見分けて何も言わない**（読者が頼んだことなので）。
+  アップロードは始まっていないので何も保存されない。`asError` が `DOMException` の名前を保つのは
+  この見分けのため
+- **保存は R2 の `ocr/<sha256>.json`**（D1 ではない。1 冊で 1MB 程度になり、読むのはビューア
+  だけでクエリはしない）。`POST /pdf/open` の任意の `ocr` フィールド（JSON のファイル）を
+  `ocrTextSchema` で検証して書き、**壊れていれば 400**（`Invalid OCR text`。文字の選べない
+  スキャン本を黙って作らない）。**同じ本を OCR 無しで取り込み直したら消す**（他のメタデータと
+  同じく最新の抽出が勝つ）。本の削除でも消す
+- **D1 に列は足していない**（マイグレーション無し）。本が OCR の行を持つかは `readPdf` が R2 の
+  head で見て `hasOcr` として返す（表紙の head と同じ `Promise.all` に並ぶので往復は増えない）。
+  アップロード直後の先充填は抽出結果から正確に立てる
+- **ビューアは `hasOcr` のときだけ `GET /pdf/:pdfId/ocr` を読む**（`useOcrText`。
+  `useSWRImmutable`）。行は本のハッシュで保存され同じバイト列のアップロードしか書かないので、
+  `/file` と同じ `private, max-age=31536000, immutable` + ETag（`onlyIf` で 304）。
+  **アップロード直後は `useOpenPdfBook` が `ocrKey(id)` に先に置く**ので取りに行かない。
+  行が届く前に描いたページはテキストレイヤーが空のまま描かれ、届いたら描き直す（`ocrLines` が
+  `PdfPage` の effect の依存に入っている）。取得に失敗したらビューア上部に出す——ページは
+  描けるので読めるが、選択も印も効かない
+- **既に取り込まれたテキストの無い本は無い**前提（以前は 400 で取り込めなかった）。後追いで
+  OCR する口は作っていない
+- **同じスキャン本を取り込み直すと OCR もやり直す**（数分）。取り込み済みかをサーバに先に聞く
+  口は無い
+
+守っているテストは次のとおり:
+
+| 何を                                                   | どのテスト                                                                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 判定・正規化・箱の換算・text content（回転を含む）     | `src/front/lib/ocrText.test.ts`                                                                                                             |
+| 1 ページずつ・進捗・canvas の解放・中止・起動前の中止  | `src/front/lib/pdfOcr.test.ts`（偽のドキュメントと偽のエンジン）                                                                            |
+| `ocr` フィールドの送り方・先充填・中止と進捗の受け渡し | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                                   |
+| 覆いの「文字を読み取り中 N/M ページ」・中止            | `src/front/pages/ShelfPage.test.tsx`                                                                                                        |
+| 取得失敗の表示・テキストのある本では取りに行かない     | `src/front/components/PdfViewer/PdfViewer.test.tsx`                                                                                         |
+| 保存・`hasOcr`・キャッシュ・strip・上書き・400・削除   | `test/worker/pdf.test.ts` の `OCR text of a book without its own`                                                                           |
+| 本物の Tesseract で読み、検索の印がその行に付く        | `e2e/chatbook.spec.ts`「a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page」（desktop） |
+
+E2E は行の位置も見る——検索の印が行と同じ高さにあることと、1 行目の span がページ画像の
+インクの位置（左 140px・上 160px / 1240×1754px）に重なること。`PdfPage` で `ocrLines` を
+無視させると page 1 の span が現れず落ちることを確かめてある。**実際のスキャン本（数百ページ、
+傾き・裏写り・縦書き混じり）での精度と所要時間は測っていない**。
 
 ### テキスト選択とハイライト
 
@@ -1117,6 +1238,10 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
   `importing`（`ShelfPage` の state。タイルの `disabled`・ドラッグとドロップの無視・
   この覆いの 3 つが読む）は `reading` / `uploading` + 割合 / `storing` の 3 状態で、
   文言は `importWording` が作る——「本を読み取り中...」「アップロード中 45%」「保存中...」。
+  （Dropbox の本は手前に `downloading`、テキストの無い PDF は `reading` と `uploading` の間に
+  `recognizing`「文字を読み取り中 12/200 ページ」が入る。**「中止」ボタンが出るのは
+  `recognizing` の間だけ**——数分かかりうるのはそこだけで、止まる口を持つのもそこだけ。
+  上記「テキストの無い PDF（OCR）」）
   **`uploading` → `storing` は割合が 1 に達したことから `ShelfPage` が自分で決める**
   （送り終えたことを報せる合図は無い）。**ブラウザが本体の大きさを言わないときは割合が
   出ない**ので、その環境では覆いが直前の文言のまま送信が終わるのを待つ。
@@ -1134,13 +1259,14 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 
 守っているテストは次のとおり:
 
-| 何を                                             | どのテスト                                                                                   |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                           |
-| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                    |
-| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                              |
-| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                         |
-| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」 |
+| 何を                                             | どのテスト                                                                                                                    |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                                                            |
+| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                     |
+| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                                                               |
+| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                                                          |
+| OCR の段階の覆いと中止                           | 同上（「counts the pages up…」「takes the cancel button away…」「stops reading a book by OCR…」「offers no way to cancel…」） |
+| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」                                  |
 
 **E2E にドロップのテストは無い**（Playwright からファイルのドラッグを合成できない）。
 ドロップの経路を守っているのは jsdom だけ。
@@ -1955,7 +2081,7 @@ SWR の使い方で押さえるところ:
   `atomFamily` を使わないのは非推奨で本を開くたびに警告を出すため
 - **テストの差し替え口は 2 つある**。取得そのものを差し替えるなら DI 引数——
   `useBook(pdfId, loadBook)` / `useHighlights(pdfId, loadBook, deleteHighlight, updateSelection)` /
-  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/
+  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/ `extractPdfData(file, { createOcrEngine })`（OCR のエンジン。テストは `pdfOcr.ts` の `OcrEngine` を偽物で満たす）/
   `usePdfDocument(pdfId, book, fetchFn, buildDocument)`（**アップロードの手渡しだけは DI
   ではない**——モジュールの 1 枠なので、テストは `rememberUploadedFile` で置き
   `forgetUploadedFile` で片付ける。SWR の既定キャッシュと同じ扱い）/
@@ -1969,8 +2095,10 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
   クロージャで、割合が 1 に達したら `storing` へ切り替える写像を持つのはそこ 1 箇所。
   **アップロードだけは `fetch` ではなく XHR なので、`vi.stubGlobal("fetch", ...)` では
   止められない**——`src/test/fakeUpload.ts` の `fakeUpload()` が作った `request` を返す関数を
-  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める）/
-  `PdfViewer({ measureSelection, saveSelection })` /
+  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める。`extract` は
+  `(file, { signal, onOcrProgress })` を受け取るので、偽の `extract` がそれを呼んで OCR の
+  進捗と中止を演じる）/
+  `PdfViewer({ measureSelection, saveSelection, loadOcrText })`（`loadOcrText` は `useOcrText(pdfId, hasOcr, load)` へ渡る）/
   `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights })` がその口。`measureSelection` は
   ポップオーバーを開く唯一の入口で、**実 DOM 選択と pdf.js が描いたページを両方要求する
   経路（質問・保存失敗の表示・二重送信の防止）を jsdom で動かすための seam**。
@@ -2102,6 +2230,8 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 デプロイされ終わる」までで、その間に届いた回答が 1 件保存できなくなる（`CHAT_SAVE_FAILED` の帯が
 出る。データは失われない）。順番は変えられない——先にコードを出すと `pdf_id` 列が無くて同じ
 ように落ちる。E2E は Playwright が起動時に適用するので影響を受けない。
+OCR の `hasOcr` は列ではなく R2 の head なので、ここに足すマイグレーションは無い（上記
+「テキストの無い PDF（OCR）」）。
 
 キーバインド（Vim / Emacs）は `src/front/lib/keybindings.ts` の `resolveAction` に
 DOM 非依存の純粋関数として実装。`gg` や `C-c t` の2ストロークは `pending` プレフィックスで表現し、
@@ -2308,6 +2438,15 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   章より先に節のページを置くと生成が落ちる、表紙に空白を入れると span が増えて選択テストの
   前提が崩れる、といった制約がそこにある。フォントは `e2e/fixtures/.cache/` へ自動ダウンロード
   （gitignore 済み）。同じ pdfkit・同じフォントなら出力はバイト単位で再現する
+- **テキストの無い（画像だけの）fixture がある**（`e2e/fixtures/scanned-book.pdf`。中身は
+  `e2e/fixtures/scannedBookManifest.ts`、作り直しは `node e2e/fixtures/generateScannedBook.ts`）。
+  各ページの行を HTML で組み、E2E が入れてある Chromium で撮った PNG をページ全面に貼るだけで、
+  テキスト演算子は 1 つも書かない——pdf.js が 1 文字も読めないスキャン本と同じ形。**グリフは
+  生成した機械のフォント**（和文は Hiragino / Noto CJK）なので、別の機械で作り直すと画素が
+  変わりうる（読むのは OCR だけなので、検索語が読める限り問題ない）。検索語は英語の 1 語
+  （`SCANNED_SEARCH_WORD`）で、2 ページ目にしか無い。**E2E はここで本物の Tesseract を回す**
+  （アセットは自前配信なのでネットワークは要らない。手元では 2 ページで数秒）。ファイル名を
+  `test-book` にしないこと（本棚で同じ題名にまとまる）
 - **CMap を要求する 2 冊目の fixture がある**（`e2e/fixtures/cid-font-book.pdf`。
   `e2e/chatbook.spec.ts` の `a book with CID-keyed fonts renders without asking for a CMap`
   が `CID_FONT_BOOK` として読む）。`test-book.pdf` は使うグリフをすべて埋め込むので

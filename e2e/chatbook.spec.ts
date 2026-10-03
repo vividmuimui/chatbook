@@ -17,6 +17,11 @@ import {
   EPUB_TITLE,
   LINKED_ANCHOR,
 } from "./fixtures/testEpubManifest.ts";
+import {
+  SCANNED_FIXTURE_FILE_NAME,
+  SCANNED_SEARCH_PAGE,
+  SCANNED_SEARCH_WORD,
+} from "./fixtures/scannedBookManifest.ts";
 // Taken from the viewer rather than copied: a wait written as a number here
 // would stay put if the viewer's own wait grew, and quietly stop covering it.
 import { SELECTION_SETTLE_MS } from "../src/front/hooks/useSettledSelection.ts";
@@ -325,6 +330,68 @@ test("a book with CID-keyed fonts renders without asking for a CMap", async ({ p
 
   expect(await inkRatio(page)).toBeGreaterThan(0.001);
   expect(fontErrors).toStrictEqual([]);
+});
+
+/**
+ * A book of scans: every page is a picture of its lines, so pdf.js reads no
+ * text off it and the shelf has to read it by OCR before it can be stored.
+ * Drawn by `fixtures/generateScannedBook.ts` and committed alongside it.
+ */
+const SCANNED_BOOK = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  SCANNED_FIXTURE_FILE_NAME,
+);
+
+test("a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page", async ({
+  page,
+}) => {
+  // Real Tesseract, served from the app: the engine and two language models
+  // load, then each page is read — tens of seconds on a slow machine.
+  test.setTimeout(240000);
+  await logIn(page);
+
+  await page.goto("/");
+  await page.setInputFiles('input[type="file"]', SCANNED_BOOK);
+  await expect(page.getByRole("status")).toContainText("文字を読み取り中", { timeout: 60000 });
+  await expect(page).toHaveURL(/\/books\//, { timeout: 180000 });
+  // The spans of page 1 carry its number only once the text layer — built
+  // from the OCR lines, since the page has none of its own — is drawn
+  await expect(drawnPage(page, 1).first()).toBeVisible({ timeout: 60000 });
+
+  await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
+  const search = page.getByRole("region", { name: "本文の検索" });
+  await search.getByLabel("本文から探す語").fill(SCANNED_SEARCH_WORD);
+  await search.getByLabel("本文から探す語").press("Enter");
+
+  await expect(search.getByRole("status")).toHaveText("1件", { timeout: 30000 });
+  await search.getByRole("button", { name: new RegExp(`^p\\.${SCANNED_SEARCH_PAGE}`) }).click();
+
+  await expect(drawnPage(page, SCANNED_SEARCH_PAGE).first()).toBeVisible({ timeout: 60000 });
+  // The mark is placed by finding the word in the page's spans: it lands only
+  // if the OCR lines were laid out as the page's text layer
+  await expect(page.locator(".citedPassage").first()).toBeVisible({ timeout: 30000 });
+  const tops = await markAndLineTops(page, SCANNED_SEARCH_WORD);
+  expect(tops).not.toBeNull();
+  expect(Math.abs(tops!.mark - tops!.line)).toBeLessThan(6);
+
+  // And the line sits over its ink: the first line of a page is set 160px down
+  // and 140px in on the 1240×1754 picture (`generateScannedBook.ts`), which a
+  // box read off the image but placed in the wrong space would miss by far
+  const where = await page.evaluate((pageNumber) => {
+    const canvas = document
+      .querySelector(`[data-page-container="${pageNumber}"] canvas`)!
+      .getBoundingClientRect();
+    const line = document
+      .querySelector(`.textLayer span[data-page-number="${pageNumber}"]`)!
+      .getBoundingClientRect();
+    return {
+      left: (line.left - canvas.left) / canvas.width,
+      top: (line.top - canvas.top) / canvas.height,
+    };
+  }, SCANNED_SEARCH_PAGE);
+  expect(Math.abs(where.left - 140 / 1240)).toBeLessThan(0.02);
+  expect(Math.abs(where.top - 160 / 1754)).toBeLessThan(0.03);
 });
 
 /**

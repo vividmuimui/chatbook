@@ -10,8 +10,9 @@
   },
   "type": "module",
   "scripts": {
-    "postinstall": "wrangler types && vp fmt worker-configuration.d.ts --write && node scripts/copy-pdfjs-assets.mjs",
+    "postinstall": "wrangler types && vp fmt worker-configuration.d.ts --write && node scripts/copy-pdfjs-assets.mjs && node scripts/copy-tesseract-assets.mjs",
     "pdfjs:assets": "node scripts/copy-pdfjs-assets.mjs",
+    "tesseract:assets": "node scripts/copy-tesseract-assets.mjs",
     "deploy": "vp build && wrangler deploy",
     "deploy:dry-run": "vp build && wrangler deploy --dry-run",
     "cf:preview": "vp build && wrangler dev",
@@ -24,6 +25,8 @@
   },
   "dependencies": {
     "@hono/zod-validator": "^0.9.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/jpn": "^1.0.0",
     "drizzle-orm": "^0.45.2",
     "fflate": "^0.8.3",
     "highlight.js": "^11.11.1",
@@ -41,6 +44,7 @@
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "swr": "^2.4.2",
+    "tesseract.js": "^7.0.0",
     "ulid": "^3.0.2",
     "zod": "^4.4.3"
   },

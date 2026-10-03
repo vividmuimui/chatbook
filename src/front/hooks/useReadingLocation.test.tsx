@@ -44,6 +44,7 @@ const BOOK: BookDetail = {
   hasThumbnail: true,
   hasOutline: true,
   pageDirection: "ltr",
+  hasOcr: false,
   selections: [highlight("a1", A_PASSAGE, 12), highlight("a2", "V8 isolate", 30)],
   readingState: null,
 };
