@@ -2814,3 +2814,119 @@ test("an EPUB stays on the words being read when the pane changes width", async 
 
   await expect(chapterParagraph(page, reading)).toBeInViewport();
 });
+
+/**
+ * Switch the reader to scrolling through the pages, from the menu a PDF has it
+ * in. The choice is the reader's habit, kept in this browser context only.
+ */
+async function readByScrolling(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "設定" }).click();
+  await page.getByRole("radio", { name: "スクロール" }).click();
+  await page.keyboard.press("Escape");
+  const pane = page.locator('[data-reading-mode="scroll"]');
+  await expect(pane).toBeVisible();
+  return pane;
+}
+
+/**
+ * Scroll the column so the top of page `pageNumber` is a little way under the
+ * top of the view. The pages are stacked at one height (every page of the
+ * fixture is A4), so where one starts is a share of the column.
+ */
+async function scrollToPage(pane: Locator, pageNumber: number, pageCount: number) {
+  await pane.evaluate(
+    (el, [n, count]) => {
+      const stack = el.firstElementChild as HTMLElement;
+      const slot = stack.offsetHeight / count;
+      el.scrollTop = stack.offsetTop + slot * (n - 1) + 40;
+    },
+    [pageNumber, pageCount] as const,
+  );
+}
+
+test("reads a PDF by scrolling: the page follows the scroll into the address, and a reload comes back to it", async ({
+  page,
+}) => {
+  await openTestBook(page);
+  const pane = await readByScrolling(page);
+
+  // Every page down one column, but only those near the one being read drawn
+  await expect(drawnPage(page, 1).first()).toBeInViewport();
+  await expect(drawnPage(page, 2).first()).toBeAttached();
+  await expect.poll(() => page.locator("canvas.block").count()).toBeLessThan(PAGE_COUNT);
+
+  await scrollToPage(pane, 4, PAGE_COUNT);
+  await expect(page).toHaveURL(/[?&]page=4(&|$)/);
+  await expect(drawnPage(page, 4).first()).toBeInViewport();
+  // Far behind now, so no longer drawn
+  await expect(drawnPage(page, 1)).toHaveCount(0);
+
+  // The edges are only more of the page: nothing turns there
+  const box = (await pane.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 10, box.y + box.height / 2);
+  await expect(page).toHaveURL(/[?&]page=4(&|$)/);
+
+  // The keys that turn a page scroll to the next one
+  await page.keyboard.press("l");
+  await expect(page).toHaveURL(/[?&]page=5(&|$)/);
+  await expect(drawnPage(page, 5).first()).toBeInViewport();
+
+  // Never two pages side by side, even with the chat folded away
+  await page.getByRole("button", { name: "チャットを隠す" }).click();
+  await expect(drawnPage(page, 5).first()).toBeInViewport();
+  const lefts = await page
+    .locator("[data-page-container]")
+    .evaluateAll(
+      (els) => new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size,
+    );
+  expect(lefts).toBe(1);
+
+  await page.reload();
+  await expect(drawnPage(page, 5).first()).toBeInViewport({ timeout: 60000 });
+});
+
+test("an EPUB read by scrolling runs down its chapter and on into the next, and its contents scroll to a section", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  await page.getByRole("button", { name: "表示の設定" }).click();
+  // The choices are drawn as a segmented control: the label takes the click
+  await page
+    .locator("label")
+    .filter({ has: page.getByRole("radio", { name: "スクロール" }) })
+    .click();
+  await page.keyboard.press("Escape");
+  const paper = page.locator('article[data-reading-mode="scroll"]');
+  await expect(paper).toBeVisible();
+
+  const outline = page.getByRole("navigation", { name: "目次" });
+  await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
+  await expect(chapterHeading(page, 1)).toBeInViewport();
+  // No screens to count while scrolling
+  await expect(epubStepper(page)).not.toContainText("この章");
+
+  // Down the column to the chapter's end, and on into the next
+  const closing = chapterParagraph(page, EPUB_CHAPTERS[1].paragraphs.at(-1)!);
+  await expect(closing).not.toBeInViewport();
+  await paper.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect(closing).toBeInViewport();
+  await page.getByRole("button", { name: "次の章を読む", exact: true }).click();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+
+  // A section's entry scrolls to it, and the contents light it
+  const [first, second] = EPUB_CHAPTERS[2].sections!;
+  await outline.getByRole("button", { name: new RegExp(second.heading) }).click();
+  await expect(page.locator(`#epub-${second.id}`)).toBeInViewport();
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${second.heading}`),
+  );
+
+  // Scrolling back up to the first section is reading it again
+  await page.locator(`#epub-${first.id}`).evaluate((el) => el.scrollIntoView());
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${first.heading}`),
+  );
+  await expect(epubStepper(page)).toContainText(first.heading);
+});

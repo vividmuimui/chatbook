@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import { currentPageAtom } from "./pdfAtom";
-import { turnEpub, type EpubPlace } from "../lib/epubPaging";
+import { turnChapter, turnEpub, type EpubPlace } from "../lib/epubPaging";
 import type { PageTurn } from "../lib/touchNavigation";
 import type { EpubProgress } from "../lib/epubProgress";
 
@@ -24,6 +24,21 @@ export interface EpubScreen extends EpubPlace {
 }
 
 export const epubScreenAtom = atom<EpubScreen>({ page: 0, screen: 0, count: 1 });
+
+/**
+ * A chapter on or back, to its top: how the chevrons turn a book read by
+ * scrolling, which has no screens to turn — the scroll moves through the
+ * chapter, and these move between them.
+ */
+export const turnEpubChapterAtom = atom(
+  null,
+  (get, set, { turn, pageCount }: { turn: PageTurn; pageCount: number }) => {
+    const to = turnChapter(get(currentPageAtom), turn, pageCount);
+    if (to === null) return;
+    set(epubScreenAtom, { page: to, screen: 0, count: 1 });
+    set(currentPageAtom, to);
+  },
+);
 
 /**
  * Where the reader is in the book, said the way a reader says it — how far into

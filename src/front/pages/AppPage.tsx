@@ -300,7 +300,11 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
               a phone keeps on screen, and it has room for two icons. A PDF has
               none — its type is part of its pages. */}
           {book?.format === "epub" && <EpubTypographyMenu />}
-          <SettingsMenu pdfId={pdfId} />
+          <SettingsMenu
+            pdfId={pdfId}
+            // An EPUB offers the same choice in its 「Aa」 menu instead
+            readingModeOffered={book !== undefined && book.format !== "epub"}
+          />
         </div>
       </header>
 

@@ -135,6 +135,95 @@ function screensOfCharacters(root: Element, page: Element, viewWidth: number) {
 }
 
 /**
+ * The first character at or after `from` that is drawn at all.
+ *
+ * The search for a place stops on the white space before the first character
+ * it wants — between two paragraphs, say, which is drawn nowhere — and a place
+ * on that white space counts as before the heading that follows it, which is
+ * where an entry of the contents starts: the section would not count as reached.
+ */
+function firstDrawn(total: number, valueAt: (offset: number) => number | null, from: number) {
+  for (let i = from; i < total; i++) {
+    if (valueAt(i) !== null) return i;
+  }
+  return total;
+}
+
+/**
+ * The box each character of a chapter is drawn in, relative to the page
+ * element, asked of the layout one character at a time — what a chapter read
+ * by scrolling, down one column, is placed by.
+ */
+function boxesOfCharacters(root: Element, page: Element) {
+  const nodes = textNodesOf(root);
+  const starts: number[] = [];
+  let total = 0;
+  for (const node of nodes) {
+    starts.push(total);
+    total += node.data.length;
+  }
+  const pageTop = page.getBoundingClientRect().top;
+
+  const nodeAt = (offset: number) => {
+    let low = 0;
+    let high = nodes.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (starts[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  };
+
+  /** The box a character is drawn in, or null for one with nothing drawn. */
+  const boxAt = (offset: number): DOMRect | null => {
+    const index = nodeAt(offset);
+    const range = document.createRange();
+    range.setStart(nodes[index], offset - starts[index]);
+    range.setEnd(nodes[index], offset - starts[index] + 1);
+    return range.getClientRects()[0] ?? null;
+  };
+  /** How far down the page a character's line ends. */
+  const bottomAt = (offset: number) => {
+    const box = boxAt(offset);
+    return box ? box.bottom - pageTop : null;
+  };
+  /** How far down the page a character's line starts. */
+  const topAt = (offset: number) => {
+    const box = boxAt(offset);
+    return box ? box.top - pageTop : null;
+  };
+
+  return { total, bottomAt, topAt };
+}
+
+/**
+ * Where in the chapter's text the first line at or below `y` (pixels down the
+ * page element) starts — the reader's place in a chapter read by scrolling,
+ * taken at the top of the view. Null past the end of the text.
+ */
+export function textOffsetAtY(root: Element, page: Element, y: number): number | null {
+  const { total, bottomAt } = boxesOfCharacters(root, page);
+  // A line only partly scrolled off is still being read
+  const offset = firstDrawn(total, bottomAt, firstIndexAtOrAfter(total, bottomAt, y + 1));
+  return offset < total ? offset : null;
+}
+
+/**
+ * How far down the page element a place in the chapter's text is drawn, or
+ * null past its end. A character with nothing drawn is read as the next one
+ * that is, as `screenOfTextOffset` reads it.
+ */
+export function yOfTextOffset(root: Element, page: Element, offset: number): number | null {
+  const { total, topAt } = boxesOfCharacters(root, page);
+  for (let i = Math.max(0, offset); i < total; i++) {
+    const top = topAt(i);
+    if (top !== null) return top;
+  }
+  return null;
+}
+
+/**
  * Where in the chapter's text a screen starts — the first character drawn on
  * it — or null when the chapter's text does not reach it.
  *
@@ -149,7 +238,7 @@ export function textOffsetOfScreen(
   screen: number,
 ): number | null {
   const { total, screenAt } = screensOfCharacters(root, page, viewWidth);
-  const offset = firstIndexAtOrAfter(total, screenAt, screen);
+  const offset = firstDrawn(total, screenAt, firstIndexAtOrAfter(total, screenAt, screen));
   return offset < total ? offset : null;
 }
 

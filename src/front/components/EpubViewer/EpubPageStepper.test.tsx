@@ -5,6 +5,7 @@ import { Provider, createStore } from "jotai";
 import { EpubPageStepper } from "./EpubPageStepper";
 import { currentPageAtom } from "../../atoms/pdfAtom";
 import { epubProgressAtom, epubScreenAtom } from "../../atoms/epubAtom";
+import { readingModeAtom } from "../../atoms/settingsAtom";
 
 const CHAPTERS = 3;
 
@@ -58,6 +59,31 @@ describe("EpubPageStepper", () => {
 
     expect(store.get(currentPageAtom)).toBe(1);
     expect(store.get(epubScreenAtom)).toMatchObject({ page: 1, screen: "last" });
+  });
+
+  it("moves a chapter at a time when the book is read by scrolling, with no screens to count", async () => {
+    const store = createStore();
+    store.set(readingModeAtom, "scroll");
+    store.set(currentPageAtom, 2);
+    store.set(epubScreenAtom, { page: 2, screen: 0, count: 1 });
+    store.set(epubProgressAtom, { percent: 40, section: "第2章" });
+    render(
+      <Provider store={store}>
+        <EpubPageStepper pageCount={CHAPTERS} />
+      </Provider>,
+    );
+
+    expect(screen.queryByText(/^\d+ \/ \d+$/)).toBeNull();
+    expect(screen.getByText("40%", { exact: true })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "次の章へ" }));
+    expect(store.get(currentPageAtom)).toBe(3);
+    expect(screen.getByRole("button", { name: "次の章へ" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "前の章へ" }));
+    expect(store.get(currentPageAtom)).toBe(2);
+    expect(store.get(epubScreenAtom)).toMatchObject({ page: 2, screen: 0 });
+    localStorage.clear();
   });
 
   it("has nothing to turn to at either end of the book", () => {

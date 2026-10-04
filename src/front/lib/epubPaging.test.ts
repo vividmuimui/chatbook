@@ -6,8 +6,29 @@ import {
   pagedLayout,
   screenCount,
   screenOfX,
+  scrolledLayout,
+  turnChapter,
   turnEpub,
 } from "./epubPaging";
+
+describe("scrolledLayout", () => {
+  it("is one column as wide as a screen, never a spread however wide the pane", () => {
+    expect(scrolledLayout(400.6)).toStrictEqual({ columns: 1, viewWidth: 400 });
+    expect(scrolledLayout(SPREAD_MIN_SCREEN_WIDTH_PX * 3)).toStrictEqual({
+      columns: 1,
+      viewWidth: MAX_SCREEN_WIDTH_PX,
+    });
+  });
+});
+
+describe("turnChapter", () => {
+  it("goes to the next or the previous chapter, and nowhere past either end", () => {
+    expect(turnChapter(2, "next", 3)).toBe(3);
+    expect(turnChapter(2, "prev", 3)).toBe(1);
+    expect(turnChapter(3, "next", 3)).toBeNull();
+    expect(turnChapter(1, "prev", 3)).toBeNull();
+  });
+});
 
 describe("pagedLayout", () => {
   it("lays a phone's pane out as one screen as wide as the pane", () => {

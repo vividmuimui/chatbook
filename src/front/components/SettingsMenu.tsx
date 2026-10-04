@@ -1,7 +1,7 @@
 // oxlint-disable-next-line no-restricted-imports -- document への keydown / mousedown 購読 (Escape と外側クリックで閉じる) に必要
 import { useState, useRef, useEffect } from "react";
 import { useAtom } from "jotai";
-import { keybindingModeAtom } from "../atoms/settingsAtom";
+import { keybindingModeAtom, readingModeAtom, type ReadingMode } from "../atoms/settingsAtom";
 import { useWebSearchAtom } from "../atoms/settingsAtom";
 import { keybindingHelp, type KeybindingMode } from "../lib/keybindings";
 import type { ResultAsync } from "neverthrow";
@@ -15,6 +15,12 @@ const MODE_LABELS: Record<KeybindingMode, string> = {
   none: "なし",
   vim: "Vim",
   emacs: "Emacs",
+};
+
+/** How a book is read, in the words the 「Aa」 menu of an EPUB uses for the same choice. */
+export const READING_MODE_LABELS: Record<ReadingMode, string> = {
+  paged: "ページめくり",
+  scroll: "スクロール",
 };
 
 const DIRECTION_LABELS: Record<PageDirection, string> = {
@@ -32,16 +38,24 @@ interface SettingsMenuProps {
   endSession?: () => ResultAsync<SessionEnded, ApiError>;
   /** Injectable so a direction the server refused can be driven in a test. */
   savePageDirection?: SavePageDirection;
+  /**
+   * Whether to offer turning pages or scrolling through them. A PDF's reader
+   * has it here; an EPUB's has it in its 「Aa」 menu, with the rest of how its
+   * text is laid out, so it is not offered twice.
+   */
+  readingModeOffered?: boolean;
 }
 
 export function SettingsMenu({
   pdfId,
   endSession = requestSessionEnd,
   savePageDirection,
+  readingModeOffered = false,
 }: SettingsMenuProps = {}) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useAtom(keybindingModeAtom);
   const [useWebSearch, setUseWebSearch] = useAtom(useWebSearchAtom);
+  const [readingMode, setReadingMode] = useAtom(readingModeAtom);
   const { webSearchAvailable } = useServerConfig();
   const [logOutError, setLogOutError] = useState<string | null>(null);
   const pageDirection = usePageDirection(pdfId, savePageDirection);
@@ -117,6 +131,32 @@ export function SettingsMenu({
               </label>
             </fieldset>
           ) : null}
+
+          {/* The reader's habit, kept for every book: unlike the direction
+              below, nothing about the book decides it. */}
+          {readingModeOffered && (
+            <fieldset className="mb-3 border-b border-gray-100 pb-3">
+              <legend className="mb-2 text-xs font-semibold text-gray-500">読み方</legend>
+              <div className="flex gap-1">
+                {(Object.keys(READING_MODE_LABELS) as ReadingMode[]).map((value) => (
+                  <label
+                    key={value}
+                    className="flex flex-1 cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <input
+                      type="radio"
+                      name="reading-mode"
+                      value={value}
+                      checked={readingMode === value}
+                      onChange={() => setReadingMode(value)}
+                      className="h-3.5 w-3.5"
+                    />
+                    {READING_MODE_LABELS[value]}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           {/* The book's own setting rather than the reader's: kept with the
               book on the server, so every device turns it the same way. Not

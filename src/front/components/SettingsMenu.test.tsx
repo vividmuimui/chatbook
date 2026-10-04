@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { errAsync, okAsync, type ResultAsync } from "neverthrow";
 import { SettingsMenu } from "./SettingsMenu";
-import { useWebSearchAtom, keybindingModeAtom } from "../atoms/settingsAtom";
+import { useWebSearchAtom, keybindingModeAtom, readingModeAtom } from "../atoms/settingsAtom";
 import { ApiError } from "../lib/fetcher";
 import type { SessionEnded } from "../../shared/schemas/auth";
 import type { KeybindingMode } from "../lib/keybindings";
@@ -110,6 +110,43 @@ describe("SettingsMenu's page direction", () => {
     await userEvent.click(screen.getByRole("button", { name: "設定" }));
 
     expect(screen.queryByRole("radio", { name: "右開き" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsMenu's way of reading", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function renderOffering(offered: boolean) {
+    const store = createStore();
+    render(
+      <SwrTestCache seed={{ [SERVER_CONFIG_KEY]: { webSearchAvailable: true } }}>
+        <Provider store={store}>
+          <SettingsMenu readingModeOffered={offered} />
+        </Provider>
+      </SwrTestCache>,
+    );
+    return store;
+  }
+
+  it("turns pages by default, and scrolls through them once the reader asks", async () => {
+    const store = renderOffering(true);
+    await userEvent.click(screen.getByRole("button", { name: "設定" }));
+
+    expect(screen.getByRole("radio", { name: "ページめくり" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "スクロール" }));
+
+    expect(store.get(readingModeAtom)).toBe("scroll");
+    // The reader's habit, kept for the next book and the next visit
+    expect(localStorage.getItem("chatbook:reading-mode")).toBe('"scroll"');
+  });
+
+  it("leaves the choice to the 「Aa」 menu where it is not offered here", async () => {
+    renderOffering(false);
+    await userEvent.click(screen.getByRole("button", { name: "設定" }));
+
+    expect(screen.queryByRole("radio", { name: "スクロール" })).toBeNull();
   });
 });
 

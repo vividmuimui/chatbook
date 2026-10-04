@@ -9,7 +9,7 @@ import { SwrTestCache } from "../../../test/swrTestCache";
 import { buildEpub } from "../../../test/epubFixture";
 import { bookKey } from "../../hooks/useBook";
 import { currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
-import { epubTypographyAtom, keybindingModeAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, keybindingModeAtom, readingModeAtom } from "../../atoms/settingsAtom";
 import { DEFAULT_EPUB_TYPOGRAPHY } from "../../lib/epubTypography";
 import type { SaveSelection, SelectionDraft } from "../../hooks/useAskAboutSelection";
 import type { BookDetail } from "../../../shared/schemas/book";
@@ -243,6 +243,59 @@ describe("EpubViewer", () => {
     fireEvent.pointerDown(heading, { clientX: 380, clientY: 100 });
     fireEvent.pointerUp(heading, { clientX: 380, clientY: 100 });
     expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+  });
+
+  // Kindle's 「連続スクロール」: the chapter down one column, scrolled
+  describe("read by scrolling", () => {
+    function scrolled() {
+      const store = createStore();
+      store.set(readingModeAtom, "scroll");
+      return store;
+    }
+
+    it("lays the chapter down one column rather than in screens", async () => {
+      vi.stubGlobal("fetch", serving());
+      renderViewer({ store: scrolled() });
+      const heading = await screen.findByRole("heading", { name: "第1章" });
+
+      const content = heading.closest(".epubChapter")!;
+      expect(content).not.toHaveClass("epubColumns");
+      expect(content).toHaveClass("epubScrolled");
+      expect(heading.closest("article")).toHaveAttribute("data-reading-mode", "scroll");
+    });
+
+    it("goes on to the next chapter from the end of one, by its link or by the key", async () => {
+      vi.stubGlobal("fetch", serving());
+      const store = renderViewer({ store: scrolled() });
+      await screen.findByRole("heading", { name: "第1章" });
+      // No chapter before the first to go back to
+      expect(screen.queryByRole("button", { name: "前の章に戻る" })).toBeNull();
+
+      await userEvent.click(screen.getByRole("button", { name: "次の章を読む" }));
+      expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+      expect(store.get(currentPageAtom)).toBe(2);
+      expect(screen.queryByRole("button", { name: "次の章を読む" })).toBeNull();
+
+      await userEvent.click(screen.getByRole("button", { name: "前の章に戻る" }));
+      expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();
+
+      // jsdom lays nothing out, so the chapter is at its end already: → reads on
+      await userEvent.keyboard("{ArrowRight}");
+      expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
+    });
+
+    it("turns nothing at the edges: they are only more of the page", async () => {
+      vi.stubGlobal("fetch", serving());
+      const store = renderViewer({ store: scrolled() });
+      const heading = await screen.findByRole("heading", { name: "第1章" });
+      const paper = heading.closest("article")!;
+      vi.spyOn(paper, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 400, 600));
+
+      fireEvent.pointerDown(heading, { clientX: 380, clientY: 100 });
+      fireEvent.pointerUp(heading, { clientX: 380, clientY: 100 });
+
+      expect(store.get(currentPageAtom)).toBe(1);
+    });
   });
 
   it("stores a highlight by where the passage sits in the chapter's text", async () => {

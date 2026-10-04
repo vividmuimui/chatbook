@@ -1,7 +1,14 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { currentPageAtom } from "../../atoms/pdfAtom";
-import { epubProgressAtom, epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
-import { turnEpub } from "../../lib/epubPaging";
+import {
+  epubProgressAtom,
+  epubScreenAtom,
+  shownScreen,
+  turnEpubAtom,
+  turnEpubChapterAtom,
+} from "../../atoms/epubAtom";
+import { readingModeAtom } from "../../atoms/settingsAtom";
+import { turnChapter, turnEpub } from "../../lib/epubPaging";
 import { turnToward, type ScreenSide } from "../../lib/touchNavigation";
 import type { PageDirection } from "../../../shared/schemas/book";
 import { ChevronIcon } from "../PdfViewer/PageStepper";
@@ -28,21 +35,39 @@ interface EpubPageStepperProps {
  *
  * In the same two places `PageStepper` is: under the page on a wide screen, and
  * in the toolbar of the one column (`PageToolbar`'s `stepper`).
+ *
+ * Read by scrolling, the chevrons move a chapter at a time — the scroll moves
+ * through the chapter, so there is no screen to count or turn.
  */
 export function EpubPageStepper({ pageCount, direction = "ltr" }: EpubPageStepperProps) {
   const page = useAtomValue(currentPageAtom);
   const at = useAtomValue(epubScreenAtom);
-  const turn = useSetAtom(turnEpubAtom);
+  const turnScreen = useSetAtom(turnEpubAtom);
+  const turnChapterTo = useSetAtom(turnEpubChapterAtom);
+  const scrolling = useAtomValue(readingModeAtom) === "scroll";
   const progress = useAtomValue(epubProgressAtom);
   const { screen, count } = shownScreen(at, page);
+  const turn = scrolling ? turnChapterTo : turnScreen;
+  const canTurn = (way: "next" | "prev") =>
+    scrolling
+      ? turnChapter(page, way, pageCount) !== null
+      : turnEpub({ page, screen, count }, way, pageCount) !== null;
 
   const chevron = (side: ScreenSide) => {
     const way = turnToward(side, direction);
     return (
       <button
         type="button"
-        aria-label={way === "next" ? "次のページ" : "前のページ"}
-        disabled={turnEpub({ page, screen, count }, way, pageCount) === null}
+        aria-label={
+          scrolling
+            ? way === "next"
+              ? "次の章へ"
+              : "前の章へ"
+            : way === "next"
+              ? "次のページ"
+              : "前のページ"
+        }
+        disabled={!canTurn(way)}
         onClick={() => turn({ turn: way, pageCount })}
         className={`${TAP_TARGET} cursor-pointer rounded-lg text-gray-600 disabled:cursor-default disabled:opacity-30`}
       >
@@ -65,9 +90,11 @@ export function EpubPageStepper({ pageCount, direction = "ltr" }: EpubPageSteppe
         ) : null}
         <span className="flex gap-2 whitespace-nowrap text-[11px] text-gray-500">
           {progress ? <span>{progress.percent}%</span> : null}
-          <span>
-            この章 <span>{`${screen + 1} / ${count}`}</span>
-          </span>
+          {scrolling ? null : (
+            <span>
+              この章 <span>{`${screen + 1} / ${count}`}</span>
+            </span>
+          )}
         </span>
       </span>
       {chevron("right")}

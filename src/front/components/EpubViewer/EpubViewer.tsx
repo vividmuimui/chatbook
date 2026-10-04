@@ -5,7 +5,7 @@ import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
 import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
 import { epubProgressAtom, epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
-import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, readingModeAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
 import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail, PageDirection } from "../../../shared/schemas/book";
 import type { HighlightColor, PositionData } from "../../../shared/schemas/selection";
@@ -31,10 +31,18 @@ import {
   rangeOfQuote,
   rangeOfTextOffsets,
   screenOfTextOffset,
+  textOffsetAtY,
   textOffsetOfScreen,
   textOffsetsOf,
+  yOfTextOffset,
 } from "../../lib/epubTextRange";
-import { pagedLayout, screenCount, screenOfX } from "../../lib/epubPaging";
+import {
+  pagedLayout,
+  screenCount,
+  screenOfX,
+  scrolledLayout,
+  turnChapter,
+} from "../../lib/epubPaging";
 import { anchorOffset, entryPercent, epubProgress, mapEpubBook } from "../../lib/epubProgress";
 import { resolveSwipe, resolveTapZone, type PageTurn } from "../../lib/touchNavigation";
 import type { ViewerAction } from "../../lib/keybindings";
@@ -65,6 +73,15 @@ const TAP_MAX_MS = 500;
 
 /** The width of the floating question box (`w-80`), kept inside the screen it is on. */
 const POPOVER_WIDTH_PX = 320;
+
+/** How far j / k scroll a chapter read by scrolling, as they scroll a PDF's page. */
+const SCROLL_STEP_PX = 80;
+
+/** How much of the view a page-turning key scrolls by, keeping a line or two to read on from. */
+const SCROLL_PAGE_SHARE = 0.9;
+
+/** How far down the view a passage taken to is put, so the lines before it are in sight too. */
+const PASSAGE_LINE_SHARE = 0.25;
 
 function pageContainerOf(node: Node | null | undefined): HTMLDivElement | null {
   const from = node instanceof Element ? node : node?.parentElement;
@@ -122,6 +139,8 @@ interface Placed {
   typography: unknown;
   layoutVersion: number;
   screen: number;
+  /** Laid out down one column to be scrolled, rather than in screens. */
+  scrolled: boolean;
 }
 
 /**
@@ -156,6 +175,12 @@ export function EpubViewer({
   const typography = useAtomValue(epubTypographyAtom);
   const typographyStyle = useMemo(() => epubTypographyStyle(typography), [typography]);
   const isNarrow = useIsNarrow();
+  /**
+   * Whether the chapter is cut into screens and turned, or read down one
+   * column by scrolling — Kindle's 「連続スクロール」. Scrolled, nothing is
+   * turned at the edges or by a swipe, and the chevrons move a chapter.
+   */
+  const scrolling = useAtomValue(readingModeAtom) === "scroll";
 
   const { epub, error: documentError } = useEpubDocument(pdfId);
   const { highlights, addHighlight } = useHighlights(book?.id);
@@ -165,6 +190,8 @@ export function EpubViewer({
   );
 
   const areaRef = useRef<HTMLDivElement>(null);
+  /** The paper, which is what scrolls when the chapter is read by scrolling. */
+  const articleRef = useRef<HTMLElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   /** Where in the next chapter an in-book link asked to land. */
@@ -183,7 +210,10 @@ export function EpubViewer({
   /** Bumped when an image of the chapter arrives, which lays the columns out again. */
   const [layoutVersion, setLayoutVersion] = useState(0);
 
-  const layout = useMemo(() => pagedLayout(paneSize.width), [paneSize.width]);
+  const layout = useMemo(
+    () => (scrolling ? scrolledLayout(paneSize.width) : pagedLayout(paneSize.width)),
+    [scrolling, paneSize.width],
+  );
   const { screen } = shownScreen(epubScreen, currentPage);
 
   const chapters = epub?.book.chapters;
@@ -281,14 +311,15 @@ export function EpubViewer({
   useLayoutEffect(() => {
     const page = pageRef.current;
     const content = contentRef.current;
-    if (!page || !content || !chapterElement || layout.viewWidth <= 0) return;
+    if (scrolling || !page || !content || !chapterElement || layout.viewWidth <= 0) return;
 
     const laidOut = screenCount(content.scrollWidth, layout);
     const asked = epubScreen.page === currentPage ? epubScreen.screen : 0;
     const placed = placedRef.current;
     const relaidOut =
       placed !== null &&
-      (placed.viewWidth !== layout.viewWidth ||
+      (placed.scrolled ||
+        placed.viewWidth !== layout.viewWidth ||
         placed.viewHeight !== paneSize.height ||
         placed.columns !== layout.columns ||
         placed.typography !== typography ||
@@ -340,6 +371,7 @@ export function EpubViewer({
       typography,
       layoutVersion,
       screen: target,
+      scrolled: false,
     };
     if (
       epubScreen.page !== currentPage ||
@@ -349,6 +381,7 @@ export function EpubViewer({
       setEpubScreen({ page: currentPage, screen: target, count: laidOut });
     }
   }, [
+    scrolling,
     chapterElement,
     layout,
     paneSize.height,
@@ -358,6 +391,130 @@ export function EpubViewer({
     currentPage,
     setEpubScreen,
   ]);
+
+  /** Where the reader is in the chapter's text: the ref the layout reads back, and what is drawn from it. */
+  const holdReadingAt = useCallback((offset: number) => {
+    readingOffsetRef.current = offset;
+    setReadingOffset(offset);
+  }, []);
+
+  /**
+   * A scroll the viewer made itself — to a passage, a section, a chapter's end
+   * — whose own scroll event is not the reader moving: the place it was made
+   * for (a section's anchor, a passage) stays the reader's place.
+   */
+  const ownScrollRef = useRef<number | null>(null);
+
+  /** How far down the scrolling paper the chapter's box starts. */
+  const chapterTop = useCallback(() => {
+    const article = articleRef.current;
+    const page = pageRef.current;
+    if (!article || !page) return 0;
+    return (
+      page.getBoundingClientRect().top - article.getBoundingClientRect().top + article.scrollTop
+    );
+  }, []);
+
+  /** Scroll the paper to a point of the chapter's box, `y` pixels down it. */
+  const scrollChapterTo = useCallback(
+    (y: number) => {
+      const article = articleRef.current;
+      if (!article) return;
+      article.scrollTop = Math.max(0, chapterTop() + y);
+      ownScrollRef.current = article.scrollTop;
+    },
+    [chapterTop],
+  );
+
+  /** Where in the chapter's text the view starts, scrolled as it is now. */
+  const offsetInView = useCallback(() => {
+    const article = articleRef.current;
+    const page = pageRef.current;
+    if (!article || !page || !chapterElement) return 0;
+    return (
+      textOffsetAtY(chapterElement, page, article.scrollTop - chapterTop()) ??
+      chapterElement.textContent?.length ??
+      0
+    );
+  }, [chapterElement, chapterTop]);
+
+  // The same settling for a chapter read by scrolling: a chapter just put in
+  // opens where a link or a section pointed, at its end for a turn back, and
+  // at its top otherwise; one laid out again — another width, another type, an
+  // image arrived, or turned pages a moment ago — scrolls to the words the
+  // reader was on.
+  useLayoutEffect(() => {
+    const article = articleRef.current;
+    const page = pageRef.current;
+    if (!scrolling || !article || !page || !chapterElement) return;
+
+    const placed = placedRef.current;
+    const asked = epubScreen.page === currentPage ? epubScreen.screen : 0;
+    if (!placed || placed.chapter !== chapterElement) {
+      const anchor = pendingAnchorRef.current;
+      pendingAnchorRef.current = null;
+      const element = anchor ? document.getElementById(`${EPUB_ID_PREFIX}${anchor}`) : null;
+      if (anchor && element) {
+        scrollChapterTo(element.getBoundingClientRect().top - page.getBoundingClientRect().top);
+        holdReadingAt(anchorOffset(chapterElement, anchor) ?? 0);
+      } else if (asked === "last") {
+        scrollChapterTo(article.scrollHeight);
+        holdReadingAt(offsetInView());
+      } else {
+        scrollChapterTo(-chapterTop());
+        holdReadingAt(0);
+      }
+    } else if (
+      !placed.scrolled ||
+      placed.viewWidth !== layout.viewWidth ||
+      placed.typography !== typography ||
+      placed.layoutVersion !== layoutVersion
+    ) {
+      const y = yOfTextOffset(chapterElement, page, readingOffsetRef.current);
+      if (y !== null) scrollChapterTo(y);
+      holdReadingAt(readingOffsetRef.current);
+    } else {
+      return;
+    }
+
+    placedRef.current = {
+      chapter: chapterElement,
+      viewWidth: layout.viewWidth,
+      viewHeight: paneSize.height,
+      columns: layout.columns,
+      typography,
+      layoutVersion,
+      screen: 0,
+      scrolled: true,
+    };
+    if (epubScreen.page !== currentPage || epubScreen.screen !== 0 || epubScreen.count !== 1) {
+      setEpubScreen({ page: currentPage, screen: 0, count: 1 });
+    }
+  }, [
+    scrolling,
+    chapterElement,
+    layout,
+    paneSize.height,
+    typography,
+    layoutVersion,
+    epubScreen,
+    currentPage,
+    setEpubScreen,
+    scrollChapterTo,
+    chapterTop,
+    offsetInView,
+    holdReadingAt,
+  ]);
+
+  /** The reader scrolling is the reader moving on: the place is the first line in view. */
+  const handleArticleScroll = useCallback(() => {
+    const article = articleRef.current;
+    if (!scrolling || !article) return;
+    const own = ownScrollRef.current;
+    ownScrollRef.current = null;
+    if (own !== null && Math.abs(article.scrollTop - own) < 1) return;
+    holdReadingAt(offsetInView());
+  }, [scrolling, offsetInView, holdReadingAt]);
 
   // What the stepper says of the place: worked out here, where the book's text
   // and the place in it both are, and handed to it wherever it is drawn.
@@ -374,9 +531,17 @@ export function EpubViewer({
    * passage — not the screen's first words — if the chapter is laid out again.
    */
   const showPassage = useCallback(
-    (rects: { x: number }[], offset: number | null) => {
+    (rects: { x: number; y: number }[], offset: number | null, { atTop = false } = {}) => {
       const first = rects[0];
       if (!first) return;
+      if (scrolling) {
+        // Down the column instead: a section's heading at the top of the view,
+        // a passage a little way down it with what leads up to it in sight
+        const view = articleRef.current?.clientHeight ?? 0;
+        scrollChapterTo(first.y - (atTop ? 0 : view * PASSAGE_LINE_SHARE));
+        holdReadingAt(offset ?? offsetInView());
+        return;
+      }
       passageOffsetRef.current = offset;
       const target = screenOfX(first.x, layout.viewWidth);
       setEpubScreen((at) => ({
@@ -385,7 +550,15 @@ export function EpubViewer({
         count: at.page === currentPage ? at.count : 1,
       }));
     },
-    [currentPage, layout.viewWidth, setEpubScreen],
+    [
+      currentPage,
+      layout.viewWidth,
+      setEpubScreen,
+      scrolling,
+      scrollChapterTo,
+      holdReadingAt,
+      offsetInView,
+    ],
   );
 
   /** The highlights of this chapter, drawn from where they sit in its text. */
@@ -472,14 +645,66 @@ export function EpubViewer({
   /** To the start of a chapter, which is where the outline and gg / G go. */
   const openChapter = useCallback(
     (page: number) => {
+      // Already open and scrolled: back up to its top, which no change of
+      // chapter is going to bring about
+      if (scrolling && page === currentPage) {
+        scrollChapterTo(-chapterTop());
+        holdReadingAt(0);
+        return;
+      }
       setEpubScreen({ page, screen: 0, count: 1 });
       setCurrentPage(page);
     },
-    [setCurrentPage, setEpubScreen],
+    [
+      scrolling,
+      currentPage,
+      scrollChapterTo,
+      chapterTop,
+      holdReadingAt,
+      setCurrentPage,
+      setEpubScreen,
+    ],
+  );
+
+  /**
+   * A view on or back down a chapter read by scrolling, and on into the next
+   * chapter from its end or back into the end of the one before from its top —
+   * what the keys that turn a screen do when there are no screens.
+   */
+  const scrollView = useCallback(
+    (way: PageTurn) => {
+      const article = articleRef.current;
+      if (!article) return;
+      const atEnd = article.scrollTop + article.clientHeight >= article.scrollHeight - 2;
+      const atTop = article.scrollTop <= 1;
+      if (way === "next" && atEnd) {
+        const to = turnChapter(currentPage, "next", pageCount);
+        if (to !== null) openChapter(to);
+        return;
+      }
+      if (way === "prev" && atTop) {
+        const to = turnChapter(currentPage, "prev", pageCount);
+        if (to === null) return;
+        setEpubScreen({ page: to, screen: "last", count: 1 });
+        setCurrentPage(to);
+        return;
+      }
+      article.scrollTop += (way === "next" ? 1 : -1) * article.clientHeight * SCROLL_PAGE_SHARE;
+    },
+    [currentPage, pageCount, openChapter, setEpubScreen, setCurrentPage],
   );
 
   const handleShortcut = useCallback(
     (action: ViewerAction) => {
+      // Read by scrolling: the keys that turn move a view's worth, and the ones
+      // that scroll move a few lines, as on a PDF's page
+      const article = articleRef.current;
+      if (scrolling && action === "nextPage") return scrollView("next");
+      if (scrolling && action === "prevPage") return scrollView("prev");
+      if (scrolling && article && (action === "scrollDown" || action === "scrollUp")) {
+        article.scrollTop += action === "scrollDown" ? SCROLL_STEP_PX : -SCROLL_STEP_PX;
+        return;
+      }
       switch (action) {
         // On and back already: the arrows and h / l were read as a side of the
         // screen against the book's direction by `useKeyboardShortcuts`, and
@@ -511,7 +736,7 @@ export function EpubViewer({
           break;
       }
     },
-    [turn, openChapter, pageCount, setOutlineOpen, setBookSearchOpen],
+    [scrolling, scrollView, turn, openChapter, pageCount, setOutlineOpen, setBookSearchOpen],
   );
   useKeyboardShortcuts(handleShortcut, direction);
 
@@ -530,9 +755,11 @@ export function EpubViewer({
       const element = anchor ? document.getElementById(`${EPUB_ID_PREFIX}${anchor}`) : null;
       const pageRect = pageRef.current?.getBoundingClientRect();
       if (anchor && element && pageRect && chapterElement) {
+        const at = element.getBoundingClientRect();
         showPassage(
-          [{ x: element.getBoundingClientRect().left - pageRect.left }],
+          [{ x: at.left - pageRect.left, y: at.top - pageRect.top }],
           anchorOffset(chapterElement, anchor),
+          { atTop: true },
         );
         return;
       }
@@ -601,7 +828,8 @@ export function EpubViewer({
     (event: React.PointerEvent<HTMLElement>) => {
       const start = tapRef.current;
       tapRef.current = null;
-      if (!start?.turnable) return;
+      // Scrolled, the edges are only more of the page: nothing turns there
+      if (scrolling || !start?.turnable) return;
       if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > TAP_SLOP_PX) return;
       if (event.timeStamp - start.at > TAP_MAX_MS) return;
       // The second press of a double click is a word being selected
@@ -615,7 +843,7 @@ export function EpubViewer({
       if (zone === "zoom") return;
       turn(zone);
     },
-    [turn, direction],
+    [turn, direction, scrolling],
   );
 
   const touchRef = useRef<{ x: number; y: number; at: number } | null>(null);
@@ -634,7 +862,8 @@ export function EpubViewer({
       const start = touchRef.current;
       touchRef.current = null;
       const last = event.changedTouches[0];
-      if (!start || !last || !turnable()) return;
+      // Scrolled, a finger moves the column; it never turns a screen
+      if (scrolling || !start || !last || !turnable()) return;
       const swiped = resolveSwipe(
         {
           dx: last.clientX - start.x,
@@ -645,7 +874,7 @@ export function EpubViewer({
       );
       if (swiped) turn(swiped);
     },
-    [turnable, turn, direction],
+    [turnable, turn, direction, scrolling],
   );
 
   useSettledSelection(
@@ -791,11 +1020,16 @@ export function EpubViewer({
                   built by hand rather than by React, so this is the element
                   React can style. */}
               <article
+                ref={articleRef}
+                data-reading-mode={scrolling ? "scroll" : "paged"}
                 style={{
                   ...typographyStyle,
                   width: layout.viewWidth > 0 ? layout.viewWidth : undefined,
                 }}
-                className="epubPage relative h-full w-full overflow-clip rounded-sm bg-white py-8 shadow-sm"
+                className={`epubPage relative h-full w-full rounded-sm bg-white py-8 shadow-sm ${
+                  scrolling ? "overflow-y-auto overflow-x-clip" : "overflow-clip"
+                }`}
+                onScroll={handleArticleScroll}
                 onPointerDown={handlePointerDown}
                 onPointerUp={handlePointerUp}
                 onTouchStart={handleTouchStart}
@@ -804,11 +1038,18 @@ export function EpubViewer({
                 {/* Moved along the columns to the screen being read. The
                     overlays travel with it, so a rect measured against it
                     stays on its words whichever screen is up. */}
+                {/* Scrolled, the way back to the chapter before is at the top
+                    of this one, as the way on is at its end. */}
+                {scrolling && turnChapter(currentPage, "prev", pageCount) !== null && (
+                  <ChapterLink onClick={() => openChapter(currentPage - 1)}>
+                    前の章に戻る
+                  </ChapterLink>
+                )}
                 <div
                   ref={pageRef}
                   data-page-container={currentPage}
-                  className="relative h-full"
-                  style={{ transform: `translateX(${-shownLeft}px)` }}
+                  className={scrolling ? "relative" : "relative h-full"}
+                  style={scrolling ? undefined : { transform: `translateX(${-shownLeft}px)` }}
                 >
                   {/* Filled by hand with the chapter `renderChapter` built,
                       never by React: the markup is the book's, rebuilt from an
@@ -817,12 +1058,14 @@ export function EpubViewer({
                       as this box, one to a screen (or two, for a spread). */}
                   <div
                     ref={contentRef}
-                    className="epubChapter epubColumns"
+                    className={scrolling ? "epubChapter epubScrolled" : "epubChapter epubColumns"}
                     style={
-                      {
-                        columnCount: layout.columns,
-                        "--epub-column-height": `${drawnSize.height}px`,
-                      } as React.CSSProperties
+                      scrolling
+                        ? undefined
+                        : ({
+                            columnCount: layout.columns,
+                            "--epub-column-height": `${drawnSize.height}px`,
+                          } as React.CSSProperties)
                     }
                     onClick={handleChapterClick}
                   />
@@ -864,6 +1107,11 @@ export function EpubViewer({
                       </div>
                     )}
                 </div>
+                {scrolling && turnChapter(currentPage, "next", pageCount) !== null && (
+                  <ChapterLink onClick={() => openChapter(currentPage + 1)}>
+                    次の章を読む
+                  </ChapterLink>
+                )}
               </article>
             </div>
 
@@ -905,6 +1153,21 @@ export function EpubViewer({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+/** A way to the chapter before or after, at the top or the end of one read by scrolling. */
+function ChapterLink({ onClick, children }: { onClick: () => void; children: string }) {
+  return (
+    <div className="flex justify-center py-6">
+      <button
+        type="button"
+        onClick={onClick}
+        className="h-11 cursor-pointer rounded-lg border border-gray-300 px-4 text-sm text-gray-700 hover:bg-gray-50"
+      >
+        {children}
+      </button>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { EpubTypographyMenu } from "./EpubTypographyMenu";
-import { epubTypographyAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, readingModeAtom } from "../../atoms/settingsAtom";
 import { DEFAULT_EPUB_TYPOGRAPHY, EPUB_FONT_SIZES_PX } from "../../lib/epubTypography";
 
 function renderMenu(store = createStore()) {
@@ -34,6 +34,16 @@ describe("EpubTypographyMenu", () => {
       "aria-expanded",
       "false",
     );
+  });
+
+  it("offers reading by scrolling in place of turning screens", async () => {
+    const store = renderMenu();
+    await openMenu();
+
+    expect(screen.getByRole("radio", { name: "ページめくり" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "スクロール" }));
+
+    expect(store.get(readingModeAtom)).toBe("scroll");
   });
 
   it("steps the type up and down, and keeps the choice for the next session", async () => {
