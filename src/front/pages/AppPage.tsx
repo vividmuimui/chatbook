@@ -4,8 +4,9 @@ import { Link, useParams } from "react-router";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../atoms/pdfAtom";
 import {
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatMessagesAtom,
+  chatScopeAtom,
   chatErrorAtom,
   chatMaximizedAtom,
   chatPanelOpenAtom,
@@ -31,7 +32,7 @@ import { passageFromNavigation } from "../lib/textFragment";
 import { fetcher, resultFetcher } from "../lib/fetcher";
 import { bookTitle } from "../lib/bookTitle";
 import { locatedPageSchema, type LocatedPage } from "../../shared/schemas/book";
-import { chatHistorySchema } from "../../shared/schemas/chat";
+import { chatHistorySchema, sessionHistorySchema } from "../../shared/schemas/chat";
 
 /**
  * How wide the handle between the panes is, in pixels.
@@ -83,7 +84,8 @@ export function AppPage() {
 function BookReader({ pdfId }: { pdfId: string | undefined }) {
   const { data: book, error } = useBook(pdfId);
   const [, setActiveSelection] = useAtom(activeSelectionAtom);
-  const setBookChatOpen = useSetAtom(bookChatOpenAtom);
+  const setActiveSession = useSetAtom(activeSessionAtom);
+  const setChatScope = useSetAtom(chatScopeAtom);
   const [, setChatMessages] = useAtom(chatMessagesAtom);
   const [, setChatError] = useAtom(chatErrorAtom);
   const [, setCurrentPage] = useAtom(currentPageAtom);
@@ -137,15 +139,24 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
   const conversationRef = useRef(0);
 
   /**
-   * Read a conversation in, whichever of the two it is.
+   * Read a conversation in, whichever kind it is.
    *
    * An empty conversation and one that could not be read used to look the same,
    * so a failure here read as "you never asked anything about this".
    */
   const loadConversation = useCallback(
-    async (url: string) => {
+    async (url: string, kind: "highlight" | "session") => {
       const generation = ++conversationRef.current;
-      const history = await resultFetcher(url, chatHistorySchema);
+      const history =
+        kind === "highlight"
+          ? await resultFetcher(url, chatHistorySchema)
+          : await resultFetcher(url, sessionHistorySchema).map((data) => {
+              // Where the session's last question was aimed is where its next
+              // one is, until the reader picks again — a one-off input from
+              // the server, not a copy of it kept in the atom.
+              if (generation === conversationRef.current) setChatScope(data.session.scope ?? []);
+              return data;
+            });
       if (generation !== conversationRef.current) return;
 
       history.match(
@@ -153,7 +164,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
         (failure) => setChatError(`チャット履歴を読み込めませんでした: ${failure.message}`),
       );
     },
-    [setChatError, setChatMessages],
+    [setChatError, setChatMessages, setChatScope],
   );
 
   /**
@@ -168,27 +179,44 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
       openConversation();
       // One panel, two kinds of conversation: the passage's wins over the
       // book's, and opening one is leaving the other behind.
-      setBookChatOpen(false);
+      setActiveSession(null);
       setActiveSelection(selection);
       if (!pdfId) return;
 
-      await loadConversation(`/api/pdf/${pdfId}/selections/${selection.id}/chats`);
+      await loadConversation(`/api/pdf/${pdfId}/selections/${selection.id}/chats`, "highlight");
     },
-    [loadConversation, openConversation, pdfId, setActiveSelection, setBookChatOpen],
+    [loadConversation, openConversation, pdfId, setActiveSelection, setActiveSession],
   );
 
   /**
-   * Put the book's own conversation on screen: the same panel, showing what the
-   * reader asks about the work rather than about a passage of it.
+   * Put one of the book's own sessions on screen: the same panel, showing what
+   * the reader asked about the work rather than about a passage of it.
    */
-  const openBookChat = useCallback(async () => {
-    openConversation();
-    setActiveSelection(null);
-    setBookChatOpen(true);
-    if (!pdfId) return;
+  const openSession = useCallback(
+    async (sessionId: string) => {
+      openConversation();
+      setActiveSelection(null);
+      setActiveSession({ id: sessionId });
+      if (!pdfId) return;
 
-    await loadConversation(`/api/pdf/${pdfId}/chats`);
-  }, [loadConversation, openConversation, pdfId, setActiveSelection, setBookChatOpen]);
+      await loadConversation(`/api/pdf/${pdfId}/sessions/${sessionId}/messages`, "session");
+    },
+    [loadConversation, openConversation, pdfId, setActiveSelection, setActiveSession],
+  );
+
+  /**
+   * A new chat about the book: nothing to read in, and the whole book to ask
+   * about. The server makes the session when the first question is sent.
+   */
+  const startNewChat = useCallback(() => {
+    openConversation();
+    // Nothing is being read in, so an answer still on its way for the chat
+    // the reader left must not land here.
+    conversationRef.current += 1;
+    setActiveSelection(null);
+    setActiveSession({ id: null });
+    setChatScope([]);
+  }, [openConversation, setActiveSelection, setActiveSession, setChatScope]);
 
   const { passageMiss, locationReady } = useReadingLocation(
     pdfId,
@@ -196,7 +224,7 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
     linkedPassage,
     book,
     openChat,
-    openBookChat,
+    openSession,
   );
   const { saveError } = useReadingStateSync(pdfId, locationReady);
 
@@ -209,6 +237,20 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
       void openChat(selection);
     },
     [openChat, setCurrentPage],
+  );
+
+  /**
+   * Turn to a highlight picked off the list, and leave the panel as it is.
+   *
+   * On one column a sheet drawn all the way up is covering the page being
+   * turned to, so it comes down to half: the reader asked to see the passage.
+   */
+  const goToHighlight = useCallback(
+    (selection: ActiveSelection) => {
+      setCurrentPage(selection.pageNumber);
+      if (isNarrow) setChatSheet((sheet) => (sheet === "full" ? "half" : sheet));
+    },
+    [isNarrow, setChatSheet, setCurrentPage],
   );
 
   return (
@@ -383,7 +425,9 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
               book={book}
               bookError={error as Error | undefined}
               onSelectionClick={handleSelectionClick}
-              onOpenBookChat={openBookChat}
+              onGoToHighlight={goToHighlight}
+              onOpenSession={openSession}
+              onNewChat={startNewChat}
             />
           </ChatSheet>
         )}
@@ -459,7 +503,9 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
                 book={book}
                 bookError={error as Error | undefined}
                 onSelectionClick={handleSelectionClick}
-                onOpenBookChat={openBookChat}
+                onGoToHighlight={goToHighlight}
+                onOpenSession={openSession}
+                onNewChat={startNewChat}
               />
             </div>
           </>

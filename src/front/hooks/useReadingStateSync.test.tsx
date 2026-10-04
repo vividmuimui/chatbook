@@ -5,7 +5,7 @@ import { okAsync, errAsync } from "neverthrow";
 import type { ReactNode } from "react";
 import { useReadingStateSync, type SaveReadingState } from "./useReadingStateSync";
 import { currentPageAtom, outlineOpenAtom } from "../atoms/pdfAtom";
-import { activeSelectionAtom, bookChatOpenAtom, chatPanelOpenAtom } from "../atoms/chatAtom";
+import { activeSelectionAtom, activeSessionAtom, chatPanelOpenAtom } from "../atoms/chatAtom";
 import { ApiError } from "../lib/fetcher";
 import { setViewportWidth, PHONE_WIDTH } from "../../test/viewport";
 import type { SaveReadingStateRequest } from "../../shared/schemas/book";
@@ -88,7 +88,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 17,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -114,7 +114,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 30,
           selectionId: "a2",
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -123,12 +123,12 @@ describe("useReadingStateSync", () => {
     ]);
   });
 
-  it("saves that the conversation left open was the book's own", async () => {
+  it("saves which chat about the book was left open", async () => {
     const { store, saves } = syncHarness();
 
     act(() => {
       store.set(currentPageAtom, 12);
-      store.set(bookChatOpenAtom, true);
+      store.set(activeSessionAtom, { id: "sess-1" });
     });
     await act(async () => {
       vi.advanceTimersByTime(DEBOUNCE);
@@ -140,7 +140,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 12,
           selectionId: null,
-          bookChat: true,
+          sessionId: "sess-1",
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -149,7 +149,23 @@ describe("useReadingStateSync", () => {
     ]);
   });
 
-  it("takes the book's own conversation with it where a narrow screen leaves the panels", async () => {
+  it("saves no chat for a new one nothing has been asked in yet", async () => {
+    // There is no session on the server to come back to until the first
+    // question makes one.
+    const { store, saves } = syncHarness();
+
+    act(() => {
+      store.set(currentPageAtom, 12);
+      store.set(activeSessionAtom, { id: null });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(DEBOUNCE);
+    });
+
+    expect(saves.map((save) => save.place.sessionId)).toStrictEqual([null]);
+  });
+
+  it("takes the chat about the book with it where a narrow screen leaves the panels", async () => {
     // Which conversation was open is part of the place rather than of the
     // panels: a phone has a conversation open on the book too.
     setViewportWidth(PHONE_WIDTH);
@@ -157,7 +173,7 @@ describe("useReadingStateSync", () => {
 
     act(() => {
       store.set(currentPageAtom, 12);
-      store.set(bookChatOpenAtom, true);
+      store.set(activeSessionAtom, { id: "sess-1" });
     });
     await act(async () => {
       vi.advanceTimersByTime(DEBOUNCE);
@@ -166,7 +182,7 @@ describe("useReadingStateSync", () => {
     expect(saves).toStrictEqual([
       {
         pdfId: PDF_ID,
-        place: { page: 12, selectionId: null, bookChat: true },
+        place: { page: 12, selectionId: null, sessionId: "sess-1" },
         keepalive: false,
       },
     ]);
@@ -188,7 +204,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 12,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -213,7 +229,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 17,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -244,7 +260,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 4,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -263,7 +279,7 @@ describe("useReadingStateSync", () => {
     await turnTo(17);
 
     expect(saves).toStrictEqual([
-      { pdfId: PDF_ID, place: { page: 17, selectionId: null, bookChat: false }, keepalive: false },
+      { pdfId: PDF_ID, place: { page: 17, selectionId: null, sessionId: null }, keepalive: false },
     ]);
   });
 
@@ -283,7 +299,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 1,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: true,
           chatPanelOpen: false,
         },
@@ -306,7 +322,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 1,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: true,
         },
@@ -339,7 +355,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 17,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -361,7 +377,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 17,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },
@@ -384,7 +400,7 @@ describe("useReadingStateSync", () => {
         place: {
           page: 17,
           selectionId: null,
-          bookChat: false,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: false,
         },

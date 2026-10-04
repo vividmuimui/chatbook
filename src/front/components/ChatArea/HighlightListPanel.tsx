@@ -30,30 +30,19 @@ interface HighlightListPanelProps {
   searched: boolean;
   /** Why the search itself did not happen, if it did not. */
   searchError?: string;
+  /** Turns to the highlight's page: picking a mark is going back to it. */
   onSelect: (selection: ActiveSelection) => void;
+  /** Opens the highlight's conversation, to read it or to ask something. */
+  onOpenChat: (selection: ActiveSelection) => void;
+  /** How many messages each highlight's conversation holds, by its id. */
+  chatCounts?: ReadonlyMap<string, number>;
   /** Removes a highlight and its chat; its failure comes back in the value. */
   onDelete: (selectionId: string) => ResultAsync<void, ApiError>;
   /** Recolours a highlight or rewrites its note; its failure comes back in the value. */
   onUpdate: (selectionId: string, change: UpdateSelectionRequest) => ResultAsync<void, ApiError>;
-  /** Opens the conversation about the book itself, which no highlight holds. */
-  onOpenBookChat: () => void;
 }
 
-/**
- * The way in to a conversation that hangs off the book rather than a passage.
- *
- * Offered on both faces of the panel: a reader who has marked nothing yet is
- * told to select text, and the one thing they may have wanted instead is to ask
- * about the book — while a reader with a list in front of them should not have
- * to mark something first to ask what a chapter was about.
- */
-function BookChatEntry({ onClick, className }: { onClick: () => void; className: string }) {
-  return (
-    <button type="button" onClick={onClick} className={className}>
-      本について質問する
-    </button>
-  );
-}
+const NO_CHATS: ReadonlyMap<string, number> = new Map();
 
 /** Enough of a passage to tell one delete button from another. */
 function shortened(passage: string): string {
@@ -79,7 +68,8 @@ export function HighlightListPanel({
   onSelect,
   onDelete,
   onUpdate,
-  onOpenBookChat,
+  onOpenChat,
+  chatCounts = NO_CHATS,
 }: HighlightListPanelProps) {
   const [pendingDeletion, setPendingDeletion] = useState<HighlightListItem | null>(null);
   /** The one highlight whose colour and note are open for changing, if any. */
@@ -105,12 +95,10 @@ export function HighlightListPanel({
     return (
       <div className="flex items-center justify-center h-full bg-white">
         <div className="text-center">
-          <p className="text-gray-500 text-sm font-medium mb-1">チャットを開始するには</p>
-          <p className="text-gray-400 text-sm">本文のテキストを選択して質問してください</p>
-          <BookChatEntry
-            onClick={onOpenBookChat}
-            className="mt-4 cursor-pointer rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          />
+          <p className="text-gray-500 text-sm font-medium mb-1">ハイライトはまだありません</p>
+          <p className="text-gray-400 text-sm">
+            本文のテキストを選択して、色を付けるか質問してください
+          </p>
         </div>
       </div>
     );
@@ -123,10 +111,6 @@ export function HighlightListPanel({
       <h2 className="px-4 py-3 border-b border-gray-200 text-sm font-medium text-gray-600 shrink-0">
         {searched ? `ハイライト ${total}件中 ${highlights.length}件` : `ハイライト ${total}件`}
       </h2>
-      <BookChatEntry
-        onClick={onOpenBookChat}
-        className="shrink-0 cursor-pointer border-b border-gray-200 px-4 py-2 text-left text-sm text-blue-600 hover:bg-gray-50"
-      />
       {/* One row, so the list still has room to read in a sheet drawn half way up. */}
       <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 px-4 py-2">
         <input
@@ -165,98 +149,128 @@ export function HighlightListPanel({
         </p>
       ) : (
         <ul className="flex-1 overflow-y-auto">
-          {newestFirst(highlights).map((highlight) => (
-            // The delete button sits beside the row's button rather than
-            // inside it: a button within a button is not markup a browser can
-            // make sense of.
-            <li key={highlight.id} className="relative">
-              <button
-                type="button"
-                onClick={() =>
-                  onSelect({
-                    id: highlight.id,
-                    selectedText: highlight.selectedText,
-                    pageNumber: highlight.pageNumber,
-                  })
-                }
-                className="flex w-full cursor-pointer items-start gap-3 border-b border-gray-100 py-3 pl-4 pr-24 text-left hover:bg-gray-50"
-              >
-                <span
-                  aria-hidden="true"
-                  style={{ backgroundColor: highlight.color }}
-                  className="mt-1 h-3 w-3 shrink-0 rounded-full"
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 block text-sm text-gray-700">
-                    {highlight.selectedText}
-                  </span>
-                  {/* Set off by a rule in the passage's own colour, the way a
+          {newestFirst(highlights).map((highlight) => {
+            const selection: ActiveSelection = {
+              id: highlight.id,
+              selectedText: highlight.selectedText,
+              pageNumber: highlight.pageNumber,
+            };
+            const chatCount = chatCounts.get(highlight.id) ?? 0;
+            return (
+              // The buttons sit beside the row's button rather than inside it: a
+              // button within a button is not markup a browser can make sense of.
+              <li key={highlight.id} className="relative">
+                {/* Picking a mark goes back to it in the book. What was asked
+                  about it is one button over, so a highlight that was only
+                  coloured is not opened onto an empty conversation. */}
+                <button
+                  type="button"
+                  onClick={() => onSelect(selection)}
+                  className="flex w-full cursor-pointer items-start gap-3 border-b border-gray-100 py-3 pl-4 pr-36 text-left hover:bg-gray-50"
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{ backgroundColor: highlight.color }}
+                    className="mt-1 h-3 w-3 shrink-0 rounded-full"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="line-clamp-2 block text-sm text-gray-700">
+                      {highlight.selectedText}
+                    </span>
+                    {/* Set off by a rule in the passage's own colour, the way a
                       note sits in the margin beside what it is about. */}
-                  {highlight.note !== null && (
-                    <span
-                      style={{ borderColor: highlight.color }}
-                      className="mt-1 line-clamp-3 block whitespace-pre-wrap border-l-4 pl-2 text-xs text-gray-600"
-                    >
-                      <span className="sr-only">メモ: </span>
-                      {highlight.note}
+                    {highlight.note !== null && (
+                      <span
+                        style={{ borderColor: highlight.color }}
+                        className="mt-1 line-clamp-3 block whitespace-pre-wrap border-l-4 pl-2 text-xs text-gray-600"
+                      >
+                        <span className="sr-only">メモ: </span>
+                        {highlight.note}
+                      </span>
+                    )}
+                    <span className="mt-1 block text-xs text-gray-400">{`${highlight.pageNumber}ページ`}</span>
+                  </span>
+                </button>
+                {/* The way into the highlight's conversation, with how much is in
+                  it: a count says there is something to read, none says the
+                  button starts one. */}
+                <button
+                  type="button"
+                  aria-label={`「${shortened(highlight.selectedText)}」のチャットを開く`}
+                  onClick={() => onOpenChat(selection)}
+                  className="absolute right-[5.75rem] top-1 flex h-11 min-w-11 cursor-pointer items-center justify-center gap-0.5 rounded-full px-1 text-gray-400 hover:bg-gray-100 hover:text-blue-600"
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                  >
+                    <path d="M3 4h14v9H8l-4 3v-3H3z" />
+                  </svg>
+                  {chatCount > 0 && (
+                    <span aria-hidden="true" className="text-xs text-blue-600">
+                      {chatCount}
                     </span>
                   )}
-                  <span className="mt-1 block text-xs text-gray-400">{`${highlight.pageNumber}ページ`}</span>
-                </span>
-              </button>
-              {/* Beside the delete button, and never only on hover: the same
+                </button>
+                {/* Beside the delete button, and never only on hover: the same
                   list is what a finger gets in the sheet. */}
-              <button
-                type="button"
-                aria-label={`「${shortened(highlight.selectedText)}」のメモと色を変える`}
-                aria-expanded={editingId === highlight.id}
-                onClick={() =>
-                  setEditingId((open) => (open === highlight.id ? null : highlight.id))
-                }
-                className="absolute right-12 top-1 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-              >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-4 w-4"
+                <button
+                  type="button"
+                  aria-label={`「${shortened(highlight.selectedText)}」のメモと色を変える`}
+                  aria-expanded={editingId === highlight.id}
+                  onClick={() =>
+                    setEditingId((open) => (open === highlight.id ? null : highlight.id))
+                  }
+                  className="absolute right-12 top-1 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                 >
-                  <path d="M4 16l1-4 8-8 3 3-8 8-4 1z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                aria-label={`「${shortened(highlight.selectedText)}」を削除`}
-                onClick={() => setPendingDeletion(highlight)}
-                // 44px square, the size a thumb can hit: the same list is what
-                // a phone gets, inside the sheet.
-                className="absolute right-1 top-1 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-gray-400 hover:bg-red-50 hover:text-red-600"
-              >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 20 20"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  className="h-4 w-4"
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                  >
+                    <path d="M4 16l1-4 8-8 3 3-8 8-4 1z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`「${shortened(highlight.selectedText)}」を削除`}
+                  onClick={() => setPendingDeletion(highlight)}
+                  // 44px square, the size a thumb can hit: the same list is what
+                  // a phone gets, inside the sheet.
+                  className="absolute right-1 top-1 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-gray-400 hover:bg-red-50 hover:text-red-600"
                 >
-                  <path d="M6 6l8 8M14 6l-8 8" />
-                </svg>
-              </button>
-              {editingId === highlight.id && (
-                <HighlightEditor
-                  color={highlight.color}
-                  note={highlight.note}
-                  onChange={(change) => onUpdate(highlight.id, change)}
-                  onClose={() => setEditingId(null)}
-                />
-              )}
-            </li>
-          ))}
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 20 20"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    className="h-4 w-4"
+                  >
+                    <path d="M6 6l8 8M14 6l-8 8" />
+                  </svg>
+                </button>
+                {editingId === highlight.id && (
+                  <HighlightEditor
+                    color={highlight.color}
+                    note={highlight.note}
+                    onChange={(change) => onUpdate(highlight.id, change)}
+                    onClose={() => setEditingId(null)}
+                  />
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 
