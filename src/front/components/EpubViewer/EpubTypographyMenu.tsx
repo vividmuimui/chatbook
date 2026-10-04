@@ -1,7 +1,8 @@
 // oxlint-disable-next-line no-restricted-imports -- document への keydown / mousedown 購読 (Escape と外側クリックで閉じる) に必要
 import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
-import { epubTypographyAtom } from "../../atoms/settingsAtom";
+import { epubTypographyAtom, readingModeAtom } from "../../atoms/settingsAtom";
+import { READING_MODE_LABELS } from "../SettingsMenu";
 import {
   DEFAULT_EPUB_TYPOGRAPHY,
   EPUB_FONT_SIZES_PX,
@@ -49,6 +50,7 @@ const stepButtonClass =
 export function EpubTypographyMenu() {
   const [open, setOpen] = useState(false);
   const [typography, setTypography] = useAtom(epubTypographyAtom);
+  const [readingMode, setReadingMode] = useAtom(readingModeAtom);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,6 +90,17 @@ export function EpubTypographyMenu() {
         // Held inside the window on a phone, where the header leaves the menu
         // less room to the left of its button than it has on a wide screen.
         <div className="absolute right-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+          {/* First, since it changes the most: a chapter cut into screens and
+              turned, or one long column scrolled down — Kindle's 「連続スクロール」.
+              Kept for every book, a PDF's ⚙ included. */}
+          <Choices
+            legend="読み方"
+            name="reading-mode"
+            labels={READING_MODE_LABELS}
+            value={readingMode}
+            onChange={setReadingMode}
+          />
+
           <fieldset className="mb-3">
             <legend className="mb-2 text-xs font-semibold text-gray-500">文字の大きさ</legend>
             <div className="flex items-center justify-between">

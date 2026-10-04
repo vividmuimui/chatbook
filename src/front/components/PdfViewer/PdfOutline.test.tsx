@@ -66,6 +66,67 @@ describe("PdfOutline", () => {
     ).toStrictEqual(["1.1 はじめに2"]);
   });
 
+  // An EPUB's page is an item of its spine, which can hold a whole chapter:
+  // 7.1 to 7.5 are one page there, told apart by where in it each starts.
+  describe("in a book whose page holds several sections", () => {
+    const sectioned = [
+      {
+        title: "第7章 認証",
+        pageNumber: 14,
+        children: [
+          { title: "7.1 SAML", pageNumber: 14, offset: 300, anchor: "s1", children: [] },
+          { title: "7.2 OAuth", pageNumber: 14, offset: 2400, anchor: "s2", children: [] },
+        ],
+      },
+    ];
+
+    it("marks the section the place in the page is under", () => {
+      render(
+        <PdfOutline
+          outline={sectioned}
+          error={null}
+          currentPage={14}
+          currentOffset={1000}
+          onJump={() => {}}
+        />,
+      );
+
+      expect(screen.getByRole("button", { current: "location" })).toHaveTextContent(/^7\.1 SAML/);
+    });
+
+    it("hands the place in the page a section names to the jump", async () => {
+      const onJump = vi.fn();
+      render(
+        <PdfOutline
+          outline={sectioned}
+          error={null}
+          currentPage={1}
+          currentOffset={0}
+          onJump={onJump}
+        />,
+      );
+
+      await userEvent.click(screen.getByRole("button", { name: /7\.2 OAuth/ }));
+      expect(onJump).toHaveBeenCalledWith(14, "s2");
+    });
+
+    it("writes what the book says beside each entry, in place of a page no reader counts by", () => {
+      render(
+        <PdfOutline
+          outline={sectioned}
+          error={null}
+          currentPage={1}
+          onJump={() => {}}
+          entryLabel={(entry) => `${entry.offset ?? 0}字`}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: /7\.2 OAuth/ })).toHaveTextContent(
+        /^7\.2 OAuth2400字$/,
+      );
+    });
+  });
+
   it("never marks a bookmark whose page could not be worked out", () => {
     // `usePdfOutline` lists an unresolvable destination with no page at all. A
     // guard read the other way round would take that as page zero and light it

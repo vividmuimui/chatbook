@@ -70,7 +70,7 @@ describe("openEpub", () => {
       {
         title: "第1章 はじめに",
         pageNumber: 1,
-        children: [{ title: "1.1 節", pageNumber: 2, children: [] }],
+        children: [{ title: "1.1 節", pageNumber: 2, children: [], anchor: "s1" }],
       },
       { title: "付録", pageNumber: null, children: [] },
       { title: "外部", pageNumber: null, children: [] },
@@ -94,7 +94,7 @@ describe("openEpub", () => {
       {
         title: "一章",
         pageNumber: 1,
-        children: [{ title: "二章", pageNumber: 2, children: [] }],
+        children: [{ title: "二章", pageNumber: 2, children: [], anchor: "x" }],
       },
     ]);
   });

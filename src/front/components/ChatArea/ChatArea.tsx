@@ -370,6 +370,7 @@ export function ChatArea({
             onChange={(picked) =>
               setScope(picked.map(({ startPage, endPage }) => ({ startPage, endPage })))
             }
+            format={book.format}
           />
         )}
       </div>

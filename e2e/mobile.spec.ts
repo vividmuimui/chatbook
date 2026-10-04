@@ -333,8 +333,10 @@ test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ 
   // The second chapter, which fills several screens of a phone
   const bookId = new URL(page.url()).pathname.split("/").pop()!;
   await page.goto(`/books/${bookId}?page=2`);
-  const chapters = EPUB_CHAPTERS.length;
-  await expect(page.getByText(`2 / ${chapters} 章`, { exact: true })).toBeVisible();
+  // Said by the heading the reader is under, never "2 / 3" of the spine
+  await expect(page.getByRole("navigation", { name: "ページ操作" })).toContainText(
+    EPUB_CHAPTERS[1].heading,
+  );
   const screenLabel = page.getByText(/^\d+ \/ \d+$/);
   await expect(screenLabel).toHaveText(/^1 \//);
   // Waited for, not read once: the chapter counts as one screen until it has
@@ -375,4 +377,35 @@ test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ 
   await expect(
     page.locator(".epubChapter p", { hasText: EPUB_CHAPTERS[1].paragraphs[0] }),
   ).not.toBeInViewport();
+});
+
+test("reads a PDF by scrolling on a phone, the toolbar following the scroll and stepping the column", async ({
+  page,
+}) => {
+  await openTestBook(page);
+  await page.getByRole("button", { name: "設定" }).tap();
+  await page.getByRole("radio", { name: "スクロール" }).tap();
+  await page.keyboard.press("Escape");
+  const pane = page.locator('[data-reading-mode="scroll"]');
+  await expect(pane).toBeVisible();
+
+  // Every page of the fixture is A4, so where one starts is a share of the column
+  await pane.evaluate((el, count) => {
+    const stack = el.firstElementChild as HTMLElement;
+    el.scrollTop = stack.offsetTop + (stack.offsetHeight / count) * 2 + 40;
+  }, PAGE_COUNT);
+  await expect(page.getByText(pageLabel(3), { exact: true })).toBeVisible();
+
+  // A tap at the edge turns nothing while scrolling
+  const box = (await pane.boundingBox())!;
+  await page.touchscreen.tap(box.x + box.width * 0.9, box.y + box.height / 2);
+  await expect(page.getByText(pageLabel(3), { exact: true })).toBeVisible();
+
+  // The toolbar's step scrolls the column to the next page
+  await page
+    .getByRole("navigation", { name: "ページ操作" })
+    .getByRole("button", { name: "次のページ" })
+    .tap();
+  await expect(page.getByText(pageLabel(4), { exact: true })).toBeVisible();
+  await expect(page.locator('.textLayer span[data-page-number="4"]').first()).toBeInViewport();
 });

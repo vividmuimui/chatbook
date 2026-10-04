@@ -25,9 +25,18 @@ import { usePdfDocument } from "../../hooks/usePdfDocument";
 import { useReaderOutline } from "../../hooks/useReaderOutline";
 import { useOcrText, type LoadOcrText } from "../../hooks/useOcrText";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
-import { useWebSearchAtom, zoomAtomFor } from "../../atoms/settingsAtom";
+import { readingModeAtom, useWebSearchAtom, zoomAtomFor } from "../../atoms/settingsAtom";
 import { nextZoom } from "../../lib/pageScale";
 import { fitsTwoPages, lastSpreadStart, turnTo, visiblePages } from "../../lib/spread";
+import {
+  anchorAt,
+  pagesInView,
+  pagesToDraw,
+  readingPage,
+  scrollTopOf,
+  stackPages,
+  type ScrollAnchor,
+} from "../../lib/scrollLayout";
 import { usePageBaseSize } from "../../hooks/usePageBaseSize";
 import { pinchZoom, resolveSwipe, resolveTapZone, type PageTurn } from "../../lib/touchNavigation";
 import { useAskAboutSelection, type SaveSelection } from "../../hooks/useAskAboutSelection";
@@ -170,6 +179,21 @@ function selectedPageElement(): HTMLDivElement | null {
 /** How far j/k move the page, in pixels. A few lines, like vim's line scroll. */
 const SCROLL_STEP = 80;
 
+/** The room under each page of a book read by scrolling, which `PdfPage`'s `mb-4` also is. */
+const SCROLL_PAGE_GAP = 16;
+
+/** Pages drawn either side of those in view while scrolling, so the next is up before it is reached. */
+const SCROLL_OVERSCAN = 1;
+
+/**
+ * Pages kept as an empty white sheet either side of those drawn, so a quick
+ * scroll shows paper arriving rather than grey. Cheap: nothing is drawn in them.
+ */
+const SCROLL_SHEETS = 6;
+
+/** What an undrawn page is taken to be shaped like before any page has been measured: A4. */
+const ASSUMED_ASPECT = Math.SQRT2;
+
 export function PdfViewer({
   pdfId,
   book,
@@ -181,6 +205,12 @@ export function PdfViewer({
 }: PdfViewerProps) {
   const [currentPage, setCurrentPage] = useAtom(currentPageAtom);
   const useWebSearch = useAtomValue(useWebSearchAtom);
+  /**
+   * Whether the pages are turned or scrolled. Scrolled, every page is stacked
+   * down one column at the width of the pane and the page being read is read
+   * off the scroll (`scrollLayout.ts`); no spread, no turning at the edges.
+   */
+  const scrolling = useAtomValue(readingModeAtom) === "scroll";
   const viewports = useAtomValue(pageViewportsAtom);
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
@@ -282,15 +312,50 @@ export function PdfViewer({
    * sends that page away again.
    */
   const pageBaseSize = usePageBaseSize(pdfDocument, currentPage);
-  const twoUp = pageBaseSize !== null && fitsTwoPages(pageBaseSize, contentSize, zoom);
-  /** The pages up at once, left to right on the screen. */
-  const pagesUp = useMemo(
-    () => visiblePages(currentPage, pageCount, twoUp, direction),
-    [currentPage, pageCount, twoUp, direction],
-  );
+  // Never a spread while scrolling: the column is one page wide, and a page
+  // beside another would be a second column to read down.
+  const twoUp =
+    !scrolling && pageBaseSize !== null && fitsTwoPages(pageBaseSize, contentSize, zoom);
+
+  /**
+   * Every page of the book down one column, while scrolling: each as wide as
+   * the pane times the reader's zoom, and as tall as its own shape makes it —
+   * known once it has been drawn, taken from the page being read until then.
+   */
+  const pageStack = useMemo(() => {
+    if (!scrolling || contentSize.width <= 0) return null;
+    const width = contentSize.width * zoom;
+    const assumed = pageBaseSize
+      ? pageBaseSize.baseHeight / pageBaseSize.baseWidth
+      : ASSUMED_ASPECT;
+    const heights = Array.from({ length: pageCount }, (_, i) => {
+      const drawn = viewports[i + 1];
+      return width * (drawn ? drawn.height / drawn.width : assumed);
+    });
+    return stackPages(heights, SCROLL_PAGE_GAP);
+  }, [scrolling, contentSize.width, zoom, pageBaseSize, pageCount, viewports]);
+
+  /** The pages in the view while scrolling, as the last scroll left them. */
+  const [scrolledInView, setScrolledInView] = useState({ first: 1, last: 1 });
+
+  /**
+   * The pages up at once: left to right on the screen when turning; while
+   * scrolling, those in view and the ones either side — with the page being
+   * read always among them, so a jump draws its page before the scroll to it
+   * has been made.
+   */
+  const pagesUp = useMemo(() => {
+    if (!scrolling) return visiblePages(currentPage, pageCount, twoUp, direction);
+    const drawn = new Set(pagesToDraw(scrolledInView, pageCount, SCROLL_OVERSCAN));
+    for (const page of pagesToDraw({ first: currentPage, last: currentPage }, pageCount, 0)) {
+      drawn.add(page);
+    }
+    return [...drawn].sort((a, b) => a - b);
+  }, [scrolling, scrolledInView, currentPage, pageCount, twoUp, direction]);
   /** How far a page turn moves: as many pages as are up, so the reader is
-   * always given pages they have not read. */
-  const pageStep = pagesUp.length;
+   * always given pages they have not read. One while scrolling, which has no
+   * spread. */
+  const pageStep = scrolling ? 1 : pagesUp.length;
 
   const handleShortcut = useCallback(
     (action: ViewerAction) => {
@@ -363,6 +428,8 @@ export function PdfViewer({
   turnPageRef.current = turnPage;
   const directionRef = useRef(direction);
   directionRef.current = direction;
+  const scrollingRef = useRef(scrolling);
+  scrollingRef.current = scrolling;
 
   // Render the page into whatever area the panel currently has, so dragging the
   // splitter or folding the chat away resizes the PDF instead of clipping it.
@@ -465,6 +532,8 @@ export function PdfViewer({
       touch = null;
       endPinch();
       if (!gesture || !turnable()) return;
+      // Scrolling, a finger moves the column; it never turns a page
+      if (scrollingRef.current) return;
       // Enlarged, a finger travelling sideways is moving about the page rather
       // than leaving it — the same reason the edge taps stop turning.
       if (zoomRef.current > ENLARGED_ABOVE) return;
@@ -514,10 +583,83 @@ export function PdfViewer({
   }, [pdfDocument, popoverState, book, setZoom, turnable]);
 
   // A page turn swaps the canvas inside this same pane, so the scroll position
-  // would carry over and the next page would open part-way down.
+  // would carry over and the next page would open part-way down. Scrolling,
+  // the scroll is where the reader is, and is left alone.
   useEffect(() => {
+    if (scrolling) return;
     containerRef.current?.scrollTo({ top: 0 });
-  }, [currentPage]);
+  }, [currentPage, scrolling]);
+
+  /**
+   * Where the view starts while scrolling, as a page and how far into it, so
+   * the place survives pages above it changing height.
+   */
+  const scrollAnchorRef = useRef<ScrollAnchor>({ page: 1, fraction: 0 });
+  /**
+   * The page the scroll last said the reader is on. A page that differs from it
+   * came from somewhere else — a key, the outline, a citation, the address, the
+   * place restored — and is scrolled to; one that matches came from the scroll
+   * and is left where the reader put it.
+   */
+  const reportedPageRef = useRef(0);
+
+  /** How far down the scrolling pane the stack of pages starts (its padding). */
+  const stackOffset = useCallback(() => {
+    const container = containerRef.current;
+    const pages = pagesRef.current;
+    if (!container || !pages) return 0;
+    return (
+      pages.getBoundingClientRect().top -
+      container.getBoundingClientRect().top +
+      container.scrollTop
+    );
+  }, []);
+
+  // Scroll to a page asked for from outside the scroll, and hold the view where
+  // it was whenever the stack changes height — a page drawn at its real size, a
+  // zoom, a resize. A layout effect, so the reader never sees the view jump.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!scrolling) {
+      // Coming back to scrolling starts at the page being read
+      reportedPageRef.current = 0;
+      return;
+    }
+    if (!container || !pageStack) return;
+
+    if (currentPage !== reportedPageRef.current) {
+      scrollAnchorRef.current = { page: currentPage, fraction: 0 };
+      reportedPageRef.current = currentPage;
+    }
+    const offset = stackOffset();
+    const target = offset + scrollTopOf(pageStack, scrollAnchorRef.current);
+    if (Math.abs(container.scrollTop - target) > 1) container.scrollTop = target;
+    const inView = pagesInView(pageStack, container.scrollTop - offset, container.clientHeight);
+    setScrolledInView((was) =>
+      was.first === inView.first && was.last === inView.last ? was : inView,
+    );
+  }, [scrolling, pageStack, currentPage, stackOffset]);
+
+  /**
+   * The scroll is where the reader is: the page under the reading line becomes
+   * the current page — which the address and the place kept for the reader
+   * follow — and the pages in view decide which are drawn.
+   */
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!scrolling || !container || !pageStack) return;
+    const top = container.scrollTop - stackOffset();
+    scrollAnchorRef.current = anchorAt(pageStack, top);
+    const inView = pagesInView(pageStack, top, container.clientHeight);
+    setScrolledInView((was) =>
+      was.first === inView.first && was.last === inView.last ? was : inView,
+    );
+    const page = readingPage(pageStack, top, container.clientHeight);
+    if (page !== reportedPageRef.current) {
+      reportedPageRef.current = page;
+      setCurrentPage(page);
+    }
+  }, [scrolling, pageStack, stackOffset, setCurrentPage]);
 
   // Draw the selection ourselves while the drag is still in progress. The
   // browser's own selection colour stacks up where pdf.js' spans overlap, which
@@ -638,11 +780,12 @@ export function PdfViewer({
       }
 
       // Enlarged, the reader is moving about one page rather than leaving it,
-      // and an edge they are trying to reach is not a page turn.
-      if (zoomRef.current > ENLARGED_ABOVE) return;
+      // and an edge they are trying to reach is not a page turn. Scrolling,
+      // nothing is turned at all: the edges are only more of the page.
+      if (zoomRef.current > ENLARGED_ABOVE || scrolling) return;
       turnPage(zone);
     },
-    [turnable, turnPage, setZoom, direction],
+    [turnable, turnPage, setZoom, direction, scrolling],
   );
 
   /**
@@ -877,23 +1020,47 @@ export function PdfViewer({
               scrolling by page, so that height is what the reader misses. */}
           <div
             ref={containerRef}
+            data-reading-mode={scrolling ? "scroll" : "paged"}
             className="flex-1 overflow-auto py-4 touch-manipulation"
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
+            onScroll={handleScroll}
           >
             <div
               ref={pagesRef}
-              className="mx-auto flex items-start gap-2"
-              style={{ width: "fit-content" }}
+              className={scrolling ? "relative" : "mx-auto flex items-start gap-2"}
+              style={scrolling ? { height: pageStack?.total ?? 0 } : { width: "fit-content" }}
             >
+              {/* Scrolling, the pages near those drawn are blank sheets of the
+                  size they will be drawn at, so a quick scroll meets paper. */}
+              {scrolling &&
+                pageStack &&
+                pagesToDraw(scrolledInView, pageCount, SCROLL_SHEETS)
+                  .filter((page) => !pagesUp.includes(page))
+                  .map((page) => (
+                    <div
+                      key={`sheet-${page}`}
+                      aria-hidden="true"
+                      className="absolute inset-x-0 mx-auto bg-white shadow-lg"
+                      style={{
+                        top: pageStack.tops[page - 1],
+                        width: contentSize.width * zoom,
+                        height: pageStack.heights[page - 1] - SCROLL_PAGE_GAP,
+                      }}
+                    />
+                  ))}
               {pagesUp.map((page) => {
                 const drawnAt = viewportOf(page);
 
-                return (
+                const pageBox = (
                   // Everything belonging to one page hangs off its own box: the
                   // overlays are laid over it, and every rectangle under them
                   // was measured against it.
-                  <div key={page} data-page-container={page} className="relative">
+                  <div
+                    key={page}
+                    data-page-container={page}
+                    className={scrolling ? "relative mx-auto w-fit" : "relative"}
+                  >
                     {/* Same again: only a drawn page reports a render failure,
                         so `onError` is wired under the type checker's eye
                         alone. */}
@@ -902,7 +1069,9 @@ export function PdfViewer({
                         pdfDoc={pdfDocument}
                         pageNumber={page}
                         containerWidth={contentSize.width}
-                        containerHeight={contentSize.height}
+                        // Scrolling, a page is fitted to the pane's width
+                        // alone: the column runs on below it
+                        containerHeight={scrolling ? Number.POSITIVE_INFINITY : contentSize.height}
                         zoom={zoom}
                         ocrLines={ocrLinesByPage.get(page)}
                         onError={reportRenderError}
@@ -950,6 +1119,19 @@ export function PdfViewer({
                       )}
                   </div>
                 );
+
+                // Scrolling, each page sits in a slot at its place in the stack
+                return scrolling ? (
+                  <div
+                    key={page}
+                    className="absolute inset-x-0"
+                    style={{ top: pageStack?.tops[page - 1] ?? 0 }}
+                  >
+                    {pageBox}
+                  </div>
+                ) : (
+                  pageBox
+                );
               })}
             </div>
 
@@ -962,7 +1144,7 @@ export function PdfViewer({
                 the way the shelf's delete button is shown by it: a tablet is as
                 wide as a laptop, so a width cannot tell them apart. Folding the
                 panels is the header's job at this width. */}
-            {book && !isNarrow && (
+            {book && !isNarrow && !scrolling && (
               <div className="flex items-center justify-center py-4 [@media(hover:hover)]:hidden">
                 <PageStepper
                   pageCount={book.pageCount}

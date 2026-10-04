@@ -30,6 +30,32 @@ describe("extractEpubData", () => {
     expect(extracted.fileHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // The server cuts chapters by the page they start on, and a page here is a
+  // file: sections listed side by side in one file would come back as one
+  // chapter carrying the first section's name alone.
+  it("names together the entries of the contents that open in the same chapter file", async () => {
+    const extracted = await extractEpubData(
+      epubFile(
+        buildEpub({
+          chapters: [
+            { file: "ch1.xhtml", body: "<h1>第1章</h1><p>一。</p>" },
+            {
+              file: "ch7.xhtml",
+              body: '<h2 id="a">7.1 SAML</h2><p>一。</p><h2 id="b">7.2 OAuth</h2><p>二。</p>',
+            },
+          ],
+          nav: `<ol><li><a href="ch1.xhtml">第1章</a></li>
+            <li><a href="ch7.xhtml#a">7.1 SAML</a></li><li><a href="ch7.xhtml#b">7.2 OAuth</a></li></ol>`,
+        }),
+      ),
+    );
+
+    expect(extracted.outline).toStrictEqual([
+      { title: "第1章", pageNumber: 1 },
+      { title: "7.1 SAML・7.2 OAuth", pageNumber: 2 },
+    ]);
+  });
+
   it("stores the book without an outline when it has no table of contents", async () => {
     const extracted = await extractEpubData(
       epubFile(buildEpub({ chapters: [{ file: "ch1.xhtml", body: "<p>本文</p>" }] })),

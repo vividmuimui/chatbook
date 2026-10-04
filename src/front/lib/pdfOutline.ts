@@ -14,6 +14,59 @@ export interface OutlineEntry {
   /** null when the destination cannot be resolved to a page */
   pageNumber: number | null;
   children: OutlineEntry[];
+  /**
+   * EPUB only: the id in the chapter the entry points at (`ch7.xhtml#sec3`'s
+   * `sec3`). A chapter is one page of the book, and a book that puts several
+   * sections in one chapter tells them apart only by this.
+   */
+  anchor?: string;
+  /**
+   * EPUB only: where in its chapter's text the entry starts, once the chapter
+   * has been read (`epubProgress.ts` の `mapEpubBook`). Absent, the entry
+   * starts with its chapter.
+   */
+  offset?: number;
+}
+
+/**
+ * The entry a reader is currently inside: the last one that starts at or
+ * before where they are.
+ *
+ * Where they are is a page, and for an EPUB a place in the text of that page
+ * (its chapter) as well: a chapter that holds sections 7.1 to 7.5 is one page,
+ * so the page alone would light up all five — or, the ties going to the later
+ * entry, always the last. A PDF says nothing past the page, so every entry on
+ * it counts as reached.
+ *
+ * The entry itself rather than its title: a book that calls two sections
+ * 「はじめに」 — one under every chapter is how technical books are written —
+ * would otherwise mark them both as the place being read.
+ */
+export function findActiveEntry(
+  entries: OutlineEntry[],
+  currentPage: number,
+  currentOffset = Number.POSITIVE_INFINITY,
+): OutlineEntry | null {
+  let active: OutlineEntry | null = null;
+  /** Whether an entry starts at or before another, with "nothing chosen yet" before all. */
+  const notAfter = (one: OutlineEntry, other: OutlineEntry | null) =>
+    other === null ||
+    other.pageNumber === null ||
+    one.pageNumber! > other.pageNumber ||
+    (one.pageNumber === other.pageNumber && (one.offset ?? 0) >= (other.offset ?? 0));
+  const reached = (entry: OutlineEntry) =>
+    entry.pageNumber !== null &&
+    (entry.pageNumber < currentPage ||
+      (entry.pageNumber === currentPage && (entry.offset ?? 0) <= currentOffset));
+
+  for (const entry of entries) {
+    // Ties go to the later entry, which is the one the reader has reached.
+    if (reached(entry) && notAfter(entry, active)) active = entry;
+
+    const withinChildren = findActiveEntry(entry.children, currentPage, currentOffset);
+    if (withinChildren && notAfter(withinChildren, active)) active = withinChildren;
+  }
+  return active;
 }
 
 type RawOutlineItem = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>[number];

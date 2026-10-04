@@ -127,6 +127,19 @@ function epubType(element: Element): string {
   );
 }
 
+/**
+ * The place in its chapter a table of contents entry points at, as the entry
+ * carries it: nothing for an entry that opens its chapter at the top.
+ *
+ * Kept rather than dropped with the rest of the reference: a book that writes a
+ * whole chapter — 7.1 to 7.5 — into one file of its spine points every section
+ * at the same file, and the fragment is the only thing that tells them apart.
+ */
+function anchorOf(href: string | null): { anchor?: string } {
+  const anchor = href ? fragmentOf(href) : null;
+  return anchor ? { anchor } : {};
+}
+
 /** EPUB 3: the `<nav epub:type="toc">` of the navigation document. */
 function readNavDocument(
   source: string,
@@ -144,11 +157,12 @@ function readNavDocument(
       const label = childrenNamed(li, "a")[0] ?? childrenNamed(li, "span")[0];
       const href = label?.localName === "a" ? label.getAttribute("href") : null;
       const nested = childrenNamed(li, "ol")[0];
+      const internal = href && !isExternalHref(href) ? href : null;
       return {
         title: (label?.textContent ?? "").replace(/\s+/g, " ").trim(),
-        pageNumber:
-          href && !isExternalHref(href) ? pageOf(resolveArchivePath(navPath, href)) : null,
+        pageNumber: internal ? pageOf(resolveArchivePath(navPath, internal)) : null,
         children: nested ? readList(nested) : [],
+        ...anchorOf(internal),
       };
     });
 
@@ -169,10 +183,12 @@ function readNcx(
     childrenNamed(parent, "navPoint").map((point) => {
       const label = childrenNamed(point, "navLabel")[0];
       const src = childrenNamed(point, "content")[0]?.getAttribute("src");
+      const internal = src && !isExternalHref(src) ? src : null;
       return {
         title: (label?.textContent ?? "").replace(/\s+/g, " ").trim(),
-        pageNumber: src && !isExternalHref(src) ? pageOf(resolveArchivePath(ncxPath, src)) : null,
+        pageNumber: internal ? pageOf(resolveArchivePath(ncxPath, internal)) : null,
         children: readPoints(point),
+        ...anchorOf(internal),
       };
     });
 
