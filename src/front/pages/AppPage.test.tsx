@@ -285,6 +285,30 @@ describe("AppPage", () => {
     expect(screen.queryByText("Cloudflare Workers")).not.toBeInTheDocument();
   });
 
+  it("says a book of pictures has no text yet while OCR has still to read it", async () => {
+    // Its pages draw, but nothing on them can be selected, searched or asked
+    // about yet — unexplained, that looks like a reader that has broken.
+    renderReader(
+      BOOK_A.id,
+      { [bookKey(BOOK_A.id)]: { ...BOOK_A, ocrPending: true } },
+      { holdTheBook: true },
+    );
+
+    expect(
+      screen.getByText(
+        "文字の読み取りが途中です。読み取りが終わるまで、文字の選択・本文検索・AIへの質問はできません",
+      ),
+    ).toBeInTheDocument();
+    // Nothing reads it in this tab, so the way to start it again is offered
+    expect(screen.getByRole("button", { name: "文字の読み取りを再開" })).toBeInTheDocument();
+  });
+
+  it("says nothing of OCR for a book with text of its own", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { holdTheBook: true });
+
+    expect(screen.queryByText(/文字の読み取り/)).not.toBeInTheDocument();
+  });
+
   it("leaves the chat of the book being read behind when another book is opened", async () => {
     renderReader(BOOK_A.id, {
       [bookKey(BOOK_A.id)]: BOOK_A,

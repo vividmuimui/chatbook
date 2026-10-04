@@ -178,10 +178,11 @@ vp build   # dist/chatbook/wrangler.json を作り直す。これを飛ばすと
 vp exec wrangler d1 migrations apply chatbook-db --remote
 ```
 
-**OCR（テキストの無い PDF）はマイグレーションを要さない**——行は R2 の `ocr/<sha256>.json` に
-置き、有無も R2 の head で見る（下記「テキストの無い PDF（OCR）」）。そのぶんデプロイには
-`public/tesseract/`（約 17MB の静的アセット）が乗るので、`pnpm install` を済ませた（`postinstall`
-が複製した）チェックアウトから `pnpm run deploy` すること。
+**OCR（テキストの無い PDF）の行は R2 の `ocr/<sha256>.json`** に置き、有無も R2 の head で
+見る。OCR を待っている本かどうかだけは D1 の `pdfs.ocr_status`（`0015_add_ocr_status.sql`）が
+持つ（下記「テキストの無い PDF（OCR）」）。デプロイには `public/tesseract/`（約 17MB の静的
+アセット）が乗るので、`pnpm install` を済ませた（`postinstall` が複製した）チェックアウトから
+`pnpm run deploy` すること。
 
 秘密は 4 つ（Dropbox を使うならさらに 3 つ。下記「Dropbox 連携」）、`wrangler secret put <名前>` で入れる（`.dev.vars` はローカル専用でデプロイには
 乗らない）: `LLM_API_KEY` / `AUTH_USERNAME` / `AUTH_PASSWORD` / `AUTH_SESSION_SECRET`。
@@ -205,20 +206,21 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 
 - **テキスト抽出・表紙生成・描画はすべてクライアント**（`src/front/lib/pdfLoader.ts`）
 - **テキストの無い PDF（スキャンした本）の OCR もクライアント**（tesseract.js を Web Worker
-  で。下記「テキストの無い PDF（OCR）」）
+  で、本を保存した後にバックグラウンドで。下記「テキストの無い PDF（OCR）」）
 - クライアントが抽出済みの `fullText` / `pageCount` / 表紙 webp / 目次（トップレベル章の
-  JSON、無い本は省略）/ OCR の行（OCR した本だけ。JSON のファイル）を **multipart** で
-  `POST /api/pdf/open` に送り、Worker は保存だけを担う
+  JSON、無い本は省略）/ `ocrPending`（OCR を待つ本だけ）を **multipart** で
+  `POST /api/pdf/open` に送り、Worker は保存だけを担う。OCR が読んだ本文と行はあとから
+  `PUT /api/pdf/:pdfId/ocr` で届く
 
 サーバ側で PDF を解析しようとしないこと。
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                                                                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                        |
-| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                            |
+| 置き場所          | 内容                                                                                                                                                                                                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きと OCR の状態 `ocr_status` も持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ）、`hidden_books` / `book_titles`（本棚の非表示と未読み込みファイルの題名） |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                                                                                                                             |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                                                                                                                                 |
 
 **チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
 必ず持ち、`selection_id` を持つのはハイライトの会話だけ。本そのものへの質問（要約・章ごとの
@@ -310,8 +312,10 @@ immutable` と R2 の `httpEtag` を返し、`If-None-Match` は `onlyIf` で R2
   head は互いに独立なので `Promise.all` で並べる（OCR の行の有無を見る head もそこに並ぶ）
 - **OCR の行（`GET /pdf/:pdfId/ocr`）は OCR した本でしか取りに行かない**。本の `hasOcr` が
   立っているときだけ `useOcrText` が SWR のキーを作るので、テキストのある本は 1 往復も
-  増えない。`/file` と同じく `immutable` + ETag で、アップロード直後は `useOpenPdfBook` が
-  キャッシュに先に置く（下記「テキストの無い PDF（OCR）」）
+  増えない。`/file` と同じく `immutable` + ETag で、裏の OCR を読み終えた直後は
+  `useBackgroundOcr` がキャッシュに先に置く（下記「テキストの無い PDF（OCR）」）。
+  **OCR は足したばかりの本を `File` のまま読む**ので、ここでも本を下ろし直さない（再開した
+  読み取りだけが `/file` から取る）
 
 **効かなかったもの**: `pdf.worker`（gzip 486KB）の先読み。`modulepreload` は destination が
 script なので worker が同じファイルをもう一度落とし、`rel="preload" as="worker"` は Chromium
@@ -378,7 +382,8 @@ union + `satisfies` で固定する。
   ログイン（`RequireSession`）・ログアウト（`ShelfSettingsMenu`）・
   Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・
   本の題名の変更（`ShelfPage` → `BookTitleDialog`）・ページめくりの向きの保存
-  （`usePageDirection`）・目次の生成（`useReaderOutline`）の 12 個。
+  （`usePageDirection`）・目次の生成（`useReaderOutline`）・OCR が読んだ本文の保存
+  （`useBackgroundOcr`。`Err` は throw してキューの `failed` に載せる）の 13 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -414,30 +419,30 @@ union + `satisfies` で固定する。
 
 失敗の受け皿と表示場所は次のとおり。新しい失敗を足すときはこの表のどれかに合流させる:
 
-| 失敗                                         | 受け皿                                                | 出る場所                                                                             |
-| -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                     |
-| 追加する本の OCR（中止は失敗に数えない）     | `ShelfPage` の `actionError`（`importFailed`）        | 本棚上部の赤い枠                                                                     |
-| OCR の行の取得                               | `useOcrText` の `error`                               | ビューア上部（ページは描く。文字が選べないことを言う）                               |
-| Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
-| Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
-| Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
-| 本の題名の変更（未読み込みのファイルも）     | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
-| 未読み込みのファイルの題名の一覧             | `ShelfPage` の題名側 SWR の `error`                   | 本棚上部の赤い枠（ファイル名のまま描く）                                             |
-| 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
-| PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
-| ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
-| 目次の取得                                   | `usePdfOutline` の `error`                            | 目次パネル                                                                           |
-| 目次の生成（AI）                             | `useReaderOutline` の `generation.error`              | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
-| ページめくりの向きの保存                     | `usePageDirection` の `error`                         | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
-| ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
-| ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                          | 編集欄の中（開いたまま。打ったメモも残る）                                           |
-| ハイライトの削除                             | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
-| ハイライトの検索                             | `useHighlightSearch` の `searchError`                 | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
-| 本文の検索                                   | `useBookTextSearch` の `searchError`                  | 本文検索パネルの入力行の下                                                           |
-| チャットの送信・履歴の取得                   | `chatErrorAtom`                                       | チャットパネル（狭い画面ではシート）                                                 |
-| リンク先の passage が見つからない            | `useReadingLocation` の `passageMiss`                 | ヘッダ直下の帯                                                                       |
-| 読書位置の保存                               | `useReadingStateSync` の `saveError`                  | ヘッダ直下の帯                                                                       |
+| 失敗                                         | 受け皿                                                 | 出る場所                                                                             |
+| -------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`         | 本棚上部の赤い枠                                                                     |
+| 本の OCR（読み取り・保存。中止は数えない）   | `ocrQueue` の `failed`（`useBackgroundOcr` の `jobs`） | 本棚の項目の下（「再開」を出す）とリーダーのヘッダ直下の帯                           |
+| OCR の行の取得                               | `useOcrText` の `error`                                | ビューア上部（ページは描く。文字が選べないことを言う）                               |
+| Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                           | 本棚上部の赤い枠                                                                     |
+| Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`               | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
+| Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                       | ダイアログの中（開いたまま）                                                         |
+| 本の題名の変更（未読み込みのファイルも）     | `BookTitleDialog` の `error`                           | ダイアログの中（開いたまま。打った題名も残る）                                       |
+| 未読み込みのファイルの題名の一覧             | `ShelfPage` の題名側 SWR の `error`                    | 本棚上部の赤い枠（ファイル名のまま描く）                                             |
+| 本の読み込み                                 | `useBook` の `error` → `bookError` prop                | ビューア中央とチャットパネル                                                         |
+| PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                            | ビューア中央                                                                         |
+| ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError`  | ビューア上部（ページを移ると消える）                                                 |
+| 目次の取得                                   | `usePdfOutline` の `error`                             | 目次パネル                                                                           |
+| 目次の生成（AI）                             | `useReaderOutline` の `generation.error`               | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
+| ページめくりの向きの保存                     | `usePageDirection` の `error`                          | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
+| ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                  | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
+| ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                           | 編集欄の中（開いたまま。打ったメモも残る）                                           |
+| ハイライトの削除                             | `HighlightListPanel` の `actionError`                  | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
+| ハイライトの検索                             | `useHighlightSearch` の `searchError`                  | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
+| 本文の検索                                   | `useBookTextSearch` の `searchError`                   | 本文検索パネルの入力行の下                                                           |
+| チャットの送信・履歴の取得                   | `chatErrorAtom`                                        | チャットパネル（狭い画面ではシート）                                                 |
+| リンク先の passage が見つからない            | `useReadingLocation` の `passageMiss`                  | ヘッダ直下の帯                                                                       |
+| 読書位置の保存                               | `useReadingStateSync` の `saveError`                   | ヘッダ直下の帯                                                                       |
 
 `chatErrorAtom` だけ二重の口がある。**atom が表示の正、`sendMessage` の戻り値
 （`ResultAsync<string, ApiError>`。成功時の値は保存された回答の id）は呼び出し元の
@@ -525,29 +530,34 @@ be iterated…」**（ネイティブの iterator を消してから本を開く
 ### テキストの無い PDF（OCR）
 
 スキャンした本はページが文字の画像で、pdf.js はテキストを 1 文字も読めない。以前は `fullText` が
-空のままサーバの 400 で拒まれていた。今は**取り込み時にブラウザ内の Tesseract（tesseract.js、
-日本語＋英語）で文字を起こし**、起こした文字を `fullText` に、行ごとの箱を R2 に置く。サーバは
-形式を区別しないので、チャットの抜粋・出典・`/locate`・本文検索はそのまま動く。
+空のままサーバの 400 で拒まれていた。今は**本を先に（文字の無いまま）保存し、そのあと
+バックグラウンドでブラウザ内の Tesseract（tesseract.js、日本語＋英語）が文字を起こす**。
+起こした文字は `fullText` に、行ごとの箱は R2 に置く。サーバは形式を区別しないので、
+読み終えた本ではチャットの抜粋・出典・`/locate`・本文検索がそのまま動く。
 
-| 何を                                                      | どこが                                                                                 |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| OCR が要るか・行の正規化・箱の換算・text content への変換 | `src/front/lib/ocrText.ts`（純関数。`ocrText.test.ts`）                                |
-| ページを 1 枚ずつ描いて読む・進捗・中止                   | `src/front/lib/pdfOcr.ts` の `readPagesByOcr`（エンジンは `OcrEngine` で注入）         |
-| Tesseract の起動（動的 import）                           | `src/front/lib/tesseractEngine.ts`                                                     |
-| 取り込みへの組み込み                                      | `pdfLoader.ts` の `extractPdfData`（`ExtractOptions`）→ `useOpenPdfBook` → `ShelfPage` |
-| 保存・配信                                                | `routes/pdf.ts` の `POST /pdf/open`（`ocr` フィールド）と `GET /pdf/:pdfId/ocr`        |
-| front と server が交わす形                                | `src/shared/schemas/ocr.ts`（`ocrTextSchema`）                                         |
-| ページへの重ね方                                          | `PdfViewer` が `useOcrText` で読み、`PdfPage` の `ocrLines` へ渡す                     |
-| アセットの複製                                            | `scripts/copy-tesseract-assets.mjs`（`postinstall`）                                   |
+| 何を                                                      | どこが                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| OCR が要るか・行の正規化・箱の換算・text content への変換 | `src/front/lib/ocrText.ts`（純関数。`ocrText.test.ts`）                                                      |
+| ページを 1 枚ずつ描いて読む・進捗・中止                   | `src/front/lib/pdfOcr.ts` の `readPagesByOcr`（エンジンは `OcrEngine` で注入）                               |
+| 本 1 冊を開いて読み、送る形（`SaveOcrRequest`）にする     | `src/front/lib/bookOcr.ts` の `readBookByOcr`                                                                |
+| 1 冊ずつのキュー（ページの外。タブが開いている間だけ）    | `src/front/lib/ocrQueue.ts`（`ocrQueue`。`useSyncExternalStore` で購読する）                                 |
+| 読み取り・保存・キャッシュへの反映                        | `src/front/hooks/useBackgroundOcr.ts`                                                                        |
+| Tesseract の起動（動的 import）                           | `src/front/lib/tesseractEngine.ts`                                                                           |
+| 取り込みでの判定（`needsOcr`）                            | `pdfLoader.ts` の `extractPdfData` → `useOpenPdfBook`（`ocrPending` を送る）→ `ShelfPage` が読み取りを始める |
+| 表示（本棚の項目・リーダーの帯）と文言                    | `ShelfPage.tsx` の `OcrNotice`、`AppPage.tsx`、`src/front/lib/ocrWording.ts`                                 |
+| 保存・配信                                                | `routes/pdf.ts` の `POST /pdf/open`（`ocrPending`）、`PUT /pdf/:pdfId/ocr`、`GET /pdf/:pdfId/ocr`            |
+| front と server が交わす形                                | `src/shared/schemas/ocr.ts`（`ocrTextSchema` / `saveOcrRequestSchema` / `ocrSavedSchema`）                   |
+| ページへの重ね方                                          | `PdfViewer` が `useOcrText` で読み、`PdfPage` の `ocrLines` へ渡す                                           |
+| アセットの複製                                            | `scripts/copy-tesseract-assets.mjs`（`postinstall`）                                                         |
 
 - **判定はページの非空白文字数**（`pagesNeedingOcr`）。`MIN_PAGE_TEXT_CHARS` = 8 未満のページを
   「文字が無い」とし、**それが全ページの過半数のときだけ** OCR する。そのとき読むのは文字の無い
   ページだけで、pdf.js が読めるページは自分のテキストのまま。0 ではなく 8 なのは、スキャン本には
   ノンブルやスキャナが残したゴミ文字だけのページがあるため。過半数なのは、図版ページが数枚ある
   普通の本を数分の OCR に巻き込まないため（図版ページは選ぶ文字が無いので失うものも無い）
-- **OCR しても全ページが空なら取り込みを止める**（`NOTHING_TO_READ`。「このPDFからは文字を
-  読み取れませんでした」）。サーバの 400（`Missing fullText`）は残っていて、読者がそれを見る
-  ことは無い
+- **OCR しても全ページが空なら、その旨を言って終える**（`NOTHING_TO_READ`。「このPDFからは
+  文字を読み取れませんでした」を本棚の項目に出す）。本はもう保存されているので消さず、空の本文と
+  行 0 本で `done` にする（再開の口が出続けないように）。ページは画像として読める
 - **1 ページずつ描いて読み、canvas を空にしてから次へ**（`readPagesByOcr`）。倍率は
   `OCR_RENDER_SCALE` = 2（10pt の本文が約 28px になり、日本語のモデルがよく読む大きさ）で、
   長辺を `MAX_OCR_RENDER_SIDE` = 3000px で頭打ちにする（ポスター大のページで数百 MB の canvas を
@@ -583,45 +593,88 @@ be iterated…」**（ネイティブの iterator を消してから本を開く
   `wasm-unsafe-eval` が要る——Worker は blob から `importScripts` で起動する）
 - **tesseract.js は `tesseractEngine.ts` の中で動的 import する**。OCR する本を足さない読者は
   ライブラリ（17KB のチャンク）すら読まない
-- **進捗と中止**: 本棚の覆いに `recognizing` の段階が加わり「文字を読み取り中 12/200 ページ」と
-  数える（エンジンの読み込み中は 0/N。最後のページを読み終えたら「本を読み取り中...」へ戻す——その先に中止で止まるものは無い）。この段階の間だけ覆いに「中止」ボタンが出て、押すと
-  `AbortController` が `readPagesByOcr` を止める——読みかけのページも待たない
+- **取り込みは OCR を待たない**。`extractPdfData` は判定だけをして `needsOcr` を返し、
+  `useOpenPdfBook` は `ocrPending=true` を付けて pdf.js が読めた分だけの `fullText`（たいてい
+  空）で送る。**サーバは `ocrPending` のときだけ空の本文を受ける**（それ以外の空は従来どおり
+  400 `Missing fullText`）、`pdfs.ocr_status` を `pending` にして応答に `ocrPending: true` を
+  載せる。`ShelfPage` はそれを見て**読者が選んだ `File` を渡して**読み取りを始め、リーダーへ
+  出る（上げたばかりの本を下ろし直さない）。本棚の覆いに OCR の段階は無い
+- **OCR はページの外のキューで走る**（`ocrQueue.ts`。モジュールに 1 つ）。React のページは
+  本棚とリーダーの行き来で作り直されるが、キューはタブが開いている限り残る。**一度に読むのは
+  1 冊**——1 冊が PDF のドキュメント・Tesseract の Worker・言語モデルを抱えるので、2 冊分は
+  スマホのメモリに収まらない。同じ本を 2 回入れても 1 回しか読まない。ジョブは `waiting` /
+  `reading`（`done` / `total`。`total` 0 はページ数がまだ分からない）/ `saving` /
+  `failed`（理由つき）/ `unreadable` で、読み終えて保存できたらキューから消える（サーバが
+  もう待っていないと言うので、出すものが無い）。**取り消された実行が遅れて終わっても、
+  そのあと入れ直した同じ本のジョブを上書きしない**（enqueue ごとのトークンで見分ける）
+- **終わったらキャッシュへ書く**（`useBackgroundOcr`）——`bookKey`（`hasOcr`・
+  `ocrPending: false`）、`ocrKey`（行。ビューアが取りに行かない）、本棚（`ocrPending: false`）。
+  `mutate` は始めたページの `useSWRConfig` のものだが、**キャッシュに結び付いていてページには
+  結び付いていない**ので、読者がどこへ移っていても効く。開いているビューアは `hasOcr` が立った
+  時点で行を重ねて描き直す
+- **本棚は本の項目に状況を出す**（`OcrNotice`。開くボタンの外——中にボタンは置けない）:
+  「文字の読み取り待ち」「文字を読み取り中 12/200 ページ」（細いバーつき）「文字を保存中...」
+  の間は「中止」、**サーバが `ocrPending` と言っているのにこのタブで誰も読んでいない**とき
+  （タブを閉じた・リロードした・中止した）は「文字の読み取りが途中です」と「再開」、失敗は
+  「文字を読み取れませんでした: 理由」と「再開」。ボタンの名前は「〈題名〉 の文字の読み取りを
+  中止 / 再開」（「開く」「削除」「非表示」と部分一致で当たらない）。**再開は本を `/file` から
+  取り直して**頭から読む（途中までの結果は持たない）
+- **リーダーはヘッダ直下の帯で言う**（`AppPage`。`book.ocrPending` の間）——「〈状況〉。
+  読み取りが終わるまで、文字の選択・本文検索・AIへの質問はできません」。誰も読んでいなければ
+  「文字の読み取りを再開」も出す。**止めてはいない**——選択・検索・チャットの口はそのままで、
+  本文が空なので何も見つからない・答えられないだけ（それを読者に先に言うのが帯）
+- **中止**は `AbortController` が `readPagesByOcr` を止める——読みかけのページも待たない
   （`untilAborted`）。Tesseract の Worker は `terminate` し、エンジンの起動中に中止したら
-  起動し終えたところで止める。中止は `AbortError` として `useOpenPdfBook` の結果に載り、
-  `ShelfPage` の `importFailed` は**名前で中止を見分けて何も言わない**（読者が頼んだことなので）。
-  アップロードは始まっていないので何も保存されない。`asError` が `DOMException` の名前を保つのは
-  この見分けのため
+  起動し終えたところで止める。中止は失敗に数えず、ジョブは消える（本はサーバで待ったまま
+  なので「途中です」に戻る）
+- **あとから届く本文は `PUT /api/pdf/:pdfId/ocr`**（`saveOcrRequestSchema` =
+  `{ fullText, pages }`。`validate` で検証し、壊れていれば 400、無い本は 404）。`pages` が
+  あれば R2 の `ocr/<sha256>.json` に書き、無ければ消す。`full_text` を差し替えて
+  `ocr_status` を `done` にする（R2 が先——`done` なのに行が無い本を作らない）。応答は
+  `{ id, hasOcr }`。**`updatedAt` は動かさない**（本棚の並びが変わる）
 - **保存は R2 の `ocr/<sha256>.json`**（D1 ではない。1 冊で 1MB 程度になり、読むのはビューア
-  だけでクエリはしない）。`POST /pdf/open` の任意の `ocr` フィールド（JSON のファイル）を
-  `ocrTextSchema` で検証して書き、**壊れていれば 400**（`Invalid OCR text`。文字の選べない
-  スキャン本を黙って作らない）。**同じ本を OCR 無しで取り込み直したら消す**（他のメタデータと
-  同じく最新の抽出が勝つ）。本の削除でも消す
-- **D1 に列は足していない**（マイグレーション無し）。本が OCR の行を持つかは `readPdf` が R2 の
-  head で見て `hasOcr` として返す（表紙の head と同じ `Promise.all` に並ぶので往復は増えない）。
-  アップロード直後の先充填は抽出結果から正確に立てる
+  だけでクエリはしない）。`POST /pdf/open` の任意の `ocr` フィールド（JSON のファイル）も
+  まだ受ける（`done` になる。今のクライアントは送らない）。壊れていれば 400（`Invalid OCR text`）。
+  **同じ本を OCR 無しで取り込み直したら消す**（他のメタデータと同じく最新の抽出が勝つ）。
+  本の削除でも消す
+- **ただし OCR を読み終えた本を `ocrPending` でもう一度足したら、読んだ本文と行を残す**
+  （`storePdf` の `keepsReadText`。同じバイト列なので読み直しても同じ文字になり、読者に数分を
+  払わせるだけ）。応答は `ocrPending: false` で、読み取りは始まらない
+- **`ocr_status` は `0015_add_ocr_status.sql` の列**（`pending` / `done` / NULL。NULL は自前の
+  文字を持つ本と、この列より前の本——当時のスキャン本は保存前に読んでいたので待っていない）。
+  API には `ocrPending`（boolean。`bookSummarySchema` / `bookDetailSchema` /
+  `pdfMetadataSchema` で optional——古い応答とフィクスチャは「待っていない」と読む）として出す。
+  本が OCR の行を持つか（`hasOcr`）は従来どおり `readPdf` が R2 の head で見る
 - **ビューアは `hasOcr` のときだけ `GET /pdf/:pdfId/ocr` を読む**（`useOcrText`。
-  `useSWRImmutable`）。行は本のハッシュで保存され同じバイト列のアップロードしか書かないので、
-  `/file` と同じ `private, max-age=31536000, immutable` + ETag（`onlyIf` で 304）。
-  **アップロード直後は `useOpenPdfBook` が `ocrKey(id)` に先に置く**ので取りに行かない。
-  行が届く前に描いたページはテキストレイヤーが空のまま描かれ、届いたら描き直す（`ocrLines` が
-  `PdfPage` の effect の依存に入っている）。取得に失敗したらビューア上部に出す——ページは
-  描けるので読めるが、選択も印も効かない
-- **既に取り込まれたテキストの無い本は無い**前提（以前は 400 で取り込めなかった）。後追いで
-  OCR する口は作っていない
-- **同じスキャン本を取り込み直すと OCR もやり直す**（数分）。取り込み済みかをサーバに先に聞く
-  口は無い
+  `useSWRImmutable`）。行は本のハッシュで保存されるので、`/file` と同じ
+  `private, max-age=31536000, immutable` + ETag（`onlyIf` で 304）。**読み終えた直後は
+  `useBackgroundOcr` が `ocrKey(id)` に先に置く**ので取りに行かない。行が届く前に描いたページは
+  テキストレイヤーが空のまま描かれ、届いたら描き直す（`ocrLines` が `PdfPage` の effect の依存に
+  入っている）。取得に失敗したらビューア上部に出す——ページは描けるので読めるが、選択も印も効かない
+- **割り切り**: 読み取りはタブの中だけで走る（Service Worker は置かない。上記「PWA」）。
+  閉じれば止まり、次に本棚を開いた読者が「再開」を押すまで再開しない（自動で再開しないのは、
+  開いただけの本棚が数分 CPU とメモリを使い始めるのを避けるため）。途中のページまでの結果は
+  保存しないので、再開は頭から
 
 守っているテストは次のとおり:
 
-| 何を                                                   | どのテスト                                                                                                                                  |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 判定・正規化・箱の換算・text content（回転を含む）     | `src/front/lib/ocrText.test.ts`                                                                                                             |
-| 1 ページずつ・進捗・canvas の解放・中止・起動前の中止  | `src/front/lib/pdfOcr.test.ts`（偽のドキュメントと偽のエンジン）                                                                            |
-| `ocr` フィールドの送り方・先充填・中止と進捗の受け渡し | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                                   |
-| 覆いの「文字を読み取り中 N/M ページ」・中止            | `src/front/pages/ShelfPage.test.tsx`                                                                                                        |
-| 取得失敗の表示・テキストのある本では取りに行かない     | `src/front/components/PdfViewer/PdfViewer.test.tsx`                                                                                         |
-| 保存・`hasOcr`・キャッシュ・strip・上書き・400・削除   | `test/worker/pdf.test.ts` の `OCR text of a book without its own`                                                                           |
-| 本物の Tesseract で読み、検索の印がその行に付く        | `e2e/chatbook.spec.ts`「a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page」（desktop） |
+| 何を                                                     | どのテスト                                                                                                                         |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 判定・正規化・箱の換算・text content（回転を含む）       | `src/front/lib/ocrText.test.ts`                                                                                                    |
+| 1 ページずつ・進捗・canvas の解放・中止・起動前の中止    | `src/front/lib/pdfOcr.test.ts`（偽のドキュメントと偽のエンジン）                                                                   |
+| 1 冊ずつ・進捗・中止・失敗と再開・遅れて終わる実行       | `src/front/lib/ocrQueue.test.ts`                                                                                                   |
+| 読み終えた結果を 3 つのキャッシュへ書く                  | `src/front/hooks/useBackgroundOcr.test.tsx`                                                                                        |
+| `ocrPending` の送り方・先充填・サーバの答えに従うこと    | `src/front/hooks/useOpenPdfBook.test.tsx`（「useOpenPdfBook with a book of pictures」）                                            |
+| 選んだファイルで読み始める・項目の進捗・中止・再開・失敗 | `src/front/pages/ShelfPage.test.tsx`（「reading a book of pictures by OCR in the background」）                                    |
+| リーダーの帯                                             | `src/front/pages/AppPage.test.tsx`「says a book of pictures has no text yet…」                                                     |
+| 取得失敗の表示・テキストのある本では取りに行かない       | `src/front/components/PdfViewer/PdfViewer.test.tsx`                                                                                |
+| 保存・`hasOcr`・キャッシュ・strip・上書き・400・削除     | `test/worker/pdf.test.ts` の `OCR text of a book without its own`（`ocrPending` での保存・`PUT /ocr`・読み終えた本の再追加を含む） |
+| 本物の Tesseract で読み、検索の印がその行に付く          | `e2e/chatbook.spec.ts`「a scanned book is added at once and read by OCR in the background…」（desktop）                            |
+
+E2E は `PUT /ocr` を `page.route` で止めておき、その間に本棚へ戻って「文字を(読み取り中|保存中)」と
+「中止」を見て、リロードで「途中です」になることを見てから止めを外し、「再開」で読み終えさせる
+（2 ページは数秒で読み終わるので、止めないと本棚を見る前に終わる）。**「N/M ページ」の数字そのもの
+は E2E では見ていない**（jsdom が見る）。
 
 E2E は行の位置も見る——検索の印が行と同じ高さにあることと、1 行目の span がページ画像の
 インクの位置（左 140px・上 160px / 1240×1754px）に重なること。`PdfPage` で `ocrLines` を
@@ -1244,10 +1297,11 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
   `importing`（`ShelfPage` の state。タイルの `disabled`・ドラッグとドロップの無視・
   この覆いの 3 つが読む）は `reading` / `uploading` + 割合 / `storing` の 3 状態で、
   文言は `importWording` が作る——「本を読み取り中...」「アップロード中 45%」「保存中...」。
-  （Dropbox の本は手前に `downloading`、テキストの無い PDF は `reading` と `uploading` の間に
-  `recognizing`「文字を読み取り中 12/200 ページ」が入る。**「中止」ボタンが出るのは
-  `recognizing` の間だけ**——数分かかりうるのはそこだけで、止まる口を持つのもそこだけ。
-  上記「テキストの無い PDF（OCR）」）
+  （Dropbox の本は手前に `downloading` が入る。**テキストの無い PDF の OCR はこの覆いに
+  入らない**——本を先に保存してリーダーへ出し、OCR は裏で走って本棚の項目とリーダーの帯に
+  出る。数分かかる処理で本棚を塞がないため。上記「テキストの無い PDF（OCR）」）。
+  **追加に成功したら本棚の一覧を取り直す**（`mutate()`。本棚がまだ在るうちに）——すぐ本棚へ
+  戻った読者に、SWR の重複排除の間隔の内側で古い一覧（足した本の無いもの）を見せないため
   **`uploading` → `storing` は割合が 1 に達したことから `ShelfPage` が自分で決める**
   （送り終えたことを報せる合図は無い）。**ブラウザが本体の大きさを言わないときは割合が
   出ない**ので、その環境では覆いが直前の文言のまま送信が終わるのを待つ。
@@ -1265,14 +1319,14 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 
 守っているテストは次のとおり:
 
-| 何を                                             | どのテスト                                                                                                                    |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                                                            |
-| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                                                     |
-| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                                                               |
-| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                                                          |
-| OCR の段階の覆いと中止                           | 同上（「counts the pages up…」「takes the cancel button away…」「stops reading a book by OCR…」「offers no way to cancel…」） |
-| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」                                  |
+| 何を                                             | どのテスト                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 落とされたものの判定と拒否の文言                 | `src/front/lib/droppedPdf.test.ts`                                                           |
+| キャッシュ先充填と拒否の運び方                   | `src/front/hooks/useOpenPdfBook.test.tsx`                                                    |
+| 進捗・拒否・切断の運び方（XHR 側）               | `src/front/lib/fetcher.test.ts`                                                              |
+| タイルの位置・枠の出入り・処理中の覆い・拒否表示 | `src/front/pages/ShelfPage.test.tsx`                                                         |
+| OCR を裏で始める・項目の進捗と中止・再開         | 同上（「reading a book of pictures by OCR in the background」）                              |
+| 実際に本が開くこと                               | `e2e/chatbook.spec.ts`「adding a PDF from the shelf opens the reader and renders its pages」 |
 
 **E2E にドロップのテストは無い**（Playwright からファイルのドラッグを合成できない）。
 ドロップの経路を守っているのは jsdom だけ。
@@ -2091,8 +2145,9 @@ SWR の使い方で押さえるところ:
   のように生 `fetch` を渡すとスキーマ検証を素通りし、`ApiError` / `INVALID_RESPONSE`
   の防護が消える。SWR の `error` state が受け止めるので、ここは throw する `fetcher` の
   ままでよく、`resultFetcher` に替えない。現在の SWR 呼び出しは全て `fetcher` 経由。
-  **JSON ではない 2 つ——PDF バイナリ（`usePdfDocument`）とチャットの SSE
-  （`useChatStream`）——だけが生の `fetch` を直接使う**。どちらも SWR ではなく、拒否の
+  **JSON ではない 2 種——PDF バイナリ（`usePdfDocument` と、再開した OCR が本を取り直す
+  `useBackgroundOcr` の `readStoredBook`）とチャットの SSE（`useChatStream`）——だけが生の
+  `fetch` を直接使う**。どれも SWR ではなく、拒否の
   読み取りは `fetcher.ts` の `readRefusal` を通して同じ文言に揃える
 - **ルートの `SWRConfig`**（`src/front/main.tsx`）で `revalidateOnFocus` を切っている。
   ローカル単一ユーザーのアプリでデータは自分の操作でしか変わらず、focus 復帰の再検証は
@@ -2130,7 +2185,10 @@ SWR の使い方で押さえるところ:
   `atomFamily` を使わないのは非推奨で本を開くたびに警告を出すため
 - **テストの差し替え口は 2 つある**。取得そのものを差し替えるなら DI 引数——
   `useBook(pdfId, loadBook)` / `useHighlights(pdfId, loadBook, deleteHighlight, updateSelection)` /
-  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/ `extractPdfData(file, { createOcrEngine })`（OCR のエンジン。テストは `pdfOcr.ts` の `OcrEngine` を偽物で満たす）/
+  `useHighlightSearch(pdfId, search)`（既定は `requestSelectionSearch`）/ `readBookByOcr(bytes, { createOcrEngine })`（OCR のエンジン。テストは `pdfOcr.ts` の `OcrEngine` を偽物で満たす）/
+  `useBackgroundOcr({ read, save, queue })`（OCR の読み取り・保存と、キュー。**キューは
+  モジュールの 1 つ（`ocrQueue`）なので、テストは `createOcrQueue()` で自分のものを渡す**——
+  渡さないとジョブがテストをまたいで残る）/
   `usePdfDocument(pdfId, book, fetchFn, buildDocument)`（**アップロードの手渡しだけは DI
   ではない**——モジュールの 1 枠なので、テストは `rememberUploadedFile` で置き
   `forgetUploadedFile` で片付ける。SWR の既定キャッシュと同じ扱い）/
@@ -2138,15 +2196,15 @@ SWR の使い方で押さえるところ:
   `useAskAboutSelection(addHighlight, saveSelection)` /
   `useReadingStateSync(pdfId, locationReady, save, debounceMs)`（**時間も DI**。テストは
   デバウンスを短くして偽タイマーで進める）/
-  `ShelfPage({ loadBooks, deleteBook, extract, createUploadRequest })`（どちらも
+  `ShelfPage({ loadBooks, deleteBook, extract, createUploadRequest, readByOcr, saveOcr, ocrQueue })`（どちらも
   `extract` と `createUploadRequest` の 2 つが `useOpenPdfBook(extract, onProgress,
 createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfPage` が自分で組み立てる
   クロージャで、割合が 1 に達したら `storing` へ切り替える写像を持つのはそこ 1 箇所。
   **アップロードだけは `fetch` ではなく XHR なので、`vi.stubGlobal("fetch", ...)` では
   止められない**——`src/test/fakeUpload.ts` の `fakeUpload()` が作った `request` を返す関数を
-  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める。`extract` は
-  `(file, { signal, onOcrProgress })` を受け取るので、偽の `extract` がそれを呼んで OCR の
-  進捗と中止を演じる）/
+  渡し、`uploaded()` / `answers()` で進捗と応答をテストが決める。OCR の進捗と中止は
+  偽の `readByOcr` が `onProgress` と `signal` で演じる。`renderShelf` はレンダーごとに
+  `createOcrQueue()` を渡す）/
   `PdfViewer({ measureSelection, saveSelection, loadOcrText })`（`loadOcrText` は `useOcrText(pdfId, hasOcr, load)` へ渡る）/
   `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights })` がその口。`measureSelection` は
   ポップオーバーを開く唯一の入口で、**実 DOM 選択と pdf.js が描いたページを両方要求する
@@ -2279,8 +2337,11 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 デプロイされ終わる」までで、その間に届いた回答が 1 件保存できなくなる（`CHAT_SAVE_FAILED` の帯が
 出る。データは失われない）。順番は変えられない——先にコードを出すと `pdf_id` 列が無くて同じ
 ように落ちる。E2E は Playwright が起動時に適用するので影響を受けない。
-OCR の `hasOcr` は列ではなく R2 の head なので、ここに足すマイグレーションは無い（上記
-「テキストの無い PDF（OCR）」）。
+OCR の `hasOcr` は列ではなく R2 の head だが、OCR を待っているか（`ocr_status`）は列で、
+`0015_add_ocr_status.sql` が要る。`readPdf` / `storePdf` / 本棚の一覧がこの列を読むので、
+未適用の D1 では本を開く経路・本の追加・本棚が 500 になる。nullable な列の追加なので旧コードには
+無害（上記「テキストの無い PDF（OCR）」）。同じく `0014_dropbox_titles.sql`（`book_titles`。
+上記「題名は読者が変えられる」）も先に当てる。
 
 キーバインド（Vim / Emacs）は `src/front/lib/keybindings.ts` の `resolveAction` に
 DOM 非依存の純粋関数として実装。`gg` や `C-c t` の2ストロークは `pending` プレフィックスで表現し、
@@ -2494,8 +2555,9 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   生成した機械のフォント**（和文は Hiragino / Noto CJK）なので、別の機械で作り直すと画素が
   変わりうる（読むのは OCR だけなので、検索語が読める限り問題ない）。検索語は英語の 1 語
   （`SCANNED_SEARCH_WORD`）で、2 ページ目にしか無い。**E2E はここで本物の Tesseract を回す**
-  （アセットは自前配信なのでネットワークは要らない。手元では 2 ページで数秒）。ファイル名を
-  `test-book` にしないこと（本棚で同じ題名にまとまる）
+  （アセットは自前配信なのでネットワークは要らない。手元では 2 ページで数秒）。OCR は本を
+  保存した後に裏で走るので、読み終わりを待つなら本棚の項目から OCR の文言が消えるのを待つ。
+  ファイル名を `test-book` にしないこと（本棚で同じ題名にまとまる）
 - **CMap を要求する 2 冊目の fixture がある**（`e2e/fixtures/cid-font-book.pdf`。
   `e2e/chatbook.spec.ts` の `a book with CID-keyed fonts renders without asking for a CMap`
   が `CID_FONT_BOOK` として読む）。`test-book.pdf` は使うグリフをすべて埋め込むので
@@ -2504,9 +2566,10 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   pdfkit を使わず PDF を直接組み立てる**——pdfkit は常にサブセットを埋め込み、
   predefined CMap を名指す手段が無いため。フォントは埋め込まないので、グリフは
   ブラウザのシステムフォントで描かれる。
-  `cMapUrl` を外すと 2 段で落ちる: pdf.js が `cMapUrl` を名指す警告を出し、テキストが
-  1 文字も取れないので `POST /api/pdf/open` が `fullText` 空を 400 で拒む
-  （`src/server/routes/pdf.ts`）
+  `cMapUrl` を外すと pdf.js が `cMapUrl` を名指す警告を出し（テストの `fontErrors`）、テキストが
+  1 文字も取れない。**以前はそれで `POST /api/pdf/open` が `fullText` 空を 400 で拒んだが、今は
+  文字の無い本を OCR 待ちとして保存する**（上記「テキストの無い PDF（OCR）」）ので、その段では
+  落ちない——見張りは警告とインク（`inkRatio`）の 2 つ
 - **ドラッグしたのに何も選ばれないテストに当たったら、ヘッドレス Chromium の横位置を疑う**。
   ページの `getBoundingClientRect().left` の小数部が .734375 になる位置に来ると、ボタンを
   押したままの移動に選択を伸ばさず新しいキャレットを置き直し、ドラッグが何も選ばなくなる。

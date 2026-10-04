@@ -334,8 +334,8 @@ test("a book with CID-keyed fonts renders without asking for a CMap", async ({ p
 
 /**
  * A book of scans: every page is a picture of its lines, so pdf.js reads no
- * text off it and the shelf has to read it by OCR before it can be stored.
- * Drawn by `fixtures/generateScannedBook.ts` and committed alongside it.
+ * text off it and its text has to be read by OCR. Drawn by
+ * `fixtures/generateScannedBook.ts` and committed alongside it.
  */
 const SCANNED_BOOK = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -343,18 +343,52 @@ const SCANNED_BOOK = path.join(
   SCANNED_FIXTURE_FILE_NAME,
 );
 
-test("a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page", async ({
+test("a scanned book is added at once and read by OCR in the background, the shelf says how far it has got, and what was read can be searched and marked on the page", async ({
   page,
 }) => {
   // Real Tesseract, served from the app: the engine and two language models
-  // load, then each page is read — tens of seconds on a slow machine.
-  test.setTimeout(240000);
+  // load, then each page is read — tens of seconds on a slow machine. Twice
+  // over, since the reading is started again after a reload.
+  test.setTimeout(300000);
   await logIn(page);
+  const title = SCANNED_FIXTURE_FILE_NAME.replace(/\.pdf$/, "");
+
+  // What OCR read is held back at the server until the test lets it through,
+  // so the shelf can be looked at while the reading is still going on — the
+  // two pages are otherwise read in a few seconds.
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/pdf/*/ocr", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    await released;
+    await route.fallback();
+  });
 
   await page.goto("/");
   await page.setInputFiles('input[type="file"]', SCANNED_BOOK);
-  await expect(page.getByRole("status")).toContainText("文字を読み取り中", { timeout: 60000 });
-  await expect(page).toHaveURL(/\/books\//, { timeout: 180000 });
+  // Stored without waiting for OCR: the reader opens straight away, and says
+  // why nothing on the pages can be selected yet
+  await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
+  await expect(page.getByText(/読み取りが終わるまで、文字の選択・本文検索/)).toBeVisible();
+
+  // The reading carries on behind the reader's back, and the shelf shows it
+  await page.getByRole("link", { name: "← 本棚" }).click();
+  await expect(page.getByText(/^文字を(読み取り中|保存中)/)).toBeVisible({ timeout: 120000 });
+  await expect(page.getByRole("button", { name: `${title} の文字の読み取りを中止` })).toBeVisible();
+
+  // A reload takes the reading with it; the server still has the book
+  // waiting, and the shelf offers to start it again
+  await page.reload();
+  await expect(page.getByText("文字の読み取りが途中です")).toBeVisible({ timeout: 30000 });
+  release();
+  await page.unroute("**/api/pdf/*/ocr");
+  await page.getByRole("button", { name: `${title} の文字の読み取りを再開` }).click();
+  await expect(page.getByText(/^文字(の読み取り|を読み取り中|を保存中)/)).toHaveCount(0, {
+    timeout: 180000,
+  });
+
+  await page.getByRole("button", { name: `${title} を開く` }).click();
+  await expect(page.getByText(/読み取りが終わるまで/)).toHaveCount(0);
   // The spans of page 1 carry its number only once the text layer — built
   // from the OCR lines, since the page has none of its own — is drawn
   await expect(drawnPage(page, 1).first()).toBeVisible({ timeout: 60000 });

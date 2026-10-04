@@ -12,7 +12,9 @@ import {
 } from "./ShelfPage";
 import type { DropboxTitles, HiddenBooks } from "../../shared/schemas/shelf";
 import { ApiError } from "../lib/fetcher";
-import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractedPdfData } from "../lib/pdfLoader";
+import { createOcrQueue } from "../lib/ocrQueue";
+import type { ReadStoredBookByOcr, SaveOcr } from "../hooks/useBackgroundOcr";
 import type { BookDetail, BookSummary } from "../../shared/schemas/book";
 import { useSWRConfig } from "swr";
 import { bookKey } from "../hooks/useBook";
@@ -40,7 +42,7 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
 function renderShelf(props: {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
-  extract?: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData>;
+  extract?: (file: File) => Promise<ExtractedPdfData>;
   createUploadRequest?: () => XMLHttpRequest;
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
   saveDropboxFolder?: SaveDropboxFolder;
@@ -50,6 +52,8 @@ function renderShelf(props: {
   renameBook?: RenameBook;
   loadDropboxTitles?: () => Promise<DropboxTitles>;
   setDropboxTitles?: SetDropboxTitles;
+  readByOcr?: ReadStoredBookByOcr;
+  saveOcr?: SaveOcr;
   /** Entries already in the cache, standing in for what the server answered before. */
   seed?: Record<string, unknown>;
 }) {
@@ -59,6 +63,7 @@ function renderShelf(props: {
     loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({ state: "unavailable" }),
     loadHidden: async (): Promise<HiddenBooks> => ({ keys: [] }),
     loadDropboxTitles: async (): Promise<DropboxTitles> => ({ titles: [] }),
+    ocrQueue: createOcrQueue(),
     ...props,
   };
   return render(
@@ -116,7 +121,7 @@ const readsFine = async (file: File): Promise<ExtractedPdfData> => ({
   fileContentBase64: "",
   thumbnail: null,
   outline: null,
-  ocr: null,
+  needsOcr: false,
 });
 
 /** What the API answers a stored book with. */
@@ -455,81 +460,6 @@ describe("ShelfPage", () => {
     // A second file while the first is in flight would open a book the reader
     // is already leaving the shelf for.
     expect(screen.getByRole("button", { name: "本を追加" })).toBeDisabled();
-  });
-
-  it("counts the pages up while a book without text is read by OCR", async () => {
-    // OCR takes seconds a page: a 200-page scan is minutes, and a notice that
-    // did not move for that long would read as a shelf that has hung.
-    const { container } = renderShelf({
-      loadBooks: TWO_BOOKS,
-      extract: (_file, { onOcrProgress }) => {
-        onOcrProgress?.({ done: 0, total: 3 });
-        onOcrProgress?.({ done: 2, total: 3 });
-        return new Promise<ExtractedPdfData>(() => {});
-      },
-    });
-
-    await screen.findByRole("button", { name: "本を追加" });
-    await chooseFile(container, A_PDF());
-
-    expect(await screen.findByText("文字を読み取り中 2/3 ページ")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("文字を読み取り中 2/3 ページ");
-  });
-
-  it("takes the cancel button away once the last page has been read", async () => {
-    // Past the last page nothing listens for it: a button left up would do nothing
-    const { container } = renderShelf({
-      loadBooks: TWO_BOOKS,
-      extract: (_file, { onOcrProgress }) => {
-        onOcrProgress?.({ done: 3, total: 3 });
-        return new Promise<ExtractedPdfData>(() => {});
-      },
-    });
-
-    await screen.findByRole("button", { name: "本を追加" });
-    await chooseFile(container, A_PDF());
-
-    expect(await screen.findByText("本を読み取り中...")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "中止" })).not.toBeInTheDocument();
-  });
-
-  it("stops reading a book by OCR when the reader cancels, and stores nothing", async () => {
-    const sending = fakeUpload();
-    const { container } = renderShelf({
-      loadBooks: TWO_BOOKS,
-      createUploadRequest: () => sending.request,
-      extract: (_file, { onOcrProgress, signal }) => {
-        onOcrProgress?.({ done: 1, total: 200 });
-        return new Promise<ExtractedPdfData>((_resolve, reject) => {
-          signal?.addEventListener("abort", () =>
-            reject(new DOMException("OCR was cancelled", "AbortError")),
-          );
-        });
-      },
-    });
-
-    await screen.findByRole("button", { name: "本を追加" });
-    await chooseFile(container, A_PDF());
-    await userEvent.click(await screen.findByRole("button", { name: "中止" }));
-
-    // Back on the shelf as it was: no notice, nothing said, nothing sent
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "本を追加" })).toBeEnabled();
-    expect(screen.queryByText(/本を開けませんでした/)).not.toBeInTheDocument();
-    expect(sending.openedWith()).toBeNull();
-  });
-
-  it("offers no way to cancel outside OCR, where nothing would stop", async () => {
-    const { container } = renderShelf({
-      loadBooks: TWO_BOOKS,
-      extract: () => new Promise<ExtractedPdfData>(() => {}),
-    });
-
-    await screen.findByRole("button", { name: "本を追加" });
-    await chooseFile(container, A_PDF());
-
-    expect(await screen.findByText("本を読み取り中...")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "中止" })).not.toBeInTheDocument();
   });
 
   it("counts the book up as it is sent, and says so once it is all there", async () => {
@@ -1370,5 +1300,183 @@ describe("ShelfPage: renaming a book", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "題名の変更" });
     expect(dialog).toHaveTextContent("題名を変更できませんでした: Server exploded");
+  });
+});
+
+describe("ShelfPage: reading a book of pictures by OCR in the background", () => {
+  /** A file pdf.js found no text in: a book of pictures, for OCR to read later. */
+  const readsPictures = async (file: File): Promise<ExtractedPdfData> => ({
+    ...(await readsFine(file)),
+    fullText: "",
+    needsOcr: true,
+  });
+
+  /** A reading the test steps through. */
+  function steppedReading() {
+    const asked: { pdfId: string; file: File | null; signal: AbortSignal }[] = [];
+    let report: (done: number, total: number) => void = () => {};
+    let finish: (read: { fullText: string; pages: [] }) => void = () => {};
+    const readByOcr: ReadStoredBookByOcr = (pdfId, file, { signal, onProgress }) => {
+      asked.push({ pdfId, file, signal });
+      report = (done, total) => onProgress({ done, total });
+      return new Promise((resolve, reject) => {
+        finish = resolve;
+        signal.addEventListener("abort", () =>
+          reject(Object.assign(new Error("OCR was cancelled"), { name: "AbortError" })),
+        );
+      });
+    };
+    return {
+      asked,
+      readByOcr,
+      report: (done: number, total: number) => act(() => report(done, total)),
+      finish: (fullText: string) => act(() => finish({ fullText, pages: [] })),
+    };
+  }
+
+  const WAITING = async () => [
+    book({ id: "scan-1", fileName: "スキャン本.pdf", ocrPending: true }),
+  ];
+
+  it("stores a book of pictures and opens it, and reads it from the file just chosen", async () => {
+    // The shelf is not held up for the minutes OCR takes: the book is there
+    // to read at once, and its text follows.
+    const sending = fakeUpload();
+    const reading = steppedReading();
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: readsPictures,
+      createUploadRequest: () => sending.request,
+      readByOcr: reading.readByOcr,
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    const chosen = A_PDF();
+    await chooseFile(container, chosen);
+    await waitFor(() => expect(sending.openedWith()).not.toBeNull());
+    expect((sending.sentBody() as FormData).get("ocrPending")).toBe("true");
+    act(() => {
+      sending.answers({ ...STORED_BOOK, fullText: "", ocrPending: true });
+    });
+
+    expect(await screen.findByText(`リーダー: ${STORED_ID}`)).toBeInTheDocument();
+    expect(reading.asked).toHaveLength(1);
+    expect(reading.asked[0].pdfId).toBe(STORED_ID);
+    expect(reading.asked[0].file).toBe(chosen);
+  });
+
+  it("starts no reading for a book the server already holds the text of", async () => {
+    const sending = fakeUpload();
+    const reading = steppedReading();
+    const { container } = renderShelf({
+      loadBooks: TWO_BOOKS,
+      extract: readsPictures,
+      createUploadRequest: () => sending.request,
+      readByOcr: reading.readByOcr,
+    });
+
+    await screen.findByRole("button", { name: "本を追加" });
+    await chooseFile(container, A_PDF());
+    await waitFor(() => expect(sending.openedWith()).not.toBeNull());
+    act(() => {
+      sending.answers({ ...STORED_BOOK, ocrPending: false });
+    });
+
+    expect(await screen.findByText(`リーダー: ${STORED_ID}`)).toBeInTheDocument();
+    expect(reading.asked).toHaveLength(0);
+  });
+
+  it("says a reading that stopped is unfinished, and starts it again from the stored book", async () => {
+    // A tab that was closed or reloaded took its reading with it; the server
+    // still says the book is waiting.
+    const reading = steppedReading();
+    renderShelf({ loadBooks: WAITING, readByOcr: reading.readByOcr });
+
+    expect(await screen.findByText("文字の読み取りが途中です")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    );
+
+    expect(reading.asked).toStrictEqual([expect.objectContaining({ pdfId: "scan-1", file: null })]);
+  });
+
+  it("counts the pages up on the book's entry, and stops the reading on 中止", async () => {
+    const reading = steppedReading();
+    renderShelf({ loadBooks: WAITING, readByOcr: reading.readByOcr });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    );
+
+    reading.report(12, 200);
+    expect(await screen.findByText("文字を読み取り中 12/200 ページ")).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "スキャン本 の文字の読み取りを中止" }),
+    );
+
+    expect(reading.asked[0].signal.aborted).toBe(true);
+    // Not a failure — the reader asked for it — and the book is still waiting
+    expect(await screen.findByText("文字の読み取りが途中です")).toBeInTheDocument();
+    expect(screen.queryByText(/読み取れませんでした/)).not.toBeInTheDocument();
+  });
+
+  it("takes the notice away once what was read is stored", async () => {
+    const reading = steppedReading();
+    const saved: string[] = [];
+    renderShelf({
+      loadBooks: WAITING,
+      readByOcr: reading.readByOcr,
+      saveOcr: (pdfId, read) => {
+        saved.push(`${pdfId}: ${read.fullText}`);
+        return okAsync({ id: pdfId, hasOcr: false });
+      },
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    );
+
+    reading.finish("灯台の記録");
+
+    await waitFor(() =>
+      expect(screen.queryByText(/文字の読み取り|文字を/)).not.toBeInTheDocument(),
+    );
+    expect(saved).toStrictEqual(["scan-1: 灯台の記録"]);
+  });
+
+  it("says why the text could not be stored, and offers to read it again", async () => {
+    const reading = steppedReading();
+    renderShelf({
+      loadBooks: WAITING,
+      readByOcr: reading.readByOcr,
+      saveOcr: () => errAsync(new ApiError("Server exploded", "INTERNAL_ERROR", 500)),
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    );
+
+    reading.finish("灯台の記録");
+
+    expect(
+      await screen.findByText("文字を読み取れませんでした: Server exploded"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    ).toBeInTheDocument();
+  });
+
+  it("says so when not a word could be read off the book", async () => {
+    const reading = steppedReading();
+    renderShelf({
+      loadBooks: WAITING,
+      readByOcr: reading.readByOcr,
+      saveOcr: (pdfId) => okAsync({ id: pdfId, hasOcr: false }),
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "スキャン本 の文字の読み取りを再開" }),
+    );
+
+    reading.finish("\f \f");
+
+    expect(await screen.findByText("このPDFからは文字を読み取れませんでした")).toBeInTheDocument();
   });
 });

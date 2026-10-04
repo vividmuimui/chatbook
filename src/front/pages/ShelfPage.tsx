@@ -9,13 +9,21 @@ import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/Dropb
 import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
 import { ShelfSettingsMenu } from "../components/ShelfSettingsMenu";
 import { bookKey } from "../hooks/useBook";
-import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
+import { useOpenPdfBook, type StoredBook } from "../hooks/useOpenPdfBook";
 import { bookTitle } from "../lib/bookTitle";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
-import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
-import type { OcrProgress } from "../lib/pdfOcr";
+import type { ExtractedPdfData } from "../lib/pdfLoader";
+import type { OcrQueue } from "../lib/ocrQueue";
+import { ocrRunning, ocrStopped, ocrWording } from "../lib/ocrWording";
+import { SHELF_KEY } from "../lib/shelfKey";
+import {
+  useBackgroundOcr,
+  type BackgroundOcr,
+  type ReadStoredBookByOcr,
+  type SaveOcr,
+} from "../hooks/useBackgroundOcr";
 import { groupProgress } from "../lib/readingProgress";
 import {
   filterShelf,
@@ -47,9 +55,6 @@ import {
   type DropboxFile,
   type DropboxFolderListing,
 } from "../../shared/schemas/dropbox";
-
-/** Cache key of the shelf, and the endpoint it is read from. */
-const SHELF_KEY = "/api/pdfs";
 
 /** Read by SWR, so a refusal belongs in its `error` state: this one throws. */
 const fetchBooks = () => fetcher(SHELF_KEY, bookListSchema).then((data) => data.books);
@@ -125,7 +130,7 @@ interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
   /** Passed straight to the file picker; injectable so tests can fail a read. */
-  extract?: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData>;
+  extract?: (file: File) => Promise<ExtractedPdfData>;
   /** The upload's own request; injectable so tests can drive its progress. */
   createUploadRequest?: () => XMLHttpRequest;
   loadDropboxFolder?: () => Promise<DropboxFolderListing>;
@@ -136,6 +141,10 @@ interface ShelfPageProps {
   renameBook?: RenameBook;
   loadDropboxTitles?: () => Promise<DropboxTitles>;
   setDropboxTitles?: SetDropboxTitles;
+  /** Injectable so a test can stand in for OCR and its own queue. */
+  readByOcr?: ReadStoredBookByOcr;
+  saveOcr?: SaveOcr;
+  ocrQueue?: OcrQueue;
 }
 
 /**
@@ -144,13 +153,13 @@ interface ShelfPageProps {
  * Three states rather than a share alone: the reading happens before anything
  * has been sent, and once the whole body is up there is still the server
  * writing it away — a bar sat at 0% or at 100% for either of those reads as a
- * shelf that has hung. A book without text adds a fourth between reading and
- * sending: OCR, counted in pages, which for a long scan is minutes.
+ * shelf that has hung. OCR is not one of them: a book of pictures is stored
+ * first and read afterwards in the background, which the shelf shows on the
+ * book's own entry (`OcrNotice`).
  */
 type Importing =
   | { phase: "downloading"; ratio: number }
   | { phase: "reading" }
-  | ({ phase: "recognizing" } & OcrProgress)
   | { phase: "uploading"; ratio: number }
   | { phase: "storing" };
 
@@ -161,8 +170,6 @@ function importWording(importing: Importing): string {
       return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
       return "本を読み取り中...";
-    case "recognizing":
-      return `文字を読み取り中 ${importing.done}/${importing.total} ページ`;
     case "uploading":
       return `アップロード中 ${Math.round(importing.ratio * 100)}%`;
     case "storing":
@@ -278,7 +285,67 @@ function ProgressBar({ percent, className }: { percent: number; className: strin
   );
 }
 
+/**
+ * Where an entry's book stands with OCR, under its title, with the way to stop
+ * the reading or start it again. Nothing for an entry with no book waiting.
+ *
+ * Out of the entry's open button, as the buttons here could not sit in it.
+ */
+function OcrNotice({ group, ocr }: { group: ShelfGroup; ocr: BackgroundOcr }) {
+  const waiting = booksOf(group).filter((b) => b.ocrPending || ocr.jobs.has(b.id));
+  if (waiting.length === 0) return null;
+
+  return (
+    <div className="mt-1 flex flex-col gap-1">
+      {waiting.map((book) => {
+        const job = ocr.jobs.get(book.id);
+        return (
+          <div key={book.id} className="text-xs text-gray-600">
+            <p role="status" className="truncate">
+              {ocrWording(job)}
+            </p>
+            {job?.phase === "reading" && job.total > 0 && (
+              <span
+                aria-hidden="true"
+                className="mt-0.5 block h-1 overflow-hidden rounded-full bg-sky-100"
+              >
+                <span
+                  className="block h-full rounded-full bg-sky-600"
+                  style={{ width: `${Math.round((job.done / job.total) * 100)}%` }}
+                />
+              </span>
+            )}
+            {/* Named apart from 「開く」「削除」「非表示」, which are reached for by
+                partial name. */}
+            {ocrRunning(job) && (
+              <button
+                type="button"
+                aria-label={`${group.title} の文字の読み取りを中止`}
+                onClick={() => ocr.cancel(book.id)}
+                className="mt-0.5 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-[11px] text-gray-700 cursor-pointer hover:bg-gray-100"
+              >
+                中止
+              </button>
+            )}
+            {ocrStopped(job) && (
+              <button
+                type="button"
+                aria-label={`${group.title} の文字の読み取りを再開`}
+                onClick={() => ocr.start(book.id)}
+                className="mt-0.5 rounded border border-sky-300 bg-white px-1.5 py-0.5 text-[11px] text-sky-700 cursor-pointer hover:bg-sky-50"
+              >
+                再開
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface EntryActions {
+  ocr: BackgroundOcr;
   onOpen: (member: ShelfMember) => void;
   onHide: (group: ShelfGroup) => void;
   onDelete: (books: BookSummary[]) => void;
@@ -377,6 +444,7 @@ function FormatChips({ group, onOpen }: { group: ShelfGroup } & Pick<EntryAction
  */
 function GroupCard({
   group,
+  ocr,
   onOpen,
   onHide,
   onDelete,
@@ -451,6 +519,7 @@ function GroupCard({
         )}
       </button>
       {!single && <FormatChips group={group} onOpen={onOpen} />}
+      <OcrNotice group={group} ocr={ocr} />
 
       {/* Kept out of the way until the pointer arrives — but only where there
           is a pointer to arrive. A finger never hovers, so on a touch-sized
@@ -471,6 +540,7 @@ function GroupCard({
 /** The compact shelf's entry: a small cover, the title and its length on one row. */
 function GroupRow({
   group,
+  ocr,
   onOpen,
   onHide,
   onDelete,
@@ -520,6 +590,9 @@ function GroupRow({
         </span>
       </button>
       {!single && <FormatChips group={group} onOpen={onOpen} />}
+      <div className="max-w-44 shrink-0">
+        <OcrNotice group={group} ocr={ocr} />
+      </div>
       {/* Always shown: a row has room for it, and a finger never hovers. */}
       <EntryButtons
         group={group}
@@ -623,6 +696,9 @@ export function ShelfPage({
   renameBook = requestRename,
   loadDropboxTitles = fetchDropboxTitles,
   setDropboxTitles = requestDropboxTitles,
+  readByOcr,
+  saveOcr,
+  ocrQueue,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { mutate: mutateKey } = useSWRConfig();
@@ -670,10 +746,7 @@ export function ShelfPage({
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
   const compact = layout === "compact";
   const [importing, setImporting] = useState<Importing | null>(null);
-  // Stops the OCR of the book being added. Only OCR listens: everything else
-  // in an import is over in seconds, and an upload that was half sent is no
-  // more a stored book than one never started.
-  const cancelImport = useRef<AbortController | null>(null);
+  const ocr = useBackgroundOcr({ read: readByOcr, save: saveOcr, queue: ocrQueue });
   const openFile = useOpenPdfBook(
     extract,
     // The share the browser reports is the upload's alone; once it is all up
@@ -716,39 +789,31 @@ export function ShelfPage({
     setActionError(null);
     setImporting({ phase: "reading" });
 
-    const outcome = await openFile(file, startImport());
+    const outcome = await openFile(file);
     outcome.match(
-      (pdfId) => void openBook(pdfId),
+      (stored) => opened(stored, file),
       (failure) => importFailed(failure, "本を開けませんでした"),
     );
   };
 
-  /** A way to cancel the import about to start, and to hear how far its OCR has got. */
-  const startImport = () => {
-    const controller = new AbortController();
-    cancelImport.current = controller;
-    return {
-      signal: controller.signal,
-      // The last page read is the end of OCR, and of anything "中止" could
-      // stop: what follows — the cover, the outline — is the ordinary reading.
-      onOcrProgress: (progress: OcrProgress) =>
-        setImporting(
-          progress.done < progress.total
-            ? { phase: "recognizing", ...progress }
-            : { phase: "reading" },
-        ),
-    };
+  /**
+   * Leaves for a book just stored — starting, for a book of pictures, the OCR
+   * that reads its text in the background. It is handed the file the reader
+   * has here, so the reading does not download what was just sent up.
+   */
+  const opened = (stored: StoredBook, file: File) => {
+    if (stored.ocrPending) ocr.start(stored.id, file);
+    // Read again now, while the shelf is still here to ask: a reader who comes
+    // straight back finds the book there, rather than the list from before it
+    // was added — a remount within SWR's deduping interval asks nobody.
+    void mutate();
+    void openBook(stored.id);
   };
 
-  /**
-   * Hands the shelf back after an import that did not become a book. A reader
-   * who cancelled is not told anything went wrong — they asked for it, and the
-   * shelf looking as it did before is the answer.
-   */
+  /** Hands the shelf back after an import that did not become a book. */
   const importFailed = (failure: Error, lead: string) => {
-    cancelImport.current = null;
     setImporting(null);
-    if (failure.name !== "AbortError") setActionError(`${lead}: ${failure.message}`);
+    setActionError(`${lead}: ${failure.message}`);
   };
 
   /**
@@ -765,10 +830,10 @@ export function ShelfPage({
       setImporting({ phase: "downloading", ratio }),
     ).andThen((file) => {
       setImporting({ phase: "reading" });
-      return openFile(file, { dropboxId: entry.dropboxId, ...startImport() });
+      return openFile(file, { dropboxId: entry.dropboxId }).map((stored) => ({ stored, file }));
     });
     outcome.match(
-      (pdfId) => void openBook(pdfId),
+      ({ stored, file }) => opened(stored, file),
       (failure) => importFailed(failure, "Dropboxの本を開けませんでした"),
     );
   };
@@ -805,6 +870,8 @@ export function ShelfPage({
         break;
       }
       gone.add(book.id);
+      // A book that is gone has no text left to read into
+      ocr.cancel(book.id);
     }
 
     // The server has already dropped these, so re-reading the shelf would only
@@ -889,6 +956,7 @@ export function ShelfPage({
     });
 
   const entryActions = {
+    ocr,
     onOpen: openMember,
     onHide: (group: ShelfGroup) => void setGroupHidden(group, true),
     onDelete: setBooksPendingDeletion,
@@ -1055,17 +1123,6 @@ export function ShelfPage({
             <p role="status" className="text-lg text-gray-600">
               {importWording(importing)}
             </p>
-            {/* Only while OCR runs: it is the one part long enough to want
-                stopping, and the one that listens. */}
-            {importing.phase === "recognizing" && (
-              <button
-                type="button"
-                onClick={() => cancelImport.current?.abort()}
-                className="rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 cursor-pointer hover:bg-gray-100"
-              >
-                中止
-              </button>
-            )}
           </div>
         </div>
       )}

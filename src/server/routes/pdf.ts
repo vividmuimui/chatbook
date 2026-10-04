@@ -14,6 +14,7 @@ import {
   findInBook,
   updateSelection,
   renameBook,
+  saveOcrText,
   thumbnailObjectKey,
   ocrObjectKey,
   OCR_CONTENT_TYPE,
@@ -43,7 +44,7 @@ import {
   updateSelectionRequestSchema,
 } from "../../shared/schemas/selection";
 import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
-import { ocrTextSchema, type OcrText } from "../../shared/schemas/ocr";
+import { ocrTextSchema, saveOcrRequestSchema, type OcrText } from "../../shared/schemas/ocr";
 import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { storageFailure, type ServiceError } from "../services/serviceError";
@@ -210,7 +211,11 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         const fullText = typeof formData.fullText === "string" ? formData.fullText : "";
         const pageCount =
           typeof formData.pageCount === "string" ? parseInt(formData.pageCount, 10) : 0;
-        if (!fullText || !Number.isFinite(pageCount) || pageCount <= 0) {
+        // A book of pictures is stored before OCR reads it, and comes with
+        // little or no text: what it is missing arrives afterwards through
+        // `PUT /pdf/:pdfId/ocr`. Any other book without text is a broken read.
+        const ocrPending = formData.ocrPending === "true";
+        if ((!fullText && !ocrPending) || !Number.isFinite(pageCount) || pageCount <= 0) {
           return c.json(
             {
               error: {
@@ -372,6 +377,7 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
             thumbnail,
             outline,
             ocr,
+            ocrPending,
           },
           idClock,
         );
@@ -748,6 +754,21 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
         };
         if (!("body" in object)) return new Response(null, { status: 304, headers });
         return new Response(object.body, { headers });
+      })
+      // What OCR read off a book stored before it was read. The browser reads
+      // it in the background, and this is where it lands: the lines for the
+      // viewer, and the text for chat and the search.
+      .put("/pdf/:pdfId/ocr", validate("json", saveOcrRequestSchema), async (c) => {
+        const saved = await saveOcrText(
+          c.env.DB,
+          c.env.PDF_BUCKET,
+          c.req.param("pdfId"),
+          c.req.valid("json"),
+        );
+        return saved.match(
+          (book) => c.json(book),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
       })
       // Narrows the highlight list by what was marked and what was said about
       // it. The chats are not in the book the list was drawn from, so this is

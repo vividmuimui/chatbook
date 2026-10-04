@@ -38,6 +38,10 @@ export const pdfs = sqliteTable("pdfs", {
   // "ltr" or "rtl" (`pageDirectionSchema`): which way the pages turn. Chosen
   // by the reader per book, never read off the file — a PDF does not say.
   pageDirection: text("page_direction").notNull().default("ltr"),
+  // "pending" — a book of pictures stored before OCR read it, its text still to
+  // come from the browser (`PUT /api/pdf/:pdfId/ocr`) — or "done" once it has.
+  // Null for a book with text of its own.
+  ocrStatus: text("ocr_status"),
 });
 
 /** Settings changed from the screen. One row per key (`dropbox_folder`). */
