@@ -1755,7 +1755,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     const response = await putReadingState(book.id, {
       page: 3,
       selectionId: "sel-roundtrip",
-      bookChat: false,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: false,
     });
@@ -1765,7 +1765,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     expect(await readingStateOf(book.id)).toStrictEqual({
       page: 3,
       selectionId: "sel-roundtrip",
-      bookChat: false,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: false,
     });
@@ -1781,7 +1781,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     expect(await readingStateOf(book.id)).toStrictEqual({
       page: 4,
       selectionId: null,
-      bookChat: null,
+      sessionId: null,
       outlineOpen: null,
       chatPanelOpen: null,
     });
@@ -1798,7 +1798,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     await putReadingState(book.id, {
       page: 2,
       selectionId: null,
-      bookChat: true,
+      sessionId: "session-narrow",
       outlineOpen: true,
       chatPanelOpen: false,
     });
@@ -1811,7 +1811,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     expect(await readingStateOf(book.id)).toStrictEqual({
       page: 5,
       selectionId: null,
-      bookChat: true,
+      sessionId: "session-narrow",
       outlineOpen: true,
       chatPanelOpen: false,
     });
@@ -1838,7 +1838,7 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     await putReadingState(book.id, {
       page: 7,
       selectionId: "sel-reopen",
-      bookChat: false,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: false,
     });
@@ -1851,14 +1851,14 @@ describe("PUT /api/pdf/:pdfId/reading-state", () => {
     expect(reopened.readingState).toStrictEqual({
       page: 7,
       selectionId: "sel-reopen",
-      bookChat: false,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: false,
     });
     expect(await readingStateOf(book.id)).toStrictEqual({
       page: 7,
       selectionId: "sel-reopen",
-      bookChat: false,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: false,
     });

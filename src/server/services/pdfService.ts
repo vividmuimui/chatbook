@@ -325,7 +325,7 @@ async function storePdf(
 function readingStateOf(row: {
   lastReadPage: number | null;
   lastReadSelectionId: string | null;
-  lastReadBookChat: boolean | null;
+  lastReadSessionId: string | null;
   lastReadOutlineOpen: boolean | null;
   lastReadChatPanelOpen: boolean | null;
 }): ReadingState | null {
@@ -333,7 +333,7 @@ function readingStateOf(row: {
   return {
     page: row.lastReadPage,
     selectionId: row.lastReadSelectionId,
-    bookChat: row.lastReadBookChat,
+    sessionId: row.lastReadSessionId,
     outlineOpen: row.lastReadOutlineOpen,
     chatPanelOpen: row.lastReadChatPanelOpen,
   };
@@ -370,7 +370,7 @@ async function writeReadingState(
     .set({
       lastReadPage: place.page,
       lastReadSelectionId: place.selectionId,
-      ...(place.bookChat === undefined ? {} : { lastReadBookChat: place.bookChat }),
+      ...(place.sessionId === undefined ? {} : { lastReadSessionId: place.sessionId }),
       ...(place.outlineOpen === undefined ? {} : { lastReadOutlineOpen: place.outlineOpen }),
       ...(place.chatPanelOpen === undefined ? {} : { lastReadChatPanelOpen: place.chatPanelOpen }),
     })

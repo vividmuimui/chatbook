@@ -21,12 +21,12 @@ export const chatMessageSchema = z.object({
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
 /**
- * A conversation as it is read back: the messages, and which conversation they
- * are. `null` names the book's own — the one with no highlight under it — which
- * is the only thing telling the two apart on the wire.
+ * A highlight's conversation as it is read back: the messages, and which
+ * highlight they hang off. The book's own conversations are sessions, read back
+ * as `sessionHistorySchema`.
  */
 export const chatHistorySchema = z.object({
-  selectionId: z.string().nullable(),
+  selectionId: z.string(),
   messages: z.array(chatMessageSchema),
 });
 
@@ -73,3 +73,85 @@ export const sendBookChatRequestSchema = sendChatRequestSchema.extend({
 });
 
 export type SendBookChatRequest = z.infer<typeof sendBookChatRequestSchema>;
+
+/**
+ * One of the book's own conversations. A book holds as many as the reader
+ * starts — one about the argument, another about a chapter — where a highlight
+ * holds exactly one and needs no record of its own.
+ *
+ * `title` is null until the reader names it; the screen then calls it by the
+ * start of its first question (`sessionTitle`). `scope` is the pages its last
+ * question was aimed at, which is what the scope menu reopens on; null until
+ * something has been asked, read as the whole book.
+ */
+export const chatSessionSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  scope: z.array(pageRangeSchema).nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export type ChatSession = z.infer<typeof chatSessionSchema>;
+
+/** A session as it is opened: the record, and everything said in it. */
+export const sessionHistorySchema = z.object({
+  session: chatSessionSchema,
+  messages: z.array(chatMessageSchema),
+});
+
+/** How long a name the reader gives a session may be. */
+export const MAX_SESSION_TITLE_LENGTH = 100;
+
+/**
+ * What renaming a session sends. Never empty: an untitled session is one
+ * nobody has named, and taking a name away again is not something the screen
+ * offers, so a blank one is a mistake rather than a request.
+ */
+export const renameSessionRequestSchema = z.object({
+  title: z.string().trim().min(1).max(MAX_SESSION_TITLE_LENGTH),
+});
+
+export const sessionRenamedSchema = z.object({ id: z.string(), title: z.string() });
+
+export const sessionDeletedSchema = z.object({ deleted: z.literal(true) });
+
+/** The end of a conversation, cut short: enough to say what it was about. */
+const lastMessageSchema = z.object({ role: chatRoleSchema, content: z.string() });
+
+/**
+ * One row of the chat list: a session of the book's own, or the conversation
+ * hanging off a highlight. Highlights appear only once something was asked
+ * about them — one that was only coloured has no conversation to list.
+ *
+ * `updatedAt` is when anything was last said (or, for a session nothing was
+ * said in yet, when it was started), which is what the list is ordered by.
+ */
+export const chatSummarySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("book"),
+    id: z.string(),
+    title: z.string().nullable(),
+    // The start of the first question, for the session nobody named.
+    firstQuestion: z.string().nullable(),
+    scope: z.array(pageRangeSchema).nullable(),
+    messageCount: z.number().int().nonnegative(),
+    lastMessage: lastMessageSchema.nullable(),
+    updatedAt: z.string(),
+  }),
+  z.object({
+    kind: z.literal("highlight"),
+    // The highlight's id: its conversation has no id of its own.
+    id: z.string(),
+    selectedText: z.string(),
+    pageNumber: z.number().int().positive(),
+    color: z.string(),
+    messageCount: z.number().int().positive(),
+    lastMessage: lastMessageSchema,
+    updatedAt: z.string(),
+  }),
+]);
+
+export type ChatSummary = z.infer<typeof chatSummarySchema>;
+
+export const chatListSchema = z.object({ chats: z.array(chatSummarySchema) });
