@@ -60,6 +60,6 @@ export async function extractEpubData(file: File): Promise<ExtractedPdfData> {
     thumbnail: await renderEpubCover(book),
     outline: toStoredOutline(book.outline),
     // A chapter is markup, so there is always text to read without OCR
-    ocr: null,
+    needsOcr: false,
   };
 }

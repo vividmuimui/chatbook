@@ -21,6 +21,11 @@ function file(dropboxId: string, name: string): DropboxFile {
   return { dropboxId, name, path: `/${name}`, size: 1 };
 }
 
+/** Titles the reader gave Dropbox files, as `[dropboxId, title]` pairs. */
+function titles(...pairs: [string, string][]): Map<string, string> {
+  return new Map(pairs);
+}
+
 describe("groupShelf", () => {
   it("puts a PDF and an EPUB of the same name into one entry", () => {
     const groups = groupShelf([book("a", "Rust入門.pdf"), book("b", "Rust入門.epub", "epub")], []);
@@ -212,6 +217,46 @@ describe("groupShelf with titles the reader gave", () => {
     const groups = groupShelf(
       [book("b", "scan_0001.epub", "epub"), renamed("a", "scan_0001.pdf", "Rust 入門")],
       [],
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].title).toBe("Rust 入門");
+  });
+
+  it("calls a Dropbox file by the title the reader gave it before it was brought in", () => {
+    const [group] = groupShelf(
+      [],
+      [file("id:1", "scan_0001.pdf")],
+      "pdf",
+      titles(["id:1", "Rust 入門"]),
+    );
+
+    expect(group.title).toBe("Rust 入門");
+    expect(filterShelf([group], "rust")).toHaveLength(1);
+  });
+
+  it("gathers a titled Dropbox file with the book given the same title", () => {
+    const groups = groupShelf(
+      [renamed("a", "rust.pdf", "Rust 入門")],
+      [file("id:1", "scan_0001.epub")],
+      "pdf",
+      titles(["id:1", "rust 入門"]),
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.key)).toStrictEqual(["a", "id:1"]);
+    // The book's title, which came first, names the entry
+    expect(groups[0].title).toBe("Rust 入門");
+  });
+
+  it("takes a file still under the old name along with a titled Dropbox file", () => {
+    // Renamed while both were waiting in Dropbox, and then only the PDF was
+    // brought in before the title reached it: the EPUB's title still leads.
+    const groups = groupShelf(
+      [book("a", "scan_0001.pdf")],
+      [file("id:1", "scan_0001.epub")],
+      "pdf",
+      titles(["id:1", "Rust 入門"]),
     );
 
     expect(groups).toHaveLength(1);

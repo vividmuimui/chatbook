@@ -31,6 +31,8 @@ import { useReadingStateSync } from "../hooks/useReadingStateSync";
 import { passageFromNavigation } from "../lib/textFragment";
 import { fetcher, resultFetcher } from "../lib/fetcher";
 import { bookTitle } from "../lib/bookTitle";
+import { ocrStopped, ocrWording } from "../lib/ocrWording";
+import { useBackgroundOcr } from "../hooks/useBackgroundOcr";
 import { locatedPageSchema, type LocatedPage } from "../../shared/schemas/book";
 import { chatHistorySchema, sessionHistorySchema } from "../../shared/schemas/chat";
 
@@ -227,6 +229,10 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
     openSession,
   );
   const { saveError } = useReadingStateSync(pdfId, locationReady);
+  // The OCR reading this book's text in the background, if any: the tab's
+  // queue, which the shelf started it in and which outlives both pages.
+  const ocr = useBackgroundOcr();
+  const ocrJob = pdfId ? ocr.jobs.get(pdfId) : undefined;
 
   const handleSelectionClick = useCallback(
     (selection: ActiveSelection) => {
@@ -361,6 +367,29 @@ function BookReader({ pdfId }: { pdfId: string | undefined }) {
         <p role="status" className="shrink-0 bg-amber-50 px-4 py-2 text-sm text-amber-800">
           読書位置を保存できませんでした: {saveError}
         </p>
+      )}
+
+      {/* A book of pictures opens before OCR has read it. Its pages are there
+          to read, but there is no text yet to select, search or ask about —
+          which, unexplained, would look like a reader that had broken. */}
+      {book?.ocrPending && (
+        <div
+          role="status"
+          className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 bg-sky-50 px-4 py-2 text-sm text-sky-900"
+        >
+          <span>
+            {ocrWording(ocrJob)}。読み取りが終わるまで、文字の選択・本文検索・AIへの質問はできません
+          </span>
+          {ocrStopped(ocrJob) && pdfId && (
+            <button
+              type="button"
+              onClick={() => ocr.start(pdfId)}
+              className="rounded border border-sky-300 bg-white px-2 py-0.5 text-xs text-sky-800 cursor-pointer hover:bg-sky-100"
+            >
+              文字の読み取りを再開
+            </button>
+          )}
+        </div>
       )}
 
       {/* `relative` so the sheet can be bounded by the page's pane, which ends

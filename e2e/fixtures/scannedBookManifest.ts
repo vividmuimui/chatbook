@@ -1,6 +1,6 @@
 /**
  * What `scanned-book.pdf` says, page by page — the book with no text layer
- * that has to be read by OCR before it can be added.
+ * whose text has to be read by OCR, in the background once it is added.
  *
  * Every page is a picture of its lines and nothing else, so pdf.js reads no
  * text off it at all. The lines are short, set large and in English, because

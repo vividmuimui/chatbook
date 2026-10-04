@@ -2,7 +2,7 @@ import { ulid } from "ulid";
 import { drizzle } from "drizzle-orm/d1";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { ResultAsync, err, ok } from "neverthrow";
-import { pdfs, selections } from "../db/schema";
+import { bookTitles, pdfs, selections } from "../db/schema";
 import {
   bookFormatSchema,
   pageDirectionSchema,
@@ -21,7 +21,7 @@ import {
   type SelectionUpdated,
 } from "../../shared/schemas/selection";
 import type { BookSearchResult } from "../../shared/schemas/bookSearch";
-import type { OcrText } from "../../shared/schemas/ocr";
+import type { OcrPage, OcrSaved, OcrText, SaveOcrRequest } from "../../shared/schemas/ocr";
 import { findInBookText } from "./bookTextSearch";
 import { notFound, storageFailure, type ServiceError, type StorageError } from "./serviceError";
 
@@ -131,6 +131,11 @@ interface OpenPdfInput {
   outline?: BookOutline;
   /** What OCR read off pages without text; absent for a book that needed none. */
   ocr?: OcrText;
+  /**
+   * A book of pictures stored before OCR has read it: its text is still to
+   * come (`saveOcrText`), and `fullText` holds only what pdf.js could read.
+   */
+  ocrPending?: boolean;
   /** The Dropbox file the bytes came from or were written to, when there is one. */
   dropboxId?: string;
 }
@@ -159,15 +164,17 @@ async function readShelf(db: D1Database, bucket: R2Bucket): Promise<BookSummary[
       dropboxId: pdfs.dropboxId,
       lastReadPage: pdfs.lastReadPage,
       title: pdfs.title,
+      ocrStatus: pdfs.ocrStatus,
     })
     .from(pdfs)
     .orderBy(desc(pdfs.updatedAt))
     .all();
 
   return Promise.all(
-    rows.map(async ({ fileHash, dropboxId, format, ...book }) => ({
+    rows.map(async ({ fileHash, dropboxId, format, ocrStatus, ...book }) => ({
       ...book,
       format: readFormat(format),
+      ocrPending: ocrStatus === "pending",
       inDropbox: dropboxId !== null,
       hasThumbnail: (await bucket.head(thumbnailObjectKey(fileHash))) !== null,
     })),
@@ -205,6 +212,7 @@ async function storePdf(
     thumbnail,
     outline,
     ocr,
+    ocrPending,
     dropboxId,
   } = input;
   const d1Db = drizzle(db);
@@ -224,17 +232,6 @@ async function storePdf(
     });
   }
 
-  // Like the outline, the latest reading wins: a book read again without OCR
-  // (its pages turned out to carry text after all) must not keep laying the
-  // old lines over pages that now draw their own.
-  if (ocr) {
-    await bucket.put(ocrObjectKey(fileHash), JSON.stringify(ocr), {
-      httpMetadata: { contentType: OCR_CONTENT_TYPE },
-    });
-  } else {
-    await bucket.delete(ocrObjectKey(fileHash));
-  }
-
   if (dropboxId) {
     // A Dropbox file is one book. If it used to be another (its bytes were
     // replaced in Dropbox since), that book keeps its copy in R2 and lets go
@@ -245,7 +242,33 @@ async function storePdf(
       .where(and(eq(pdfs.dropboxId, dropboxId), ne(pdfs.fileHash, fileHash)));
   }
 
+  // A title the reader gave the Dropbox file before it was a book becomes the
+  // book's: the file leaves the folder's list of files waiting, and its title
+  // goes with it rather than staying behind under a key that is now a book.
+  // A title the book already has wins — it is the one the reader has been
+  // seeing on the shelf.
+  const adoptedTitle = dropboxId ? await takeDropboxTitle(db, dropboxId) : null;
+
   const existing = await d1Db.select().from(pdfs).where(eq(pdfs.fileHash, fileHash)).get();
+
+  // A book of pictures that OCR has already read keeps what it read when it is
+  // added again still waiting for OCR: the bytes are the same ones, and reading
+  // them again would cost the reader minutes for the same text.
+  const keepsReadText = ocrPending === true && existing?.ocrStatus === "done";
+  const ocrStatus = keepsReadText || ocr ? "done" : ocrPending ? "pending" : null;
+  if (!keepsReadText) {
+    // Otherwise, like the outline, the latest reading wins: a book read again
+    // without OCR (its pages turned out to carry text after all), or one whose
+    // text is still to be read, must not keep laying the old lines over pages.
+    if (ocr) {
+      await bucket.put(ocrObjectKey(fileHash), JSON.stringify(ocr), {
+        httpMetadata: { contentType: OCR_CONTENT_TYPE },
+      });
+    } else {
+      await bucket.delete(ocrObjectKey(fileHash));
+    }
+  }
+
   if (existing) {
     // Re-upload the binary if the object is missing (e.g. bucket was cleared).
     const head = await bucket.head(objectKey);
@@ -262,13 +285,15 @@ async function storePdf(
       .update(pdfs)
       .set({
         fileName,
-        fullText,
+        ...(keepsReadText ? {} : { fullText }),
+        ocrStatus,
         pageCount,
         ...(outlineJson === null ? {} : { outline: outlineJson }),
         updatedAt: idClock.now(),
         // Only ever set here, never cleared: re-uploading a book from disk
         // does not make the Dropbox file stop being it.
         ...(dropboxId ? { dropboxId } : {}),
+        ...(existing.title === null && adoptedTitle !== null ? { title: adoptedTitle } : {}),
       })
       .where(eq(pdfs.id, existing.id));
 
@@ -277,10 +302,11 @@ async function storePdf(
       fileName,
       format,
       pageCount,
-      fullText,
+      fullText: keepsReadText ? existing.fullText : fullText,
       readingState: readingStateOf(existing),
-      title: existing.title,
+      title: existing.title ?? adoptedTitle,
       pageDirection: readPageDirection(existing.pageDirection),
+      ocrPending: ocrStatus === "pending",
     };
   }
 
@@ -299,6 +325,8 @@ async function storePdf(
     format,
     outline: outlineJson,
     dropboxId: dropboxId ?? null,
+    title: adoptedTitle,
+    ocrStatus,
     createdAt: now,
     updatedAt: now,
   });
@@ -310,9 +338,23 @@ async function storePdf(
     pageCount,
     fullText,
     readingState: null,
-    title: null,
+    title: adoptedTitle,
     pageDirection: "ltr",
+    ocrPending: ocrStatus === "pending",
   };
+}
+
+/**
+ * The title the reader gave a Dropbox file while it was not a book, taken out
+ * of `book_titles` — it is about to be the book's own. Null when it had none.
+ */
+async function takeDropboxTitle(db: D1Database, dropboxId: string): Promise<string | null> {
+  const taken = await drizzle(db)
+    .delete(bookTitles)
+    .where(eq(bookTitles.key, dropboxId))
+    .returning({ title: bookTitles.title })
+    .get();
+  return taken?.title ?? null;
 }
 
 /**
@@ -405,6 +447,55 @@ export function renameBook(
 }
 
 /**
+ * Store what OCR read off a book that was stored before it was read: its whole
+ * text, which chat, `/locate` and the text search read from, and the lines laid
+ * over its pages (none — a reading that found nothing — leaves no lines). The
+ * book is done with OCR afterwards.
+ *
+ * `updatedAt` is left alone like the reading place: OCR finishing in the
+ * background is not the reader opening the book.
+ */
+export function saveOcrText(
+  db: D1Database,
+  bucket: R2Bucket,
+  pdfId: string,
+  { fullText, pages }: SaveOcrRequest,
+): ResultAsync<OcrSaved, ServiceError> {
+  return ResultAsync.fromPromise(
+    writeOcrText(db, bucket, pdfId, fullText, pages),
+    storageFailure,
+  ).andThen((saved) => (saved ? ok(saved) : err(notFound())));
+}
+
+async function writeOcrText(
+  db: D1Database,
+  bucket: R2Bucket,
+  pdfId: string,
+  fullText: string,
+  pages: OcrPage[],
+): Promise<OcrSaved | null> {
+  const d1Db = drizzle(db);
+  const book = await d1Db
+    .select({ fileHash: pdfs.fileHash })
+    .from(pdfs)
+    .where(eq(pdfs.id, pdfId))
+    .get();
+  if (!book) return null;
+
+  // R2 before D1: a book that says it is done must have its lines to serve.
+  if (pages.length > 0) {
+    await bucket.put(ocrObjectKey(book.fileHash), JSON.stringify({ pages } satisfies OcrText), {
+      httpMetadata: { contentType: OCR_CONTENT_TYPE },
+    });
+  } else {
+    await bucket.delete(ocrObjectKey(book.fileHash));
+  }
+  await d1Db.update(pdfs).set({ fullText, ocrStatus: "done" }).where(eq(pdfs.id, pdfId));
+
+  return { id: pdfId, hasOcr: pages.length > 0 };
+}
+
+/**
  * Turn the book's pages the other way.
  *
  * Like the reader's place, `updatedAt` is left alone: choosing how a book
@@ -456,6 +547,14 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
   if (!pdf) return false;
 
   await d1Db.delete(pdfs).where(eq(pdfs.id, pdfId));
+  // Its Dropbox file goes back to waiting in the folder, under the title the
+  // reader gave the book rather than the file's name again.
+  if (pdf.dropboxId !== null && pdf.title !== null) {
+    await d1Db
+      .insert(bookTitles)
+      .values({ key: pdf.dropboxId, title: pdf.title })
+      .onConflictDoUpdate({ target: bookTitles.key, set: { title: pdf.title } });
+  }
   // The key the book was stored under, which carries its format's extension
   await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash), ocrObjectKey(pdf.fileHash)]);
 
@@ -624,6 +723,7 @@ async function readPdf(db: D1Database, bucket: R2Bucket, pdfId: string) {
     hasThumbnail: thumbnail !== null,
     hasOutline: pdf.outline !== null,
     hasOcr: ocr !== null,
+    ocrPending: pdf.ocrStatus === "pending",
     readingState: readingStateOf(pdf),
     title: pdf.title,
     pageDirection: readPageDirection(pdf.pageDirection),

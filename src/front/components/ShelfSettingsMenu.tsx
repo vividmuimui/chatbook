@@ -1,7 +1,10 @@
 // oxlint-disable-next-line no-restricted-imports -- document への keydown / mousedown 購読 (Escape と外側クリックで閉じる) に必要
 import { useState, useRef, useEffect } from "react";
 import { useAtom } from "jotai";
+import type { ResultAsync } from "neverthrow";
 import { preferredFormatAtom } from "../atoms/settingsAtom";
+import { resultFetcher, type ApiError } from "../lib/fetcher";
+import { sessionEndedSchema, type SessionEnded } from "../../shared/schemas/auth";
 
 interface ShelfSettingsMenuProps {
   /**
@@ -12,6 +15,8 @@ interface ShelfSettingsMenuProps {
   dropbox: { folder: string | null } | null;
   /** Opens the dialog the folder is typed into. */
   onChooseFolder: () => void;
+  /** Injectable so a session that could not be ended can be driven in a test. */
+  endSession?: () => ResultAsync<SessionEnded, ApiError>;
 }
 
 /**
@@ -20,10 +25,32 @@ interface ShelfSettingsMenuProps {
  * shelf (the layout, the hidden books). The reader's own menu (`SettingsMenu`)
  * is the same shape, under the same name.
  */
-export function ShelfSettingsMenu({ dropbox, onChooseFolder }: ShelfSettingsMenuProps) {
+export function ShelfSettingsMenu({
+  dropbox,
+  onChooseFolder,
+  endSession = requestSessionEnd,
+}: ShelfSettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [preferredFormat, setPreferredFormat] = useAtom(preferredFormatAtom);
+  const [logOutError, setLogOutError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const logOut = async () => {
+    setLogOutError(null);
+
+    const ended = await endSession();
+    if (ended.isErr()) {
+      // Left signed in and told so: the cookie is still on the browser, and a
+      // reader who thinks they are out would walk away from an open shelf.
+      setLogOutError(`ログアウトできませんでした: ${ended.error.message}`);
+      return;
+    }
+
+    // The reload is what puts the password box back: the cookie is gone, so the
+    // next thing the gate asks gets a 401, and every book on screen — which all
+    // came from behind that cookie — goes with it.
+    window.location.assign("/");
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -93,8 +120,31 @@ export function ShelfSettingsMenu({ dropbox, onChooseFolder }: ShelfSettingsMenu
               </button>
             </section>
           )}
+
+          {/* On the shelf rather than in the reader's menu: every book is one
+              tap (「← 本棚」) away from here, and one way out is easier to find
+              than two. */}
+          <div className="mt-3 border-t border-gray-100 pt-2">
+            <button
+              type="button"
+              onClick={() => void logOut()}
+              className="w-full rounded px-1 py-1 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+            >
+              ログアウト
+            </button>
+            {logOutError !== null && (
+              <p role="alert" className="px-1 pt-1 text-xs text-red-600">
+                {logOutError}
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+/** Asks the server to take the session back. */
+function requestSessionEnd(): ResultAsync<SessionEnded, ApiError> {
+  return resultFetcher("/api/auth/logout", sessionEndedSchema, { method: "POST" });
 }

@@ -1,5 +1,5 @@
 import { extractEpubData } from "./epubLoader";
-import { extractPdfData, type ExtractOptions, type ExtractedPdfData } from "./pdfLoader";
+import { extractPdfData, type ExtractedPdfData } from "./pdfLoader";
 
 /**
  * Whether a file is an EPUB, read off its first bytes the way the server reads
@@ -11,10 +11,7 @@ export async function isEpubFile(file: Blob): Promise<boolean> {
 }
 
 /** Read a book the reader chose, whichever of the two formats it is in. */
-export async function extractBookData(
-  file: File,
-  options: ExtractOptions = {},
-): Promise<ExtractedPdfData> {
+export async function extractBookData(file: File): Promise<ExtractedPdfData> {
   // Only a PDF can be without text: an EPUB's chapters are markup
-  return (await isEpubFile(file)) ? extractEpubData(file) : extractPdfData(file, options);
+  return (await isEpubFile(file)) ? extractEpubData(file) : extractPdfData(file);
 }

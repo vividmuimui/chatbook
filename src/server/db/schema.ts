@@ -40,6 +40,10 @@ export const pdfs = sqliteTable("pdfs", {
   // "ltr" or "rtl" (`pageDirectionSchema`): which way the pages turn. Chosen
   // by the reader per book, never read off the file — a PDF does not say.
   pageDirection: text("page_direction").notNull().default("ltr"),
+  // "pending" — a book of pictures stored before OCR read it, its text still to
+  // come from the browser (`PUT /api/pdf/:pdfId/ocr`) — or "done" once it has.
+  // Null for a book with text of its own.
+  ocrStatus: text("ocr_status"),
 });
 
 /** Settings changed from the screen. One row per key (`dropbox_folder`). */
@@ -52,6 +56,15 @@ export const settings = sqliteTable("settings", {
 export const hiddenBooks = sqliteTable("hidden_books", {
   key: text("key").primaryKey(),
   hiddenAt: text("hidden_at").notNull(),
+});
+
+/**
+ * Titles the reader gave Dropbox files that are not books yet, by Dropbox id.
+ * A book's own title is `pdfs.title`; a file's moves there when it is brought in.
+ */
+export const bookTitles = sqliteTable("book_titles", {
+  key: text("key").primaryKey(),
+  title: text("title").notNull(),
 });
 
 export const selections = sqliteTable("selections", {

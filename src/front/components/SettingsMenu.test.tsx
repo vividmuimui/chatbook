@@ -2,11 +2,10 @@ import { describe, it, expect, afterEach } from "vite-plus/test";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
-import { errAsync, okAsync, type ResultAsync } from "neverthrow";
+import { errAsync, okAsync } from "neverthrow";
 import { SettingsMenu } from "./SettingsMenu";
 import { useWebSearchAtom, keybindingModeAtom } from "../atoms/settingsAtom";
 import { ApiError } from "../lib/fetcher";
-import type { SessionEnded } from "../../shared/schemas/auth";
 import type { KeybindingMode } from "../lib/keybindings";
 import { SwrTestCache } from "../../test/swrTestCache";
 import { SERVER_CONFIG_KEY } from "../hooks/useServerConfig";
@@ -50,17 +49,13 @@ function renderMenuOverBook(
   );
 }
 
-function renderMenu(
-  mode: KeybindingMode = "vim",
-  endSession?: () => ResultAsync<SessionEnded, ApiError>,
-  webSearchAvailable = true,
-) {
+function renderMenu(mode: KeybindingMode = "vim", webSearchAvailable = true) {
   const store = createStore();
   store.set(keybindingModeAtom, mode);
   render(
     <SwrTestCache seed={{ [SERVER_CONFIG_KEY]: { webSearchAvailable } }}>
       <Provider store={store}>
-        <SettingsMenu endSession={endSession} />
+        <SettingsMenu />
       </Provider>
     </SwrTestCache>,
   );
@@ -143,32 +138,21 @@ describe("SettingsMenu", () => {
     // A switch that the server would override is worse than no switch: the
     // reader turns it on, nothing about the answers changes, and there is
     // nothing on screen to say why.
-    renderMenu("vim", undefined, false);
+    renderMenu("vim", false);
 
     await userEvent.click(screen.getByRole("button", { name: "設定" }));
 
     expect(screen.queryByRole("checkbox", { name: "Web検索" })).not.toBeInTheDocument();
     // The rest of the menu is untouched: this hides one setting, not the panel
-    expect(screen.getByRole("button", { name: "ログアウト" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Vim" })).toBeChecked();
   });
 
-  it("says why the session could not be ended, rather than looking logged out", async () => {
-    // The reader would otherwise be shown the shelf again with the cookie still
-    // on it, having been told nothing — on a borrowed laptop that is the worst
-    // possible time to assume it worked.
-    renderMenu("vim", () =>
-      errAsync(new ApiError("Failed to fetch", "NETWORK_ERROR", 0, "network")),
-    );
+  it("leaves logging out to the shelf's menu", async () => {
+    // One way out rather than two: the shelf is a tap away from every book.
+    renderMenu();
     await userEvent.click(screen.getByRole("button", { name: "設定" }));
 
-    await userEvent.click(screen.getByRole("button", { name: "ログアウト" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /^ログアウトできませんでした: Failed to fetch$/,
-    );
-    // Still open, so the reader can try again without hunting for the menu
-    expect(screen.getByRole("button", { name: "ログアウト" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "ログアウト" })).not.toBeInTheDocument();
   });
 
   it("says what the arrow keys do, with no bindings chosen and they answer anyway", async () => {

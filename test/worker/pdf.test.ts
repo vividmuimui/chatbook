@@ -42,6 +42,8 @@ async function uploadBook(options: {
   outline?: { title: string; pageNumber: number }[];
   /** What OCR read, sent as the extractor sends it: a JSON file of its own. */
   ocr?: unknown;
+  /** A scanned book stored before OCR reads it, its text still to come. */
+  ocrPending?: boolean;
 }): Promise<PdfResponse> {
   const formData = new FormData();
   formData.append(
@@ -49,6 +51,7 @@ async function uploadBook(options: {
     new File([uniquePdfBytes(options.tag)], options.fileName, { type: "application/pdf" }),
   );
   formData.append("fullText", options.pages ? options.pages.join("\f") : "text");
+  if (options.ocrPending) formData.append("ocrPending", "true");
   formData.append("pageCount", String(options.pages?.length ?? 1));
   if (options.outline) formData.append("outline", JSON.stringify(options.outline));
   if (options.ocr !== undefined) {
@@ -217,6 +220,7 @@ describe("POST /api/pdf/open", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
   });
 
@@ -294,6 +298,7 @@ describe("POST /api/pdf/open", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
 
     // The refreshed values must be persisted, not just echoed back
@@ -310,6 +315,7 @@ describe("POST /api/pdf/open", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
   });
 
@@ -507,6 +513,7 @@ describe("PUT /api/pdf/:pdfId/outline", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
   });
 
@@ -578,6 +585,7 @@ describe("GET /api/pdf/:pdfId", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
   });
 
@@ -692,6 +700,7 @@ describe("GET /api/pdfs", () => {
       lastReadPage: null,
       // Never renamed: the shelf makes the title from the file name.
       title: null,
+      ocrPending: false,
     });
     expect(uncovered?.hasThumbnail).toBe(false);
   });
@@ -1943,6 +1952,7 @@ describe("openPdf with an injected IdClock", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
     expect(await storedBookRow("book-idclock-new")).toStrictEqual({
       id: "book-idclock-new",
@@ -1988,6 +1998,7 @@ describe("openPdf with an injected IdClock", () => {
       readingState: null,
       title: null,
       pageDirection: "ltr",
+      ocrPending: false,
     });
     expect(await storedBookRow("book-idclock-reopen")).toStrictEqual({
       id: "book-idclock-reopen",
@@ -2303,6 +2314,140 @@ describe("OCR text of a book without its own", () => {
     expect(await response.json()).toStrictEqual({
       error: { code: "VALIDATION_ERROR", message: "Invalid OCR text" },
     });
+  });
+
+  it("keeps a book of pictures whose text OCR has still to read, and says so", async () => {
+    // Stored first and read afterwards, in the background: the reader does
+    // not wait the minutes OCR takes before the book is on the shelf.
+    const book = await uploadBook({
+      tag: "ocr-pending",
+      fileName: "scan.pdf",
+      pages: ["", ""],
+      ocrPending: true,
+    });
+    expect(book.id).toBeDefined();
+    expect((book as unknown as { ocrPending: boolean }).ocrPending).toBe(true);
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      ocrPending: boolean;
+      hasOcr: boolean;
+    };
+    expect(detail).toMatchObject({ ocrPending: true, hasOcr: false });
+
+    const shelf = (await (await apiFetch("https://example.com/api/pdfs")).json()) as {
+      books: { id: string; ocrPending: boolean }[];
+    };
+    expect(shelf.books.find((b) => b.id === book.id)?.ocrPending).toBe(true);
+  });
+
+  it("still refuses a book with no text that is not waiting for OCR", async () => {
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([uniquePdfBytes("ocr-not-pending")], "blank.pdf", { type: "application/pdf" }),
+    );
+    formData.append("fullText", "");
+    formData.append("pageCount", "1");
+
+    const response = await apiFetch("https://example.com/api/pdf/open", {
+      method: "POST",
+      body: formData,
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("stores what OCR read later: the lines, the text to search, and the book is done", async () => {
+    const book = await uploadBook({
+      tag: "ocr-later",
+      fileName: "scan.pdf",
+      pages: [""],
+      ocrPending: true,
+    });
+
+    const saved = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullText: "the brass lantern", pages: OCR_TEXT.pages }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toStrictEqual({ id: book.id, hasOcr: true });
+
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      ocrPending: boolean;
+      hasOcr: boolean;
+    };
+    expect(detail).toMatchObject({ ocrPending: false, hasOcr: true });
+    const lines = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`);
+    expect(await lines.json()).toStrictEqual(OCR_TEXT);
+    const found = (await (
+      await apiFetch(`https://example.com/api/pdf/${book.id}/find?q=lantern`)
+    ).json()) as { matches: unknown[] };
+    expect(found.matches).toHaveLength(1);
+  });
+
+  it("takes a reading that found no lines as done, with nothing to lay over the pages", async () => {
+    const book = await uploadBook({
+      tag: "ocr-nothing",
+      fileName: "scan.pdf",
+      pages: [""],
+      ocrPending: true,
+    });
+
+    const saved = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullText: "", pages: [] }),
+    });
+    expect(await saved.json()).toStrictEqual({ id: book.id, hasOcr: false });
+    const detail = (await (await apiFetch(`https://example.com/api/pdf/${book.id}`)).json()) as {
+      ocrPending: boolean;
+    };
+    expect(detail.ocrPending).toBe(false);
+  });
+
+  it("keeps the text OCR read when the same book is added again", async () => {
+    // Its bytes are the ones already read: reading them again would cost the
+    // reader minutes for the same text.
+    const first = await uploadBook({ tag: "ocr-readd", fileName: "scan.pdf", ocrPending: true });
+    await apiFetch(`https://example.com/api/pdf/${first.id}/ocr`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullText: "the brass lantern", pages: OCR_TEXT.pages }),
+    });
+
+    const again = (await uploadBook({
+      tag: "ocr-readd",
+      fileName: "scan.pdf",
+      pages: [""],
+      ocrPending: true,
+    })) as PdfResponse & { ocrPending: boolean };
+
+    expect(again.id).toBe(first.id);
+    expect(again.ocrPending).toBe(false);
+    expect(again.fullText).toBe("the brass lantern");
+    const lines = await apiFetch(`https://example.com/api/pdf/${first.id}/ocr`);
+    expect(lines.status).toBe(200);
+  });
+
+  it("answers 404 for OCR text sent for a book that is not on the shelf, and 400 for a broken one", async () => {
+    const missing = await apiFetch("https://example.com/api/pdf/no-such-book/ocr", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullText: "", pages: [] }),
+    });
+    expect(missing.status).toBe(404);
+
+    const book = await uploadBook({
+      tag: "ocr-put-broken",
+      fileName: "scan.pdf",
+      ocrPending: true,
+    });
+    const broken = await apiFetch(`https://example.com/api/pdf/${book.id}/ocr`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullText: "x", pages: [{ pageNumber: 0, lines: [] }] }),
+    });
+    expect(broken.status).toBe(400);
   });
 
   it("takes the OCR text out of storage when the book is deleted", async () => {

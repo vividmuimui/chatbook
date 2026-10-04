@@ -4,9 +4,6 @@ import { useAtom } from "jotai";
 import { keybindingModeAtom } from "../atoms/settingsAtom";
 import { useWebSearchAtom } from "../atoms/settingsAtom";
 import { keybindingHelp, type KeybindingMode } from "../lib/keybindings";
-import type { ResultAsync } from "neverthrow";
-import { resultFetcher, type ApiError } from "../lib/fetcher";
-import { sessionEndedSchema, type SessionEnded } from "../../shared/schemas/auth";
 import { useServerConfig } from "../hooks/useServerConfig";
 import { usePageDirection, type SavePageDirection } from "../hooks/usePageDirection";
 import type { PageDirection } from "../../shared/schemas/book";
@@ -28,41 +25,22 @@ interface SettingsMenuProps {
    * — the menu offers along with the reader's. None where no book is open.
    */
   pdfId?: string;
-  /** Injectable so a session that could not be ended can be driven in a test. */
-  endSession?: () => ResultAsync<SessionEnded, ApiError>;
   /** Injectable so a direction the server refused can be driven in a test. */
   savePageDirection?: SavePageDirection;
 }
 
-export function SettingsMenu({
-  pdfId,
-  endSession = requestSessionEnd,
-  savePageDirection,
-}: SettingsMenuProps = {}) {
+/**
+ * The reader's settings. Logging out is not here but on the shelf's menu
+ * (`ShelfSettingsMenu`): the shelf is one tap away, and one way out is easier
+ * to find than two.
+ */
+export function SettingsMenu({ pdfId, savePageDirection }: SettingsMenuProps = {}) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useAtom(keybindingModeAtom);
   const [useWebSearch, setUseWebSearch] = useAtom(useWebSearchAtom);
   const { webSearchAvailable } = useServerConfig();
-  const [logOutError, setLogOutError] = useState<string | null>(null);
   const pageDirection = usePageDirection(pdfId, savePageDirection);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  const logOut = async () => {
-    setLogOutError(null);
-
-    const ended = await endSession();
-    if (ended.isErr()) {
-      // Left signed in and told so: the cookie is still on the browser, and a
-      // reader who thinks they are out would walk away from an open book.
-      setLogOutError(`ログアウトできませんでした: ${ended.error.message}`);
-      return;
-    }
-
-    // The reload is what puts the password box back: the cookie is gone, so the
-    // next thing the gate asks gets a 401, and every piece of the book on
-    // screen — which all came from behind that cookie — goes with it.
-    window.location.assign("/");
-  };
 
   useEffect(() => {
     if (!open) return;
@@ -186,30 +164,8 @@ export function SettingsMenu({
               </div>
             ))}
           </dl>
-
-          {/* Here because this menu is the one thing on screen in both layouts,
-              wide and narrow, so there is one way out rather than two. */}
-          <div className="mt-3 border-t border-gray-100 pt-2">
-            <button
-              type="button"
-              onClick={() => void logOut()}
-              className="w-full rounded px-1 py-1 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
-            >
-              ログアウト
-            </button>
-            {logOutError !== null && (
-              <p role="alert" className="px-1 pt-1 text-xs text-red-600">
-                {logOutError}
-              </p>
-            )}
-          </div>
         </div>
       )}
     </div>
   );
-}
-
-/** Asks the server to take the session back. */
-function requestSessionEnd(): ResultAsync<SessionEnded, ApiError> {
-  return resultFetcher("/api/auth/logout", sessionEndedSchema, { method: "POST" });
 }
