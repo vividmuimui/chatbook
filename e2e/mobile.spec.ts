@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FIXTURE_FILE_NAME, OUTLINE, PAGE_COUNT, pageText } from "./fixtures/testBookManifest.ts";
@@ -316,6 +317,38 @@ test("keeps the shelf shut until the password is typed", async ({ page }) => {
   // Signed in, and still at the address that was asked for
   await expect(page.getByRole("button", { name: "本を追加" })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe("/");
+});
+
+test("fits the shelf's header, the switch to the collections included, across a phone", async ({
+  page,
+}) => {
+  await logIn(page);
+  // Something put away, so the header carries every button it can
+  const stored = await page.request.post("/api/pdf/open", {
+    multipart: {
+      file: {
+        name: "hidden-on-a-phone.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.concat([fs.readFileSync(TEST_PDF), Buffer.from("\n%hidden-on-a-phone\n")]),
+      },
+      fullText: "A book put away to fill the shelf's header.",
+      pageCount: "1",
+    },
+  });
+  const { id } = (await stored.json()) as { id: string };
+  await page.request.put("/api/shelf/hidden", { data: { keys: [id], hidden: true } });
+
+  await page.goto("/");
+  const toCollections = page.getByRole("radio", { name: "コレクション" });
+  await expect(page.getByRole("button", { name: /^非表示の本/ })).toBeVisible();
+  await expect(toCollections).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "設定" })).toBeInViewport({ ratio: 1 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+  await toCollections.tap();
+  await expect(page.getByRole("button", { name: "未分類の本を開く" })).toBeVisible();
+
+  await page.request.put("/api/shelf/hidden", { data: { keys: [id], hidden: false } });
 });
 
 const TEST_EPUB = path.join(

@@ -14,6 +14,8 @@ export const ERROR_CODES = [
   "SELECTION_NOT_FOUND",
   // A chat session that is not one of the named book's.
   "SESSION_NOT_FOUND",
+  // A collection of the shelf's that is not there (deleted, or never was).
+  "COLLECTION_NOT_FOUND",
   "CONFIG_ERROR",
   "UNAUTHORIZED",
   "AI_API_ERROR",

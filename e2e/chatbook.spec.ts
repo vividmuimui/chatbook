@@ -1712,6 +1712,8 @@ test("a title given on the shelf is what the shelf and the reader say after a re
   const given = "書棚で付けた題名";
 
   await page.goto("/");
+  // Renaming waits behind the entry's 「…」, with filing and hiding
+  await page.getByRole("button", { name: "rename-on-shelf のその他の操作" }).click();
   await page.getByRole("button", { name: "rename-on-shelf の題名を変更" }).click();
   const dialog = page.getByRole("dialog", { name: "題名の変更" });
   await dialog.getByRole("textbox", { name: "題名" }).fill(given);
@@ -1729,6 +1731,65 @@ test("a title given on the shelf is what the shelf and the reader say after a re
 
   await page.reload();
   await expect(page.getByRole("banner").getByText(given)).toBeVisible();
+});
+
+test("a collection made on the shelf holds the books put in it, through a reload", async ({
+  page,
+}) => {
+  await logIn(page);
+  // A book of its own, like the rename above: the fixture is every other test's
+  const stored = await page.request.post("/api/pdf/open", {
+    multipart: {
+      file: apiFixtureFile("collected-on-shelf"),
+      fullText: "A book the reader files in a collection.",
+      pageCount: String(PAGE_COUNT),
+    },
+  });
+  expect(stored.status()).toBe(200);
+  // And one left out of it, which the collection must not list
+  const other = await page.request.post("/api/pdf/open", {
+    multipart: {
+      file: apiFixtureFile("left-out-of-the-filing"),
+      fullText: "A book the reader leaves out of the collection.",
+      pageCount: String(PAGE_COUNT),
+    },
+  });
+  expect(other.status()).toBe(200);
+  const name = "E2E で作った棚";
+  // A collection of the same name left behind by an earlier test of this run
+  const { collections } = (await (await page.request.get("/api/shelf/collections")).json()) as {
+    collections: { id: string; name: string }[];
+  };
+  for (const old of collections.filter((c) => c.name === name)) {
+    await page.request.delete(`/api/shelf/collections/${old.id}`);
+  }
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "collected-on-shelf のその他の操作" }).click();
+  await page.getByRole("button", { name: "collected-on-shelf のコレクションを選ぶ" }).click();
+  const dialog = page.getByRole("dialog", { name: "コレクションに入れる" });
+  await dialog.getByRole("textbox", { name: "新しいコレクションの名前" }).fill(name);
+  await dialog.getByRole("button", { name: "作成して入れる" }).click();
+  await expect(dialog.getByRole("checkbox", { name })).toBeChecked();
+  await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
+
+  await page.getByRole("radio", { name: "コレクション" }).click();
+  const tile = page.getByRole("button", { name: `コレクション「${name}」を開く` });
+  await expect(tile).toContainText("1 冊");
+  await tile.click();
+  await expect(page.getByRole("button", { name: "collected-on-shelf を開く" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "left-out-of-the-filing を開く" })).toHaveCount(0);
+
+  // Kept by the server, and the address keeps the reader in the collection
+  await page.reload();
+  await expect(page.getByRole("heading", { name: new RegExp(name) })).toBeVisible();
+  await expect(page.getByRole("button", { name: "collected-on-shelf を開く" })).toBeVisible();
+
+  // And out again, to the tiles and then the whole shelf
+  await page.getByRole("button", { name: "← コレクション" }).click();
+  await expect(tile).toBeVisible();
+  await page.getByRole("radio", { name: "一覧" }).click();
+  await expect(page.getByRole("button", { name: "left-out-of-the-filing を開く" })).toBeVisible();
 });
 
 test("the chat panel lists the highlights, opens one, and comes back to the list", async ({
