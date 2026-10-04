@@ -229,11 +229,11 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                                                                                                                                                                                                                                                         |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_sessions` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きと OCR の状態 `ocr_status` も持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ）、`hidden_books` / `book_titles`（本棚の非表示と未読み込みファイルの題名） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                                                                                                                                               |
-| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                                                                                                                                                   |
+| 置き場所          | 内容                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_sessions` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きと OCR の状態 `ocr_status` も持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ）、`hidden_books` / `book_titles`（本棚の非表示と未読み込みファイルの題名）、`collections` / `collection_items`（本棚のコレクション） |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                                                                                                                                                                                                         |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                                                                                                                                                                                                             |
 
 **チャットは本に属し、ハイライトか本のセッションのどちらかにぶら下がる。** `chat_messages` は
 `pdf_id` を必ず持ち、`selection_id` を持つのはハイライトの会話、`session_id`（0013）を持つのは
@@ -264,14 +264,15 @@ PDF に AI で目次を作る」。費用を払って作った）のどちらか
 フォルダが選ばれているときだけ働く（`routes/dropbox.ts` の `dropboxFolderOf` が null を
 返せば従来どおり R2 だけ）。取得手順は README の「Dropbox と連携する」。
 
-| 何を                                          | どこが                                                                                           |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Dropbox API（トークン更新・一覧・取得・書込） | `src/server/services/dropboxService.ts`                                                          |
-| フォルダの保存・未読み込みの一覧・バイト列    | `src/server/routes/dropbox.ts`（`/api/dropbox/settings` `files` `file`）                         |
-| 取り込みとアップロード時の書き込み            | `src/server/routes/pdf.ts` の `POST /pdf/open`                                                   |
-| R2 の写しが無いときの作り直し                 | `src/server/routes/pdf.ts` の `GET /pdf/:pdfId/file`                                             |
-| front と server が交わす形                    | `src/shared/schemas/dropbox.ts`                                                                  |
-| 本棚のカード・取得の進捗・フォルダの設定      | `ShelfPage.tsx` / `lib/dropboxDownload.ts` / `ShelfSettingsMenu.tsx` → `DropboxFolderDialog.tsx` |
+| 何を                                          | どこが                                                                                               |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Dropbox API（トークン更新・一覧・取得・書込） | `src/server/services/dropboxService.ts`                                                              |
+| フォルダの保存・未読み込みの一覧・バイト列    | `src/server/routes/dropbox.ts`（`/api/dropbox/settings` `files` `file`）                             |
+| 取り込みとアップロード時の書き込み            | `src/server/routes/pdf.ts` の `POST /pdf/open`                                                       |
+| R2 の写しが無いときの作り直し                 | `src/server/routes/pdf.ts` の `GET /pdf/:pdfId/file`                                                 |
+| front と server が交わす形                    | `src/shared/schemas/dropbox.ts`                                                                      |
+| 本棚のカード・取得の進捗・フォルダの設定      | `ShelfPage.tsx` / `lib/dropboxDownload.ts` / `ShelfSettingsMenu.tsx` → `DropboxFolderDialog.tsx`     |
+| 未読み込みをまとめて取り込む                  | `lib/importQueue.ts` / `hooks/useDropboxImport.ts`（下記「Dropbox の未読み込みをまとめて取り込む」） |
 
 - **本と Dropbox ファイルは `pdfs.dropbox_id`（Dropbox の `id:...`）で結ぶ**。パスではなく id
   なのは、Dropbox 側で改名・移動されても同じ本のままにするため。本の同一性は従来どおり
@@ -280,7 +281,11 @@ PDF に AI で目次を作る」。費用を払って作った）のどちらか
   `GET /api/dropbox/file?id=` で取得 → 抽出 → `POST /pdf/open` に **`file` ではなく
   `dropboxId`** を載せて送る。サーバは Dropbox から取り直して保存する——読者の回線で
   同じバイト列を上げ直させないため（上記の 22MB / 76 秒）。取得したバイト列は
-  `rememberUploadedFile` に渡るので、ビューアも取り直さない
+  `rememberUploadedFile` に渡るので、ビューアも取り直さない（まとめて取り込むときだけは
+  渡さない——`handOff: false`。誰も開かない本で 1 枠を占めないため）
+- **取り込みで、そのファイルに付いていた題名（`book_titles`）とコレクションの所属
+  （`collection_items`）が本へ移り、本を削除すると戻る**（下記「題名は読者が変えられる」
+  「本はコレクションに分けられる」）
 - **アップロードは Dropbox に書いてから R2 / D1 に保存する**。Dropbox が拒んだら 502
   （`DROPBOX_ERROR`）で何も保存しない。正が持っていない本を作らないため。書く前に
   Dropbox の `content_hash`（4MB ブロックごとの SHA-256 の SHA-256。`dropboxContentHash`）で
@@ -343,7 +348,7 @@ script なので worker が同じファイルをもう一度落とし、`rel="pr
 
 front と server が交わす形は `src/shared/schemas/` に zod スキーマとして 1 箇所だけ置き、
 型は `z.infer` で導出する（`error.ts` / `book.ts` / `bookSearch.ts` / `config.ts` / `selection.ts` /
-`citation.ts` / `chat.ts` / `sse.ts` / `ocr.ts`）。front・server どちらにも同じ概念の型を書かないこと。
+`citation.ts` / `chat.ts` / `sse.ts` / `ocr.ts` / `shelf.ts`）。front・server どちらにも同じ概念の型を書かないこと。
 
 - **サーバの受け口**は `src/server/routes/validation.ts` の `validate(target, schema)`
   （`@hono/zod-validator` のラッパ）を通す。素の `zValidator` は zod のレポートをそのまま
@@ -401,7 +406,8 @@ union + `satisfies` で固定する。
   本の題名の変更（`ShelfPage` → `BookTitleDialog`）・ページめくりの向きの保存
   （`usePageDirection`）・目次の生成（`useReaderOutline`）・セッションの作成・削除・改名
   （`useChatList`）・OCR が読んだ本文の保存（`useBackgroundOcr`。`Err` は throw してキューの
-  `failed` に載せる）の 16 個。
+  `failed` に載せる）・コレクションの作成・改名・削除・出し入れ（`lib/collectionsApi.ts`。
+  `ShelfPage` → `CollectionNameDialog` / `CollectionPickerDialog`）の 17 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -437,32 +443,37 @@ union + `satisfies` で固定する。
 
 失敗の受け皿と表示場所は次のとおり。新しい失敗を足すときはこの表のどれかに合流させる:
 
-| 失敗                                             | 受け皿                                                      | 出る場所                                                                             |
-| ------------------------------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 本棚の読み込み・削除・追加・ドロップの拒否       | `ShelfPage` の `actionError` と SWR の `error`              | 本棚上部の赤い枠                                                                     |
-| 本の OCR（読み取り・保存。中止は数えない）       | `ocrQueue` の `failed`（`useBackgroundOcr` の `jobs`）      | 本棚の項目の下（「再開」を出す）とリーダーのヘッダ直下の帯                           |
-| OCR の行の取得                                   | `useOcrText` の `error`                                     | ビューア上部（ページは描く。文字が選べないことを言う）                               |
-| Dropbox の本の取得・取り込み                     | `ShelfPage` の `actionError`                                | 本棚上部の赤い枠                                                                     |
-| Dropbox フォルダの一覧                           | `ShelfPage` の Dropbox 側 SWR の `error`                    | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
-| Dropbox フォルダの保存                           | `DropboxFolderDialog` の `error`                            | ダイアログの中（開いたまま）                                                         |
-| 本の題名の変更（未読み込みのファイルも）         | `BookTitleDialog` の `error`                                | ダイアログの中（開いたまま。打った題名も残る）                                       |
-| 未読み込みのファイルの題名の一覧                 | `ShelfPage` の題名側 SWR の `error`                         | 本棚上部の赤い枠（ファイル名のまま描く）                                             |
-| 本の読み込み                                     | `useBook` の `error` → `bookError` prop                     | ビューア中央とチャットパネル                                                         |
-| PDF バイナリの取得・pdf.js の構築                | `usePdfDocument` の `error`                                 | ビューア中央                                                                         |
-| ページの描画                                     | `PdfPage` の `onError` → `PdfViewer` の `renderError`       | ビューア上部（ページを移ると消える）                                                 |
-| 目次の取得                                       | `usePdfOutline` の `error`                                  | 目次パネル                                                                           |
-| 目次の生成（AI）                                 | `useReaderOutline` の `generation.error`                    | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
-| ページめくりの向きの保存                         | `usePageDirection` の `error`                               | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
-| ハイライトの保存（質問・色・メモのどれでも）     | `useAskAboutSelection` の `saveError`                       | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
-| ハイライトの色とメモの変更                       | `HighlightEditor` の `error`                                | 編集欄の中（開いたまま。打ったメモも残る）                                           |
-| ハイライトの削除                                 | `HighlightListPanel` の `actionError`                       | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
-| ハイライトの検索                                 | `useHighlightSearch` の `searchError`                       | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
-| 本文の検索                                       | `useBookTextSearch` の `searchError`                        | 本文検索パネルの入力行の下                                                           |
-| チャットの送信・履歴の取得・新しいチャットの作成 | `chatErrorAtom`                                             | チャットパネル（狭い画面ではシート）                                                 |
-| チャット一覧の読み込み・セッションの削除         | `useChatList` の `error` / `ChatListPanel` の `actionError` | チャット一覧の上の赤い枠（削除の失敗が優先）                                         |
-| セッションの名前の変更                           | `SessionTitle` の `error`                                   | 会話の見出しの下（入力欄は開いたまま、打った名前も残る）                             |
-| リンク先の passage が見つからない                | `useReadingLocation` の `passageMiss`                       | ヘッダ直下の帯                                                                       |
-| 読書位置の保存                                   | `useReadingStateSync` の `saveError`                        | ヘッダ直下の帯                                                                       |
+| 失敗                                             | 受け皿                                                      | 出る場所                                                                               |
+| ------------------------------------------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 本棚の読み込み・削除・追加・ドロップの拒否       | `ShelfPage` の `actionError` と SWR の `error`              | 本棚上部の赤い枠                                                                       |
+| 本の OCR（読み取り・保存。中止は数えない）       | `ocrQueue` の `failed`（`useBackgroundOcr` の `jobs`）      | 本棚の項目の下（「再開」を出す）とリーダーのヘッダ直下の帯                             |
+| OCR の行の取得                                   | `useOcrText` の `error`                                     | ビューア上部（ページは描く。文字が選べないことを言う）                                 |
+| Dropbox の本の取得・取り込み                     | `ShelfPage` の `actionError`                                | 本棚上部の赤い枠                                                                       |
+| Dropbox フォルダの一覧                           | `ShelfPage` の Dropbox 側 SWR の `error`                    | 本棚上部の赤い枠（本棚の失敗とは別の段）                                               |
+| Dropbox フォルダの保存                           | `DropboxFolderDialog` の `error`                            | ダイアログの中（開いたまま）                                                           |
+| 本の題名の変更（未読み込みのファイルも）         | `BookTitleDialog` の `error`                                | ダイアログの中（開いたまま。打った題名も残る）                                         |
+| 未読み込みのファイルの題名の一覧                 | `ShelfPage` の題名側 SWR の `error`                         | 本棚上部の赤い枠（ファイル名のまま描く）                                               |
+| コレクションの一覧                               | `ShelfPage` のコレクション側 SWR の `error`                 | 本棚上部の赤い枠（全項目を未分類として描く）                                           |
+| コレクションの作成・改名                         | `CollectionNameDialog` の `error`                           | ダイアログの中（開いたまま。打った名前も残る）                                         |
+| コレクションへの出し入れ（作成して入れるも）     | `CollectionPickerDialog` の `error`                         | ダイアログの中（チェックはサーバの答えのまま）                                         |
+| コレクションの削除                               | `ShelfPage` の `actionError`                                | 本棚上部の赤い枠                                                                       |
+| Dropbox からまとめて取り込む（中止は数えない）   | `importQueue` の `failed`（`useDropboxImport` の `jobs`）   | カードの下（理由と「再試行」）と本棚上部の取り込みの枠（件数と「失敗した本を再試行」） |
+| 本の読み込み                                     | `useBook` の `error` → `bookError` prop                     | ビューア中央とチャットパネル                                                           |
+| PDF バイナリの取得・pdf.js の構築                | `usePdfDocument` の `error`                                 | ビューア中央                                                                           |
+| ページの描画                                     | `PdfPage` の `onError` → `PdfViewer` の `renderError`       | ビューア上部（ページを移ると消える）                                                   |
+| 目次の取得                                       | `usePdfOutline` の `error`                                  | 目次パネル                                                                             |
+| 目次の生成（AI）                                 | `useReaderOutline` の `generation.error`                    | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                         |
+| ページめくりの向きの保存                         | `usePageDirection` の `error`                               | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                          |
+| ハイライトの保存（質問・色・メモのどれでも）     | `useAskAboutSelection` の `saveError`                       | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま）   |
+| ハイライトの色とメモの変更                       | `HighlightEditor` の `error`                                | 編集欄の中（開いたまま。打ったメモも残る）                                             |
+| ハイライトの削除                                 | `HighlightListPanel` の `actionError`                       | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                         |
+| ハイライトの検索                                 | `useHighlightSearch` の `searchError`                       | 同じ枠。削除の失敗が出ている間はそちらが優先される                                     |
+| 本文の検索                                       | `useBookTextSearch` の `searchError`                        | 本文検索パネルの入力行の下                                                             |
+| チャットの送信・履歴の取得・新しいチャットの作成 | `chatErrorAtom`                                             | チャットパネル（狭い画面ではシート）                                                   |
+| チャット一覧の読み込み・セッションの削除         | `useChatList` の `error` / `ChatListPanel` の `actionError` | チャット一覧の上の赤い枠（削除の失敗が優先）                                           |
+| セッションの名前の変更                           | `SessionTitle` の `error`                                   | 会話の見出しの下（入力欄は開いたまま、打った名前も残る）                               |
+| リンク先の passage が見つからない                | `useReadingLocation` の `passageMiss`                       | ヘッダ直下の帯                                                                         |
+| 読書位置の保存                                   | `useReadingStateSync` の `saveError`                        | ヘッダ直下の帯                                                                         |
 
 `chatErrorAtom` だけ二重の口がある。**atom が表示の正、`sendMessage` の戻り値
 （`ResultAsync<string, ApiError>`。成功時の値は保存された回答の id）は呼び出し元の
@@ -1314,7 +1325,8 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 **画面に出しっぱなしにするサーバのデータは SWR、クライアントだけの状態は Jotai の atom**
 （`src/front/atoms/`）。両方に同じものを載せないこと。
 
-- `/` … 本棚（`ShelfPage`）。一覧は `useSWR("/api/pdfs")`
+- `/` … 本棚（`ShelfPage`）。一覧は `useSWR("/api/pdfs")`。開いているコレクションは
+  `?collection=<id>`（下記「本はコレクションに分けられる」）
 - `/books/:pdfId` … リーダー（`AppPage`）。本は `useBook(pdfId)` で読むので
   リロード・直リンクでも開ける。読んだ本は `PdfViewer` / `ChatArea` へ **props で**
   渡す（atom に写さない。読み手はこの 2 つだけなので prop drilling にならない）
@@ -1361,7 +1373,8 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
   `importing`（`ShelfPage` の state。タイルの `disabled`・ドラッグとドロップの無視・
   この覆いの 3 つが読む）は `reading` / `uploading` + 割合 / `storing` の 3 状態で、
   文言は `importWording` が作る——「本を読み取り中...」「アップロード中 45%」「保存中...」。
-  （Dropbox の本は手前に `downloading` が入る。**テキストの無い PDF の OCR はこの覆いに
+  （Dropbox の本は手前に `downloading` が入る。まとめて取り込んでいるキューがちょうどその本を
+  取り込んでいるときは `queued` で終わるのを待つ——下記「Dropbox の未読み込みをまとめて取り込む」。**テキストの無い PDF の OCR はこの覆いに
   入らない**——本を先に保存してリーダーへ出し、OCR は裏で走って本棚の項目とリーダーの帯に
   出る。数分かかる処理で本棚を塞がないため。上記「テキストの無い PDF（OCR）」）。
   **追加に成功したら本棚の一覧を取り直す**（`mutate()`。本棚がまだ在るうちに）——すぐ本棚へ
@@ -1399,8 +1412,8 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 
 **一度決めたら触らないもの——優先する形式と Dropbox の参照フォルダ——は本棚ヘッダーの ⚙
 （`ShelfSettingsMenu.tsx`。アクセシブルネーム「設定」、リーダーの `SettingsMenu` と同じ形）に
-置く**。ヘッダーに直接並べるのは、本棚を眺めながら切り替えるもの（「非表示の本」「コンパクト表示」）
-だけ。Dropbox の欄は Dropbox の資格情報があるデプロイにだけ出し、読めなかったフォルダでも
+置く**。ヘッダーに直接並べるのは、本棚を眺めながら切り替えるもの（「一覧 / コレクション」「非表示の本」
+「コンパクト表示」）だけ。Dropbox の欄は Dropbox の資格情報があるデプロイにだけ出し、読めなかったフォルダでも
 「Dropboxフォルダを設定」から直せる（押すとメニューを閉じて `DropboxFolderDialog` を開く）。
 **新しい本棚の設定もここに足す**——狭い画面のヘッダーはもうボタンで埋まっている。
 
@@ -1457,8 +1470,9 @@ PDF が Dropbox にある題名は、設定ができる前（EPUB が開いた�
   が載る**。アップロードの応答に要るのは `useOpenPdfBook` のキャッシュ先充填のため——
   題名を変えた本を同じファイルからもう一度足したとき、リーダーにファイル名の題名が出ないように。
   **`storePdf` の上書きは `title` を列挙しない**ので、再アップロードで題名は消えない
-- **口は本棚の項目の「✎」**（`aria-label` は「〈題名〉 の題名を変更」。「非表示」「削除」
-  「開く」と部分一致で当たらない名前）。**どの項目にも出す**——Dropbox の未読み込み
+- **口は本棚の項目の「…」のシートの「題名を変更」**（`aria-label` は「〈題名〉 の題名を変更」。
+  「非表示」「削除」「開く」と部分一致で当たらない名前。シートは下記「本はコレクションに
+  分けられる」）。**どの項目にも出す**——Dropbox の未読み込み
   ファイルだけの項目にも（下記）。ダイアログは
   `src/front/components/BookTitleDialog.tsx`。**項目のすべてのファイルに同じ題名を付ける**——
   1 つだけ変えると項目が 2 つに割れる（次項）。取り込み済みの本を 1 冊ずつ送り、次に
@@ -1515,7 +1529,8 @@ Dropbox ファイルなら Dropbox の id（`id:...`）で、外部キーは張�
 **項目が非表示になるのは、中のファイルがすべて非表示のとき**——非表示の題名に新しい形式が
 Dropbox から現れたら、読者がまだ判断していないファイルなので項目は本棚へ戻る。
 一覧は本棚と別の SWR で、読めなくても本棚は描く（読めなかったことは赤帯に出す）。
-戻す口はヘッダーの「非表示の本 (N)」から開く一覧の「表示に戻す」。
+非表示にする口は項目の「…」のシート、戻す口はヘッダーの「非表示の本 (N)」から開く一覧の
+「表示に戻す」。
 
 **マイグレーションは先に当てる**: 新しいテーブルを足すだけなので旧コードには無害だが、
 新しいコードは `/api/shelf/hidden` が 500 になる。
@@ -1542,6 +1557,154 @@ Dropbox から現れたら、読者がまだ判断していないファイルな
 **「本を追加」のタイルは絞り込み中も残す**。検索欄はヘッダーではなくグリッドの上
 （狭い画面のヘッダーはボタンで埋まっている）で、名前は「本棚を検索」——既存の部分一致の
 ロケータ（「本を追加」「非表示の本」「コンパクト表示」「削除」）に当たらない。
+
+#### 本はコレクションに分けられる（Kindle の「コレクション」）
+
+**コレクションは `collections` と `collection_items`（`migrations/0016_collections.sql`）にサーバで
+持つ**——端末をまたいで同じ分け方にするため、非表示と同じ理由。`collection_items` のキーは
+`hidden_books` と同じ「項目の中のファイルのキー」（取り込み済みは `pdfs.id`、未読み込みの Dropbox
+ファイルは Dropbox の id `id:...`）で、外部キーは張らない（後者に行が無い）。主キーは
+`(collection_id, key)` で、**1 冊をいくつのコレクションにも入れられる**。コレクションを消すと
+`ON DELETE CASCADE` で中身の行だけが落ち、本は残る。
+
+| 何を                                              | どこが                                                                                                |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 一覧・作成・改名・削除・出し入れ                  | `src/server/routes/shelf.ts`（`/api/shelf/collections`）→ `src/server/services/collectionsService.ts` |
+| 取り込み・削除でのキーの付け替え                  | `collectionsService.ts` の `moveCollectionKey` / `dropCollectionKey`（`pdfService.ts` が呼ぶ）        |
+| front と server が交わす形                        | `src/shared/schemas/shelf.ts`（`collectionsSchema` ほか）                                             |
+| 所属の判定・未分類・タイルの表紙・取り込む範囲    | `src/front/lib/shelfCollections.ts`（純関数。`shelfCollections.test.ts`）                             |
+| 画面からの読み書き（DI の口）                     | `src/front/lib/collectionsApi.ts`（`CollectionsApi`。`ShelfPage` の `collections` prop）              |
+| タイル・コレクションの中の見出し                  | `src/front/components/CollectionTiles.tsx`（`CollectionTiles` / `CollectionHeader`）                  |
+| 名前の入力・所属のチェックボックス・「…」のシート | `CollectionNameDialog.tsx` / `CollectionPickerDialog.tsx` / `EntryActionsDialog.tsx`                  |
+
+- **項目は、中のファイルのどれかが入っていればそのコレクションに属する**（`inCollection`）。
+  **非表示の「すべてが非表示なら非表示」とは逆**——非表示は新しく現れたファイルを「読者がまだ
+  判断していないもの」として本棚へ戻すが、コレクションはファイルについての判断ではなく題名を
+  入れたもの。PDF を入れたあとで同じ題名の EPUB が Dropbox に現れても、その題名は入ったまま。
+  **入れるとき・出すときは項目の全ファイルのキーを送る**（出すときに 1 つでも残すと、
+  「どれか」の規則で入ったままになる）
+- **取り込みで所属が本へ移る**。`storePdf` は `dropboxId` があれば、その Dropbox id の行を
+  本の id へ付け替える（`UPDATE OR IGNORE` のあと元のキーを消す——本の id が既に同じ
+  コレクションにあれば重複せずに 1 行になる）。題名（`book_titles` → `pdfs.title`）と同じ形で、
+  付け替えないと取り込んだとたんに本がコレクションから消える。**本を削除すると、Dropbox に
+  ファイルがある本は所属を Dropbox id へ戻す**（消した本は未読み込みとして本棚に戻るので、
+  分け方もそのまま戻す。題名と同じ）。**Dropbox に無い本は所属ごと消す**（戻る先が無い）
+- **受け口**は `GET` / `POST /api/shelf/collections`、`PATCH` / `DELETE /api/shelf/collections/:id`、
+  `PUT /api/shelf/collections/:id/items`（`{ keys, member }`）。**書き込みはどれも直後の全件を
+  返す**（非表示・題名と同じ）ので、画面は答えをそのままキャッシュに置く。名前は前後の空白を
+  除いて 1〜100 文字（`MAX_COLLECTION_NAME_LENGTH`）、無いコレクションは
+  `COLLECTION_NOT_FOUND` の 404（出し入れも、行を 1 つも書かずに 404）。同じ名前の
+  コレクションは拒まない。`POST` は `keys` を任意で受け、作ったコレクションに最初から入れる
+  （「作成して入れる」の 1 往復）
+- **表示の切り替えはヘッダーの「一覧 / コレクション」**（`role="radiogroup"` の 2 つの
+  `role="radio"`）。**ボタンにしないのは部分一致を避けるため**——「コレクション」という名前の
+  ボタンは、項目の「… のコレクションを選ぶ」にも当たる。選んだ表示は `settingsAtom.ts` の
+  `shelfViewAtom`（`chatbook:shelf-view`）が localStorage に持つ
+- **開いているコレクションはアドレスの `?collection=<id>`**（未分類は `?collection=unfiled`）。
+  ブラウザの戻るで抜けられ、リロードで戻ってくるため。`?collection=` があればどちらの表示でも
+  そのコレクションを出し、「一覧」「コレクション」を押すと消える。コレクションの一覧が届くまでと、
+  名指されたコレクションが無いときは、タイル（または本棚全体）を出す
+- **コレクション表示はタイルの並び**——コレクションごとに名前・冊数・中の本の表紙を最大
+  4 枚（`tileCovers`。表紙のある項目から順に）、続いて「未分類」（どのコレクションにも入って
+  いない項目）、末尾に「新しいコレクション」。並びは名前順（`sortCollections`。
+  `localeCompare(…, "ja")`）。タイルのアクセシブルネームは「コレクション「名前」を開く」/
+  「未分類の本を開く」——本の「〈題名〉 を開く」と部分一致で当たらないように、名前だけにしない
+- **コレクションの中は本棚そのもの**——通常 / コンパクト表示・検索・進み具合・OCR の状況・
+  「本を追加」のタイルがそのまま効く。上に「← コレクション」・名前と冊数・「名前を変更」・
+  「削除」（未分類には出さない）。**削除のアクセシブルネームは「コレクションの削除」**——
+  `/を削除$/` で項目の × を掴む E2E に当たらないように。確認文は「中の本は削除されず、本棚に
+  残ります」と言う。**中で「本を追加」してもそのコレクションには入らない**（取り込んだ本は
+  リーダーへ出ていくので、入れ損ねを言う場所が無い）
+- **非表示の本はコレクションの中にも、タイルの冊数にも出さない**（`shown` から絞る）。
+  戻す口はこれまでどおり「非表示の本 (N)」
+- **入れる・出すのは項目の「…」から**（`EntryActionsDialog`。アクセシブルネームは
+  「〈題名〉 のその他の操作」）。シートには「題名を変更」「コレクションに入れる…」
+  「非表示にする」が並び、名前はそれぞれ「〈題名〉 の題名を変更」「〈題名〉 のコレクションを
+  選ぶ」「〈題名〉 を非表示」（以前カードに直接並んでいた ✎ と「非表示」の名前をそのまま
+  保つ）。**× だけはシートに入れずカードに残す**——取り消せないのはそれだけ。カードの上に
+  4 つ並べないのは、電話の 2 列のカードに親指幅のボタンが入りきらないため。**シートは
+  メニューではなくモーダル**で、`useEffect` を足さずに Escape と外側クリックで閉じる
+  （`ConfirmDialog` と同じ形）
+- **チェックボックスは押すたびに保存する**（`CollectionPickerDialog`。保存ボタンは無い）。
+  チェックはサーバの答え（キャッシュ）から描くので、拒まれたら元のまま残り、理由が
+  ダイアログの中に出る。新しいコレクションもここで「作成して入れる」で作れる
+- **狭い画面のヘッダー**には「一覧 / コレクション」「非表示の本 (N)」「コンパクト表示」「⚙」が
+  並ぶので、`sm` 未満では見出し「chatbook」を出さず、ボタンの文字を `text-xs` に、「非表示の本」の
+  「の本」を隠す（アクセシブルネームは `aria-label` で「非表示の本 (N)」のまま。`sr-only` に
+  すると Chromium が名前に空白を挟み「非表示 の本」になる）。`e2e/mobile.spec.ts` の
+  「fits the shelf's header…」が 390px で横にはみ出さないことを見る
+
+**マイグレーションは先に当てる**: テーブルを足すだけなので旧コードには無害。未適用の D1 では
+`/api/shelf/collections` が 500、**本の追加（Dropbox からの取り込み）と本の削除も 500**
+（`storePdf` / `removePdf` が `collection_items` に触れる）。
+
+守っているテスト:
+
+| 何を                                                                      | どのテスト                                                                                       |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 「どれか」の所属・未分類・表紙・取り込む範囲・名前順                      | `src/front/lib/shelfCollections.test.ts`                                                         |
+| API（作成・改名・削除・出し入れ・404・400・Dropbox に無い本の削除）       | `test/worker/shelf.test.ts` の `/api/shelf/collections`                                          |
+| 取り込みで本へ移り、削除で Dropbox id へ戻る                              | `test/worker/dropbox.test.ts`「carries the collections a file was put in onto the book…」        |
+| シート・チェック・作成・拒否・タイル・中・未分類・非表示・URL・改名・削除 | `src/front/pages/ShelfPage.test.tsx`（「ShelfPage: collections」）                               |
+| 作って入れ、表示で入って出られ、リロードしても残る                        | desktop の E2E「a collection made on the shelf holds the books put in it, through a reload」     |
+| 電話でヘッダーがはみ出さない                                              | mobile の E2E「fits the shelf's header, the switch to the collections included, across a phone」 |
+
+#### Dropbox の未読み込みをまとめて取り込む
+
+**本棚の「未読み込みをすべて取り込む (N)」**は、Dropbox の未読み込みファイルを裏のキューで
+1 冊ずつ取り込む。Dropbox が使えて未読み込みがあるときだけ出し、取り込みが走っている間は
+出さない。
+
+| 何を                                                   | どこが                                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| 1 冊ずつのキュー（ページの外。タブが開いている間だけ） | `src/front/lib/importQueue.ts`（`importQueue`。`useSyncExternalStore` で購読） |
+| 1 冊分の手順とキャッシュへの反映                       | `src/front/hooks/useDropboxImport.ts`                                          |
+| 対象の選び方                                           | `shelfCollections.ts` の `filesToImport`                                       |
+| ボタン・確認・全体の進み具合・カードの状態             | `ShelfPage.tsx`（`BulkImportStatus` / `ImportNotice`）                         |
+
+- **対象は今ページに並んでいる項目の未読み込みファイル**——一覧なら本棚全体（検索中なら
+  一致したもの）、コレクションの中ならそのコレクション、タイルの画面なら本棚全体。
+  **非表示のファイルは除く**（項目ではなくファイルのキーで見るので、項目が本棚に出ていても
+  非表示にした形式は取り込まない）。キューに入っているものも数えない
+- **押すと確認する**（冊数と、時間と通信量がかかること、タブを閉じると止まること）。
+  確認の「取り込む」は青（`ConfirmDialog` の `tone="primary"`。取り消せない操作ではない）
+- **1 冊の手順はカードから開くときと同じ**——`downloadDropboxFile`（中止のための `signal`
+  を受ける）→ 抽出 → `POST /pdf/open` に `dropboxId`（サーバが Dropbox から取り直す）。
+  違いは 2 つ: **バイト列をビューアへの手渡しに置かない**（`useOpenPdfBook` の
+  `handOff: false`。誰も開かないのに 1 枠を占め続ける）、**テキストの無い PDF はバイト列を
+  渡さずに OCR のキューへ入れる**（`ocr.start(id, null)`。順番が来たら `/file` から取り直す。
+  待っている本の数だけバイト列を抱えないため）。進捗はカードの表示用に呼び出しごとの
+  `onProgress` で受ける（覆いを動かす hook の `onProgress` には流さない）
+- **1 冊ずつ**。1 冊がバイト列を抱えるので、2 冊目は 1 冊目が片付いてから始める。終わるたびに
+  本棚（再検証）・Dropbox の一覧（そのファイルを除く。Dropbox を 20 回叩かない）・
+  題名とコレクション（取り込みでサーバ側のキーが移るので再検証）を書き換える。`mutate` は
+  キャッシュのものなので、読者がリーダーへ移っていても効く
+- **表示**: 本棚の上の枠（`role="region"`「Dropboxからの取り込み」）に「Dropboxから取り込み中
+  3/20」とバーと「取り込みを中止」。カードには「取り込み待ち」「Dropboxから取得中 45%」
+  「本を読み取り中...」「保存中...」「取り込めませんでした: 理由」と「〈題名〉 の取り込みを再試行」
+- **失敗は飛ばして続ける**。終わったあと失敗があれば、枠が「N 冊を取り込めませんでした」と
+  「失敗した本を再試行」「閉じる」に変わる（閉じると失敗を忘れる）。再試行した本は同じ回の
+  数に数え直す（`3/20` の分母は増えない）
+- **中止**は待っている分をキューから外し、取り込み中の 1 冊に `signal` を送る。**取得中なら
+  そこで止まり、取得し終えたところなら読み取りに入る前に止まる。読み取りに入った 1 冊は保存まで
+  行く**（抽出も送信も途中で止める口が無く、送信が始まればサーバは保存し始めている）。中止は失敗に数えず、残りは未読み込みのまま
+- **一括取り込み中にカードから本を開いたとき**: その本がキューで待っていればキューから外して
+  今すぐ従来どおり取り込んで開く（キューの 1 冊と並行するので、バイト列は最大 2 冊分）。
+  キューがちょうどその本を取り込んでいるなら、覆いに「まとめて取り込んでいる途中です。
+  終わりしだい開きます...」を出して終わるのを待ち（`settled`）、できた本を開く——同じ
+  ファイルを 2 回取り込まない（同じ本の `POST /pdf/open` が並ぶとハッシュの一意制約で
+  片方が落ちうる）。失敗していたら失敗を忘れて今取り込む
+- **割り切り**: タブを閉じれば止まる（OCR と同じ。Service Worker は置かない）。途中まで
+  取り込んだ本は本になっていて、残りは未読み込みのまま本棚に残る
+
+**E2E は無い**（E2E では Dropbox が使えない）。守っているのは:
+
+| 何を                                                                              | どのテスト                                                                |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 1 冊ずつ・進み具合・失敗と再試行・中止・引き渡し・待ち合わせ                      | `src/front/lib/importQueue.test.ts`                                       |
+| 中止の `signal` を fetch に渡す                                                   | `src/front/lib/dropboxDownload.test.ts`                                   |
+| 手渡しをしない・呼び出しごとの進捗                                                | `src/front/hooks/useOpenPdfBook.test.tsx`「leaves the file with nobody…」 |
+| 対象・確認・進み具合・カード・失敗・中止・OCR・カードから開く・コレクションの範囲 | `ShelfPage.test.tsx`（「bringing the whole Dropbox folder in」）          |
 
 #### 狭い画面のリーダーは 1 カラム
 
@@ -2615,7 +2778,10 @@ OCR の `hasOcr` は列ではなく R2 の head だが、OCR を待っている�
 `0015_add_ocr_status.sql` が要る。`readPdf` / `storePdf` / 本棚の一覧がこの列を読むので、
 未適用の D1 では本を開く経路・本の追加・本棚が 500 になる。nullable な列の追加なので旧コードには
 無害（上記「テキストの無い PDF（OCR）」）。同じく `0014_dropbox_titles.sql`（`book_titles`。
-上記「題名は読者が変えられる」）も先に当てる。
+上記「題名は読者が変えられる」）も先に当てる。`0016_collections.sql`（`collections` /
+`collection_items`。上記「本はコレクションに分けられる」）もテーブルを足すだけで旧コードには
+無害だが、未適用の D1 では `/api/shelf/collections` と、`collection_items` に触れる本の追加・
+削除が 500 になるので先に当てる。
 
 キーバインド（Vim / Emacs）は `src/front/lib/keybindings.ts` の `resolveAction` に
 DOM 非依存の純粋関数として実装。`gg` や `C-c t` の2ストロークは `pending` プレフィックスで表現し、
@@ -2864,7 +3030,9 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   「新しいチャット」もそう——何も尋ねていないセッションの題でもあるので、その行と削除ボタンに
   当たる。ハイライトの会話はハイライト一覧の行ではなく、行の中の「…のチャットを開く」で開く
   （`getByRole("listitem").filter({ hasText }).getByRole("button", { name: /のチャットを開く$/ })`）
-  ボタンのラベルを足すときは、既存の部分一致に当たらないか `rg` で確かめる
+  ボタンのラベルを足すときは、既存の部分一致に当たらないか `rg` で確かめる。
+  **テストで作る本の名前も同じ**——「collected-on-shelf を開く」は「not-collected-on-shelf を開く」
+  にも当たり、strict mode で落ちた（コレクションの E2E を書いたときに実際に踏んだ）
 - UI の回帰テストを足したら、**実装を壊した状態で落ちること**を必ず確認する。
   ここは「動いていないのに通る」テストが生まれやすい。例: 計測用 canvas はサイズが 0 になる
   瞬間があるため box では検出できず `display` を見る必要があった。fixture の表紙に色を敷くのも
