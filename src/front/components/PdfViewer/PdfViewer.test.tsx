@@ -601,11 +601,17 @@ describe("PdfViewer", () => {
     const { container } = renderViewer({ measureSelection: () => MEASURED });
     const input = await selectPassage(container);
 
+    // Retried rather than sent once: the box comes up from the settle timer,
+    // outside `act`, so it can be in the DOM a moment before its effects — the
+    // copy listener among them — have run. A slow runner (CI) lands in that gap.
     const setData = vi.fn();
-    const copy = new Event("copy", { cancelable: true, bubbles: true });
-    Object.defineProperty(copy, "clipboardData", { value: { setData } });
-    input.dispatchEvent(copy);
+    await waitFor(() => {
+      setData.mockClear();
+      const copy = new Event("copy", { cancelable: true, bubbles: true });
+      Object.defineProperty(copy, "clipboardData", { value: { setData } });
+      input.dispatchEvent(copy);
 
-    expect(setData.mock.calls).toStrictEqual([["text/plain", PASSAGE]]);
+      expect(setData.mock.calls).toStrictEqual([["text/plain", PASSAGE]]);
+    });
   });
 });
