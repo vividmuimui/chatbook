@@ -1830,7 +1830,8 @@ test("goes between the chat list and the highlight list, one tap each way", asyn
 });
 
 test("a new chat is a session of its own, and the chat list holds both", async ({ page }) => {
-  // Nothing here waits on an answer: the dummy key in `.dev.vars` gets none.
+  // Nothing here waits on an answer: the dummy key in `.dev.vars.example` gets
+  // none (a real key does, which is why the list below is not read in order).
   // The server stores a question before it asks the model, and the stream
   // starting is the reader's sign that it has — which is all the list needs.
   const pdfId = await openTestBook(page);
@@ -1852,23 +1853,26 @@ test("a new chat is a session of its own, and the chat list holds both", async (
     await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
   }
 
-  // Newest first, each called by its own first question
+  // Each called by its own first question. Not in a set order: with the real
+  // key a main clone's `.dev.vars` carries, an answer lands in the first one
+  // after the second was asked, and the list puts the newest first.
   const rows = chatPanel.getByRole("listitem");
   await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText("二つ目のチャットの質問");
-  await expect(rows.nth(1)).toContainText("最初のチャットの質問");
-  await expect(rows.nth(0)).toContainText("本全体");
+  const first = rows.filter({ hasText: "最初のチャットの質問" });
+  await expect(first).toHaveCount(1);
+  await expect(rows.filter({ hasText: "二つ目のチャットの質問" })).toHaveCount(1);
+  await expect(first).toContainText("本全体");
 
   const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
     chats: { kind: string; firstQuestion: string | null }[];
   };
-  expect(chats.map((chat) => [chat.kind, chat.firstQuestion])).toStrictEqual([
-    ["book", "二つ目のチャットの質問"],
-    ["book", "最初のチャットの質問"],
-  ]);
+  expect(chats.map((chat) => chat.kind)).toStrictEqual(["book", "book"]);
+  expect(chats.map((chat) => chat.firstQuestion)).toStrictEqual(
+    expect.arrayContaining(["最初のチャットの質問", "二つ目のチャットの質問"]),
+  );
 
   // Each holds its own thread and none of the other's
-  await rows.nth(1).click();
+  await first.click();
   await expect(chatPanel.getByText("最初のチャットの質問", { exact: true })).toBeVisible();
   await expect(chatPanel.getByText("二つ目のチャットの質問", { exact: true })).toHaveCount(0);
 });
