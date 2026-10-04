@@ -130,13 +130,18 @@ describe("the migration that rebuilds chat_messages", () => {
   it("takes the book's own conversation too, once the table can hold one", async () => {
     // The other half of the rebuild: `selection_id` is nullable now, which is
     // what makes a question about the book itself storable at all.
+    // Held by a session since 0013, which these migrations reach too.
+    const session = (await (
+      await apiFetch("https://example.com/api/pdf/legacy-book/sessions", { method: "POST" })
+    ).json()) as { id: string };
     await env.DB.prepare(
-      `INSERT INTO chat_messages (id, selection_id, pdf_id, role, content, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO chat_messages (id, selection_id, session_id, pdf_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         "book-question",
         null,
+        session.id,
         "legacy-book",
         "user",
         "この本を要約して",
@@ -145,7 +150,7 @@ describe("the migration that rebuilds chat_messages", () => {
       .run();
 
     const body = (await (
-      await apiFetch("https://example.com/api/pdf/legacy-book/chats")
+      await apiFetch(`https://example.com/api/pdf/legacy-book/sessions/${session.id}/messages`)
     ).json()) as { messages: { id: string }[] };
 
     expect(body.messages.map((message) => message.id)).toStrictEqual(["book-question"]);

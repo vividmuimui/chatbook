@@ -92,7 +92,7 @@ async function logIn(page: Page): Promise<void> {
 /** The place the book reports, as much of it as the reset has to undo. */
 type StoredPlace = {
   page: number;
-  bookChat: boolean | null;
+  sessionId: string | null;
   outlineOpen: boolean | null;
   chatPanelOpen: boolean | null;
 } | null;
@@ -102,7 +102,7 @@ function resumedElsewhere(place: StoredPlace): boolean {
   return (
     place !== null &&
     (place.page !== 1 ||
-      place.bookChat === true ||
+      place.sessionId !== null ||
       place.outlineOpen === false ||
       place.chatPanelOpen === false)
   );
@@ -158,19 +158,27 @@ async function openTestBook(page: Page): Promise<string> {
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
   }
+  // Chats about the book are the book's as well, and the chat list a test
+  // reads would otherwise hold every session an earlier one started.
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; id: string }[];
+  };
+  for (const chat of chats) {
+    if (chat.kind === "book") await page.request.delete(`/api/pdf/${pdfId}/sessions/${chat.id}`);
+  }
 
   // The three specs share this book, and the reader's place — both panels
   // included — is kept on the server now: uploading goes through the shelf,
   // which names no page, so an earlier test's place would be where this one
   // opens.
   await page.request.put(`/api/pdf/${pdfId}/reading-state`, {
-    // `bookChat` is spelled out because leaving it out keeps whatever was
-    // stored: a conversation about the book itself, left open by an earlier
-    // test, would otherwise be the one this one opens on.
+    // `sessionId` is spelled out because leaving it out keeps whatever was
+    // stored: a chat about the book, left open by an earlier test, would
+    // otherwise be the one this one opens on.
     data: {
       page: 1,
       selectionId: null,
-      bookChat: false,
+      sessionId: null,
       outlineOpen: true,
       chatPanelOpen: true,
     },
@@ -184,7 +192,12 @@ async function openTestBook(page: Page): Promise<string> {
 
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
-  if (selections.length > 0 || resumedElsewhere(readingState) || pageDirection !== "ltr") {
+  if (
+    selections.length > 0 ||
+    chats.some((chat) => chat.kind === "book") ||
+    resumedElsewhere(readingState) ||
+    pageDirection !== "ltr"
+  ) {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // A tap or a drag needs the page itself to have been drawn, not merely the
@@ -616,7 +629,9 @@ test("gives the chat the window on the maximize toggle, and the page back on the
   // second pane beside it left to size.
   await expect(page.locator("canvas.block").first()).toBeHidden();
   await expect(page.getByRole("separator", { name: "PDFとチャットの幅を変更" })).toBeHidden();
-  await expect(chatPane.getByText("本文のテキストを選択して質問してください")).toBeVisible();
+  await expect(
+    chatPane.getByText("本文のテキストを選択して、色を付けるか質問してください"),
+  ).toBeVisible();
   expect((await chatPane.boundingBox())!.width).toBeCloseTo(paneRow, 0);
 
   await page.getByRole("button", { name: "最大化を解除" }).click();
@@ -1709,8 +1724,20 @@ test("the chat panel lists the highlights, opens one, and comes back to the list
   await expect(chatPanel.getByText("ハイライト 2件")).toBeVisible({ timeout: 60000 });
   await expect(chatPanel.getByText(firstPassage, { exact: true })).toBeVisible();
 
-  // Opening a highlight of another page brings the viewer along
+  // Picking a highlight goes back to its page, and leaves the list where it is
   await chatPanel.getByText(laterPassage, { exact: true }).click();
+  await expect(drawnPage(page, 3).first()).toBeVisible();
+  await expect(chatPanel.getByText("ハイライト 2件")).toBeVisible();
+  await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeHidden();
+
+  // Its conversation is the button beside it, which brings the viewer along too
+  await page.keyboard.press("h");
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: laterPassage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click();
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
   await expect(drawnPage(page, 3).first()).toBeVisible();
 
@@ -1719,19 +1746,107 @@ test("the chat panel lists the highlights, opens one, and comes back to the list
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeHidden();
 });
 
+test("goes between the chat list and the highlight list, one tap each way", async ({ page }) => {
+  const pdfId = await openTestBook(page);
+  const passage = pageText(2).body[0];
+  await page.request.post(`/api/pdf/${pdfId}/selections`, {
+    data: {
+      selectedText: passage,
+      pageNumber: 2,
+      positionData: { rects: [{ x: 40, y: 40, width: 160, height: 24 }] },
+    },
+  });
+  await page.reload();
+  const chatPanel = page.locator("main > div").last();
+
+  // The highlights are what the panel opens on
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeVisible({ timeout: 60000 });
+  await expect(chatPanel.getByRole("tab", { name: "ハイライト" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  // A highlight that was only marked has no conversation to list
+  await expect(chatPanel.getByText("チャットはまだありません")).toBeVisible();
+  await expect(
+    chatPanel.getByRole("button", { name: "新しいチャット", exact: true }),
+  ).toBeVisible();
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeHidden();
+
+  await chatPanel.getByRole("tab", { name: "ハイライト" }).click();
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeVisible();
+  await expect(chatPanel.getByRole("button", { name: "新しいチャット", exact: true })).toBeHidden();
+
+  // Leaving a conversation comes back to the list it was opened from
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
+  await expect(chatPanel.getByRole("heading", { name: "新しいチャット" })).toBeVisible();
+  await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
+  await expect(chatPanel.getByRole("tab", { name: "チャット" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+test("a new chat is a session of its own, and the chat list holds both", async ({ page }) => {
+  // Nothing here waits on an answer: the dummy key in `.dev.vars` gets none.
+  // The server stores a question before it asks the model, and the stream
+  // starting is the reader's sign that it has — which is all the list needs.
+  const pdfId = await openTestBook(page);
+  const chatPanel = page.locator("main > div").last();
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await expect(chatPanel.getByText("チャットはまだありません")).toBeVisible({ timeout: 60000 });
+
+  for (const question of ["最初のチャットの質問", "二つ目のチャットの質問"]) {
+    await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
+    await expect(chatPanel.getByRole("heading", { name: "新しいチャット" })).toBeVisible();
+    const stored = page.waitForResponse(
+      (response) =>
+        /\/api\/pdf\/[^/]+\/sessions\/[^/]+\/messages$/.test(response.url()) &&
+        response.request().method() === "POST",
+    );
+    await chatPanel.getByPlaceholder("質問を入力...").fill(question);
+    await chatPanel.getByRole("button", { name: "送信" }).click();
+    expect((await stored).status()).toBe(200);
+    await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
+  }
+
+  // Newest first, each called by its own first question
+  const rows = chatPanel.getByRole("listitem");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("二つ目のチャットの質問");
+  await expect(rows.nth(1)).toContainText("最初のチャットの質問");
+  await expect(rows.nth(0)).toContainText("本全体");
+
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; firstQuestion: string | null }[];
+  };
+  expect(chats.map((chat) => [chat.kind, chat.firstQuestion])).toStrictEqual([
+    ["book", "二つ目のチャットの質問"],
+    ["book", "最初のチャットの質問"],
+  ]);
+
+  // Each holds its own thread and none of the other's
+  await rows.nth(1).click();
+  await expect(chatPanel.getByText("最初のチャットの質問", { exact: true })).toBeVisible();
+  await expect(chatPanel.getByText("二つ目のチャットの質問", { exact: true })).toHaveCount(0);
+});
+
 test("asks the book itself, aiming the question at chapters of its table of contents", async ({
   page,
 }) => {
   await openTestBook(page);
   const chatPanel = page.locator("main > div").last();
 
-  // Nothing is marked in this book, so the list offers both ways to start
-  const entry = chatPanel.getByRole("button", { name: "本について質問する" });
+  // A new chat, off the chat list: about the book, with no passage under it
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  const entry = chatPanel.getByRole("button", { name: "新しいチャット", exact: true });
   await expect(entry).toBeVisible({ timeout: 60000 });
   const { sent } = await stubBookConversation(page, "この本の要点です。");
   await entry.click();
 
-  // The book's own conversation: no passage under it, and the scope where the
+  // A chat about the book: no passage under it, and the scope where the
   // quoted passage would otherwise sit
   await expect(chatPanel.getByRole("button", { name: "範囲: 本全体" })).toBeVisible();
 
@@ -1766,22 +1881,26 @@ test("asks the book itself, aiming the question at chapters of its table of cont
     },
   ]);
 
-  // And the way back leaves the book's conversation for the list
+  // And the way back leaves the chat for the list, where the session made for
+  // its first question is now one of the book's chats
   await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
-  await expect(chatPanel.getByText("チャットを開始するには")).toBeVisible();
-  await expect(chatPanel.getByRole("button", { name: "本について質問する" })).toBeVisible();
+  await expect(
+    chatPanel.getByRole("button", { name: "新しいチャット", exact: true }),
+  ).toBeVisible();
+  await expect(chatPanel.getByRole("listitem")).toHaveCount(1);
 });
 
 test("comes back to the book's own conversation when the book is opened again", async ({
   page,
 }) => {
-  // The conversation is the book's answer rather than the address bar's, so a
+  // The session is the book's answer rather than the address bar's, so a
   // reload lands in the thread that was left open rather than on the list.
   await openTestBook(page);
   const chatPanel = page.locator("main > div").last();
   await stubBookConversation(page, "この本の要点です。");
 
-  await chatPanel.getByRole("button", { name: "本について質問する" }).click();
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
   await chatPanel.getByPlaceholder("質問を入力...").fill("この本を要約して");
   await chatPanel.getByRole("button", { name: "送信" }).click();
   await expect(chatPanel.getByText("承知しました")).toBeVisible({ timeout: 30000 });
@@ -2048,7 +2167,11 @@ test("reloading brings back the folded panel and the chat that was open in it", 
 
   // Scope to the panel: the passage can also appear in the page's text layer
   const chatPanel = page.locator("main > div").last();
-  await chatPanel.getByText(passage, { exact: true }).click({ timeout: 60000 });
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: passage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click({ timeout: 60000 });
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
 
   const saved = placeSaved(page);
@@ -2113,25 +2236,34 @@ async function stubConversation(page: Page, answer: string): Promise<{ sent: str
 }
 
 /**
- * The book's own conversation, answered and remembered without a model.
+ * A session of the book's own, answered and remembered without a model.
  *
  * Both directions of the endpoint, as `stubConversation` does for a highlight:
- * the thread the panel reads on opening the conversation, and the question it
+ * the thread the panel reads on opening the session, and the question it
  * sends. The body each question arrives with is kept, which is how a test sees
- * what the question was aimed at. `**` does not cross a slash, so this matches
- * the book's own endpoint and not a highlight's.
+ * what the question was aimed at. Every session's messages are answered, so a
+ * test does not need to know the id the server gave a new chat.
  */
 async function stubBookConversation(
   page: Page,
   answer: string,
 ): Promise<{ sent: { content: string; scope?: unknown }[] }> {
   const sent: { content: string; scope?: unknown }[] = [];
-  await page.route("**/api/pdf/*/chats", async (route) => {
+  // Only the conversation itself: the session it is in is made by the real
+  // server, so the chat list and the reader's place name one that exists.
+  await page.route("**/api/pdf/*/sessions/*/messages", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
+      const sessionId = new URL(request.url()).pathname.split("/").at(-2)!;
       await route.fulfill({
         json: {
-          selectionId: null,
+          session: {
+            id: sessionId,
+            title: null,
+            scope: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+          },
           messages: [
             {
               id: "stub-answer",
@@ -2188,7 +2320,11 @@ test("a passage picked out of an answer is quoted in the next question", async (
 
   // Scope to the panel: the highlight's passage is also in the page's text layer
   const chatPanel = page.locator("main > div").last();
-  await chatPanel.getByText(passage, { exact: true }).click({ timeout: 60000 });
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: passage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click({ timeout: 60000 });
   const answerText = chatPanel.getByText(answer, { exact: true });
   await expect(answerText).toBeVisible();
 
@@ -2487,7 +2623,7 @@ async function openTestEpub(page: Page): Promise<string> {
     await page.request.delete(`/api/pdf/${bookId}/selections/${selection.id}`);
   }
   await page.request.put(`/api/pdf/${bookId}/reading-state`, {
-    data: { page: 1, selectionId: null, bookChat: false, outlineOpen: true, chatPanelOpen: true },
+    data: { page: 1, selectionId: null, sessionId: null, outlineOpen: true, chatPanelOpen: true },
   });
   await page.goto(`/books/${bookId}?page=1`);
   await expect(chapterHeading(page, 0)).toBeVisible();

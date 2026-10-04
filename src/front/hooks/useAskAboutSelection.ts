@@ -3,7 +3,7 @@ import { useSetAtom } from "jotai";
 import type { ResultAsync } from "neverthrow";
 import {
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatMessagesAtom,
   chatPanelOpenAtom,
   chatSheetAtom,
@@ -57,7 +57,7 @@ export function useAskAboutSelection(
   saveSelection: SaveSelection = storeSelection,
 ) {
   const setActiveSelection = useSetAtom(activeSelectionAtom);
-  const setBookChatOpen = useSetAtom(bookChatOpenAtom);
+  const setActiveSession = useSetAtom(activeSessionAtom);
   const setChatMessages = useSetAtom(chatMessagesAtom);
   const setChatSheet = useSetAtom(chatSheetAtom);
   const setChatPanelOpen = useSetAtom(chatPanelOpenAtom);
@@ -74,7 +74,7 @@ export function useAskAboutSelection(
           addHighlight(selection);
           // One panel, one conversation at a time: the book's own thread is
           // left behind, as it is when a highlight is opened from the list.
-          setBookChatOpen(false);
+          setActiveSession(null);
           setActiveSelection({
             id: selection.id,
             selectedText: selection.selectedText,
@@ -93,7 +93,7 @@ export function useAskAboutSelection(
           // The answer is not waited for. It takes seconds to arrive, and what
           // the caller is waiting on is whether the highlight was kept. The
           // stream reports its own failures through chatErrorAtom.
-          void sendMessage(pdfId, selection.id, question, useWebSearch);
+          void sendMessage(pdfId, { selectionId: selection.id }, question, useWebSearch);
         })
         .orTee((failure) => {
           // Why it failed, in the server's words. The viewer writes the
@@ -107,7 +107,7 @@ export function useAskAboutSelection(
       saveSelection,
       sendMessage,
       setActiveSelection,
-      setBookChatOpen,
+      setActiveSession,
       setChatMessages,
       setChatPanelOpen,
       setChatSheet,

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vite-plus/test";
 import { render, screen, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
-import { okAsync, ResultAsync } from "neverthrow";
+import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import { ChatArea } from "./ChatArea";
 import {
   doneEvent,
@@ -12,12 +12,19 @@ import {
 } from "../../../test/streamingFetchStub";
 import {
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatAbortControllerAtom,
   chatMessagesAtom,
+  chatScopeAtom,
   isStreamingAtom,
   type ActiveSelection,
+  type OpenSession,
 } from "../../atoms/chatAtom";
+import type { ChatListRequests } from "../../hooks/useChatList";
+import { chaptersKey } from "../../hooks/useChapters";
+import { ApiError } from "../../lib/fetcher";
+import type { ChatSummary, PageRange } from "../../../shared/schemas/chat";
+import type { BookChapter } from "../../../shared/schemas/book";
 import type { ChatQuoteSelection } from "../../lib/chatQuoteSelection";
 import type { SelectionHighlight } from "../../../shared/schemas/selection";
 import type { BookDetail } from "../../../shared/schemas/book";
@@ -87,9 +94,18 @@ function renderChat(
     changeHighlight?: UpdateHighlight;
     /** Stands in for the search endpoint, which looks through the chats too. */
     searchHighlights?: SearchSelections;
-    /** Opens the panel on the book's own conversation rather than a passage's. */
-    bookChatOpen?: boolean;
-    onOpenBookChat?: () => void;
+    /** Opens the panel on a chat about the book rather than a passage's. */
+    session?: OpenSession | null;
+    /** The pages that chat is aimed at. */
+    scope?: PageRange[];
+    /** The book's chapters, as the scope menu reads them. */
+    chapters?: BookChapter[];
+    /** What the chat list holds. */
+    chats?: ChatSummary[];
+    /** Stands in for the chat list's endpoints, over the list above. */
+    chatRequests?: ChatListRequests;
+    onNewChat?: () => void;
+    onOpenSession?: (sessionId: string) => void;
   } = {},
 ) {
   const {
@@ -99,13 +115,19 @@ function renderChat(
     deleteHighlight,
     changeHighlight,
     searchHighlights,
-    bookChatOpen = false,
-    onOpenBookChat = () => {},
+    session = null,
+    scope = [],
+    chapters,
+    chats = [],
+    chatRequests = {},
+    onNewChat = () => {},
+    onOpenSession = () => {},
   } = options;
   const book = bookError ? undefined : BOOK;
   const store = createStore();
   store.set(activeSelectionAtom, activeSelection);
-  store.set(bookChatOpenAtom, bookChatOpen);
+  store.set(activeSessionAtom, session);
+  store.set(chatScopeAtom, scope);
   store.set(chatMessagesAtom, messages);
 
   // Stands in for a drag over the thread: jsdom lays no text out and has no
@@ -113,17 +135,23 @@ function renderChat(
   let selected: ChatQuoteSelection | null = null;
 
   const opened: ActiveSelection[] = [];
+  const turnedTo: ActiveSelection[] = [];
+  const seed: Record<string, unknown> = book ? { [bookKey(BOOK.id)]: BOOK } : {};
+  if (chapters) seed[chaptersKey(BOOK.id)] = { chapters };
   render(
     // The highlights the panel lists come from the book's cache entry, the same
     // one the viewer draws from. A book that failed to load has no such entry,
     // so seeding one would contradict the state under test.
-    <SwrTestCache seed={book ? { [bookKey(BOOK.id)]: BOOK } : {}}>
+    <SwrTestCache seed={seed}>
       <Provider store={store}>
         <ChatArea
           book={book}
           bookError={bookError}
           onSelectionClick={(selection) => opened.push(selection)}
-          onOpenBookChat={onOpenBookChat}
+          onGoToHighlight={(selection) => turnedTo.push(selection)}
+          onOpenSession={onOpenSession}
+          onNewChat={onNewChat}
+          chatRequests={{ load: async () => ({ chats }), ...chatRequests }}
           readQuote={() => selected}
           deleteHighlight={deleteHighlight}
           changeHighlight={changeHighlight}
@@ -136,6 +164,7 @@ function renderChat(
   return {
     store,
     opened,
+    turnedTo,
     /** Drags over a message of the thread and takes up the offer to quote it. */
     quote: async (text: string) => {
       selected = { text, rect: { top: 0, left: 0, width: 0 } };
@@ -232,33 +261,251 @@ describe("ChatArea", () => {
     expect(screen.getByText(OTHER_TEXT)).toBeInTheDocument();
   });
 
-  it("hands the highlight picked from the list to onSelectionClick", async () => {
-    const { opened } = renderChat({ activeSelection: null });
+  it("turns to a highlight picked from the list, and opens its chat from the button beside it", async () => {
+    const { opened, turnedTo } = renderChat({ activeSelection: null });
 
     await userEvent.click(screen.getByText(OTHER_TEXT));
+
+    expect(turnedTo).toStrictEqual([{ id: "s2", selectedText: OTHER_TEXT, pageNumber: 7 }]);
+    expect(opened).toStrictEqual([]);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /^「Durable Objects.*」のチャットを開く$/ }),
+    );
 
     expect(opened).toStrictEqual([{ id: "s2", selectedText: OTHER_TEXT, pageNumber: 7 }]);
   });
 
-  it("takes the offer to ask about the book itself, off the list", async () => {
-    let opened = 0;
-    renderChat({ activeSelection: null, onOpenBookChat: () => (opened += 1) });
+  it("counts on a highlight's chat button what the chat list says was said about it", async () => {
+    renderChat({
+      activeSelection: null,
+      chats: [
+        {
+          kind: "highlight",
+          id: "s2",
+          selectedText: OTHER_TEXT,
+          pageNumber: 7,
+          color: "#2196F3",
+          messageCount: 3,
+          lastMessage: { role: "assistant", content: "はい" },
+          updatedAt: "2026-08-03T10:00:00.000Z",
+        },
+      ],
+    });
 
-    await userEvent.click(screen.getByRole("button", { name: "本について質問する" }));
-
-    expect(opened).toBe(1);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^「Durable Objects.*」のチャットを開く$/ }),
+      ).toHaveTextContent("3"),
+    );
   });
 
-  it("shows the book's own conversation with the scope it will be asked under and no passage quoted", () => {
+  it("goes between the chat list and the highlight list with one tap each way", async () => {
+    renderChat({
+      activeSelection: null,
+      chats: [
+        {
+          kind: "book",
+          id: "sess-1",
+          title: null,
+          firstQuestion: "この本を要約して",
+          scope: null,
+          messageCount: 2,
+          lastMessage: { role: "assistant", content: "要約です" },
+          updatedAt: "2026-08-03T10:00:00.000Z",
+        },
+      ],
+    });
+    expect(screen.getByRole("tab", { name: "ハイライト" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: "チャット" }));
+
+    expect(await screen.findByText("この本を要約して")).toBeInTheDocument();
+    expect(screen.queryByText("ハイライト 2件")).toBeNull();
+
+    await userEvent.click(screen.getByRole("tab", { name: "ハイライト" }));
+
+    expect(screen.getByText("ハイライト 2件")).toBeInTheDocument();
+    expect(screen.queryByText("この本を要約して")).toBeNull();
+  });
+
+  it("starts a new chat, and opens a session, off the chat list", async () => {
+    const started = vi.fn();
+    const sessions: string[] = [];
+    renderChat({
+      activeSelection: null,
+      onNewChat: started,
+      onOpenSession: (id) => sessions.push(id),
+      chats: [
+        {
+          kind: "book",
+          id: "sess-1",
+          title: "第2章",
+          firstQuestion: null,
+          scope: null,
+          messageCount: 0,
+          lastMessage: null,
+          updatedAt: "2026-08-03T10:00:00.000Z",
+        },
+      ],
+    });
+    await userEvent.click(screen.getByRole("tab", { name: "チャット" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "新しいチャット" }));
+    await userEvent.click(await screen.findByText("第2章"));
+
+    expect(started).toHaveBeenCalledTimes(1);
+    expect(sessions).toStrictEqual(["sess-1"]);
+  });
+
+  it("makes a new chat's session with its first question, and asks it there", async () => {
+    const { fetchFn, calls } = streamingFetchStub();
+    vi.stubGlobal("fetch", fetchFn);
+    const created: string[] = [];
+    const { store } = renderChat({
+      activeSelection: null,
+      session: { id: null },
+      chatRequests: {
+        create: (pdfId) => {
+          created.push(pdfId);
+          return okAsync({
+            id: "sess-new",
+            title: null,
+            scope: null,
+            createdAt: "2026-08-03T10:00:00.000Z",
+            updatedAt: "2026-08-03T10:00:00.000Z",
+          });
+        },
+      },
+    });
+    expect(screen.getByRole("heading", { name: "新しいチャット" })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText("質問を入力..."), "この本を要約して");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(created).toStrictEqual([BOOK.id]);
+    expect(store.get(activeSessionAtom)).toStrictEqual({ id: "sess-new" });
+    expect(calls.map((call) => [call.url, call.body])).toStrictEqual([
+      [
+        "/api/pdf/p1/sessions/sess-new/messages",
+        {
+          content: "この本を要約して",
+          useWebSearch: true,
+          scope: { ranges: [{ startPage: 1, endPage: 209 }] },
+        },
+      ],
+    ]);
+  });
+
+  it("asks a session's next question in that session, over its pages, without making another", async () => {
+    const { fetchFn, calls } = streamingFetchStub();
+    vi.stubGlobal("fetch", fetchFn);
+    const create = vi.fn();
+    renderChat({
+      activeSelection: null,
+      session: { id: "sess-1" },
+      scope: [{ startPage: 5, endPage: 8 }],
+      chapters: [
+        { title: null, startPage: 1, endPage: 4 },
+        { title: "Chapter 2", startPage: 5, endPage: 8 },
+      ],
+      chatRequests: { create },
+    });
+    expect(screen.getByRole("button", { name: "範囲: Chapter 2" })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText("質問を入力..."), "続きを");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(create).not.toHaveBeenCalled();
+    expect(calls.map((call) => [call.url, call.body])).toStrictEqual([
+      [
+        "/api/pdf/p1/sessions/sess-1/messages",
+        {
+          content: "続きを",
+          useWebSearch: true,
+          scope: { ranges: [{ startPage: 5, endPage: 8 }] },
+        },
+      ],
+    ]);
+  });
+
+  it("says a new chat could not be started, and asks nothing", async () => {
+    const { fetchFn, calls } = streamingFetchStub();
+    vi.stubGlobal("fetch", fetchFn);
+    renderChat({
+      activeSelection: null,
+      session: { id: null },
+      chatRequests: {
+        create: () => errAsync(new ApiError("Unexpected server error", "INTERNAL_ERROR", 500)),
+      },
+    });
+
+    await userEvent.type(screen.getByPlaceholderText("質問を入力..."), "この本を要約して");
+    await userEvent.keyboard("{Enter}");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "チャットを始められませんでした: Unexpected server error",
+    );
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("names the open session from the chat list, and renames it there", async () => {
+    const renamed: [string, string, string][] = [];
+    renderChat({
+      activeSelection: null,
+      session: { id: "sess-1" },
+      chats: [
+        {
+          kind: "book",
+          id: "sess-1",
+          title: null,
+          firstQuestion: "この本を要約して",
+          scope: null,
+          messageCount: 2,
+          lastMessage: { role: "assistant", content: "要約です" },
+          updatedAt: "2026-08-03T10:00:00.000Z",
+        },
+      ],
+      chatRequests: {
+        rename: (pdfId, sessionId, title) => {
+          renamed.push([pdfId, sessionId, title]);
+          return okAsync({ id: sessionId, title });
+        },
+      },
+    });
+    expect(await screen.findByRole("heading", { name: "この本を要約して" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "チャットの名前を変更" }));
+    const box = screen.getByRole("textbox", { name: "チャットの名前" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "全体の要約");
+    await userEvent.click(screen.getByRole("button", { name: "名前を保存" }));
+
+    expect(renamed).toStrictEqual([[BOOK.id, "sess-1", "全体の要約"]]);
+    expect(await screen.findByRole("heading", { name: "全体の要約" })).toBeInTheDocument();
+  });
+
+  it("offers no rename for a new chat the server does not have yet", () => {
+    renderChat({ activeSelection: null, session: { id: null } });
+
+    expect(screen.queryByRole("button", { name: "チャットの名前を変更" })).toBeNull();
+  });
+
+  it("shows a chat about the book with the scope it will be asked under and no passage quoted", () => {
     // The third face: no highlight under it, so no quote box — what the
     // question is aimed at is the scope chip instead.
-    renderChat({ activeSelection: null, bookChatOpen: true });
+    renderChat({ activeSelection: null, session: { id: "sess-1" } });
 
     expect(screen.getByRole("button", { name: "一覧に戻る" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "範囲: 本全体" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("質問を入力...")).toBeInTheDocument();
     expect(screen.queryByText("↳")).toBeNull();
-    expect(screen.queryByText("チャットを開始するには")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
   });
 
   it("hands the chapter list's failure to the menu rather than an empty list", async () => {
@@ -273,7 +520,7 @@ describe("ChatArea", () => {
         ),
       ),
     );
-    renderChat({ activeSelection: null, bookChatOpen: true });
+    renderChat({ activeSelection: null, session: { id: "sess-1" } });
 
     await userEvent.click(screen.getByRole("button", { name: /^範囲:/ }));
 
@@ -290,13 +537,13 @@ describe("ChatArea", () => {
     expect(screen.queryByRole("button", { name: /^範囲:/ })).toBeNull();
   });
 
-  it("drops a quote taken in the book's conversation when the reader leaves it for the list", async () => {
+  it("drops a quote taken in a chat about the book when the reader leaves it for the list", async () => {
     // A quote is a passage of the thread it was taken from; the list is not
     // that thread, so coming back from it starts the question over rather than
     // attaching it to a conversation the reader has stepped out of.
     const { store, quote } = renderChat({
       activeSelection: null,
-      bookChatOpen: true,
+      session: { id: "sess-1" },
       messages: [ANSWER_MESSAGE],
     });
     await quote(ANSWER);
@@ -304,7 +551,7 @@ describe("ChatArea", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "一覧に戻る" }));
     act(() => {
-      store.set(bookChatOpenAtom, true);
+      store.set(activeSessionAtom, { id: "sess-1" });
     });
 
     expect(screen.getByPlaceholderText("質問を入力...")).toBeInTheDocument();
@@ -498,8 +745,8 @@ describe("ChatArea", () => {
     expect(screen.queryByRole("group", { name: "メモと色" })).toBeNull();
   });
 
-  it("offers no colour or note in the book's own conversation, which marks no passage", () => {
-    renderChat({ activeSelection: null, bookChatOpen: true });
+  it("offers no colour or note in a chat about the book, which marks no passage", () => {
+    renderChat({ activeSelection: null, session: { id: "sess-1" } });
 
     expect(screen.queryByRole("button", { name: "メモと色" })).toBeNull();
   });

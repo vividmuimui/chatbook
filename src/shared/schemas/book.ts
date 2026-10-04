@@ -72,17 +72,16 @@ export const bookListSchema = z.object({ books: z.array(bookSummarySchema) });
  * outline and the chat pane sat beside them. `null` for either panel is "no
  * wide screen has said either way" — narrow screens do not save them, since
  * there the outline is a drawer and the chat a sheet over the page rather than
- * places next to it. `bookChat` is part of the place rather than of the panels
+ * places next to it. `sessionId` is part of the place rather than of the panels
  * for the opposite reason: a narrow screen has a conversation open on the book
  * too.
  */
 export const readingStateSchema = z.object({
   page: z.number().int().positive(),
   selectionId: z.string().nullable(),
-  // True when the conversation open was the book's own rather than a
-  // highlight's; at most one of the two is set. Null on a place saved before
-  // this was recorded, which reads as no conversation open.
-  bookChat: z.boolean().nullable(),
+  // The session of the book's own that was open, when the conversation was
+  // one of those rather than a highlight's; at most one of the two is set.
+  sessionId: z.string().nullable(),
   outlineOpen: z.boolean().nullable(),
   chatPanelOpen: z.boolean().nullable(),
 });
@@ -93,13 +92,13 @@ export type ReadingState = z.infer<typeof readingStateSchema>;
  * What a device sends to save its place. The two panels are optional rather
  * than nullable: leaving them out keeps whatever was stored, which is how a
  * narrow screen saves a page without folding away what a wide screen opened.
- * `bookChat` is optional for the same reason rather than for that one: a device
+ * `sessionId` is optional for the same reason rather than for that one: a device
  * that does not say keeps what was there.
  */
 export const saveReadingStateRequestSchema = z.object({
   page: z.number().int().positive(),
   selectionId: z.string().nullable(),
-  bookChat: z.boolean().optional(),
+  sessionId: z.string().nullable().optional(),
   outlineOpen: z.boolean().optional(),
   chatPanelOpen: z.boolean().optional(),
 });

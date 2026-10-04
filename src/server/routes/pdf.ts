@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { drizzle } from "drizzle-orm/d1";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { ResultAsync } from "neverthrow";
 import { pdfs, selections, chatMessages } from "../db/schema";
 import {
@@ -44,7 +44,21 @@ import {
 } from "../../shared/schemas/selection";
 import { bookSearchQuerySchema } from "../../shared/schemas/bookSearch";
 import { ocrTextSchema, type OcrText } from "../../shared/schemas/ocr";
-import { sendBookChatRequestSchema, sendChatRequestSchema } from "../../shared/schemas/chat";
+import {
+  renameSessionRequestSchema,
+  sendBookChatRequestSchema,
+  sendChatRequestSchema,
+} from "../../shared/schemas/chat";
+import {
+  createSession,
+  deleteSession,
+  findSession,
+  listChats,
+  noteQuestion,
+  readSession,
+  renameSession,
+  sessionMessages,
+} from "../services/chatSessionService";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { storageFailure, type ServiceError } from "../services/serviceError";
 import {
@@ -84,6 +98,11 @@ const SELECTION_NOT_FOUND = {
   message: "Selection not found",
 } as const;
 
+const SESSION_NOT_FOUND = {
+  code: "SESSION_NOT_FOUND" satisfies ErrorCode,
+  message: "Chat session not found",
+} as const;
+
 /**
  * The reply a store that refused to answer turns into.
  *
@@ -118,9 +137,9 @@ function serviceFailureResponse(
 /**
  * The save half of a chat stream: one row per finished answer.
  *
- * Both conversations a book has store their turns the same way and differ only
- * in what the row hangs off, so the write lives here rather than twice in the
- * two routes. The id is minted from the same clock the question's row was, and
+ * Both kinds of conversation a book has store their turns the same way and
+ * differ only in what the row hangs off — a highlight, or one of the book's own
+ * sessions — so the write lives here rather than twice in the two routes. The id is minted from the same clock the question's row was, and
  * a write that failed is logged and reported as `null` — the stream turns that
  * into the error event, since an answer on screen that is not stored is gone
  * the next time the conversation is opened.
@@ -128,7 +147,7 @@ function serviceFailureResponse(
 function saveAnswerInto(
   db: D1Database,
   idClock: IdClock,
-  owner: { pdfId: string; selectionId: string | null },
+  owner: { pdfId: string; selectionId: string | null; sessionId: string | null },
 ): SaveAnswer {
   const d1Db = drizzle(db);
 
@@ -140,6 +159,7 @@ function saveAnswerInto(
         .values({
           id: assistantMsgId,
           selectionId: owner.selectionId,
+          sessionId: owner.sessionId,
           pdfId: owner.pdfId,
           role: "assistant",
           content: answer,
@@ -882,103 +902,144 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
           );
         },
       )
-      // The book's own conversation: the one hanging off the book rather than
-      // off a passage of it, and so the only one with no selection to name.
+      // Every conversation the book holds — its own sessions, and the
+      // highlights something was asked about — for the chat list.
       .get("/pdf/:pdfId/chats", async (c) => {
-        const pdfId = c.req.param("pdfId");
-        const d1Db = drizzle(c.env.DB);
+        const listed = await listChats(c.env.DB, c.req.param("pdfId"));
 
-        const pdf = await d1Db.select({ id: pdfs.id }).from(pdfs).where(eq(pdfs.id, pdfId)).get();
-        if (!pdf) {
-          return c.json({ error: PDF_NOT_FOUND }, 404);
-        }
-
-        const messages = await d1Db
-          .select()
-          .from(chatMessages)
-          .where(and(eq(chatMessages.pdfId, pdfId), isNull(chatMessages.selectionId)))
-          .orderBy(asc(chatMessages.createdAt), asc(chatMessages.id))
-          .all();
-
-        return c.json({
-          selectionId: null,
-          messages: messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            citations: readCitations(m.citations),
-            createdAt: m.createdAt,
-          })),
-        });
+        return listed.match(
+          (chats) => c.json({ chats }),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
       })
-      // Ask the book itself, over the pages the reader picked. The question
-      // hangs off the book rather than off a passage of it, so nothing is
-      // highlighted under it: what it is about is the scope it arrived with.
-      .post("/pdf/:pdfId/chats", validate("json", sendBookChatRequestSchema), async (c) => {
-        const pdfId = c.req.param("pdfId");
-        const d1Db = drizzle(c.env.DB);
-        const llmConfig = resolveLlmConfig(c.env);
+      // A new chat about the book. Made apart from its first question, which
+      // is sent to the session once it exists.
+      .post("/pdf/:pdfId/sessions", async (c) => {
+        const created = await createSession(c.env.DB, c.req.param("pdfId"), idClock);
 
-        if (!llmConfig.apiKey) {
-          return c.json(
-            {
-              error: {
-                code: "CONFIG_ERROR" satisfies ErrorCode,
-                message: "LLM_API_KEY not set",
-              },
-            },
-            500,
+        return created.match(
+          (session) => c.json(session, 201),
+          (failure) => serviceFailureResponse(c, failure, PDF_NOT_FOUND),
+        );
+      })
+      .get("/pdf/:pdfId/sessions/:sessionId/messages", async (c) => {
+        const read = await readSession(c.env.DB, c.req.param("pdfId"), c.req.param("sessionId"));
+
+        return read.match(
+          (history) => c.json(history),
+          (failure) => serviceFailureResponse(c, failure, SESSION_NOT_FOUND),
+        );
+      })
+      .patch(
+        "/pdf/:pdfId/sessions/:sessionId",
+        validate("json", renameSessionRequestSchema),
+        async (c) => {
+          const renamed = await renameSession(
+            c.env.DB,
+            c.req.param("pdfId"),
+            c.req.param("sessionId"),
+            c.req.valid("json").title,
           );
-        }
 
-        const pdfRow = await d1Db
-          .select({ fullText: pdfs.fullText, pageCount: pdfs.pageCount })
-          .from(pdfs)
-          .where(eq(pdfs.id, pdfId))
-          .get();
-        if (!pdfRow) {
-          return c.json({ error: PDF_NOT_FOUND }, 404);
-        }
+          return renamed.match(
+            (session) => c.json(session),
+            (failure) => serviceFailureResponse(c, failure, SESSION_NOT_FOUND),
+          );
+        },
+      )
+      .delete("/pdf/:pdfId/sessions/:sessionId", async (c) => {
+        const removed = await deleteSession(
+          c.env.DB,
+          c.req.param("pdfId"),
+          c.req.param("sessionId"),
+        );
 
-        const { content, useWebSearch: readerWantsWebSearch, scope } = c.req.valid("json");
-        const useWebSearch = readerWantsWebSearch && llmConfig.webSearchSupported;
-
-        // Read before the question is saved, so the conversation the model is
-        // handed holds the earlier turns and not this one twice.
-        const history = await d1Db
-          .select()
-          .from(chatMessages)
-          .where(and(eq(chatMessages.pdfId, pdfId), isNull(chatMessages.selectionId)))
-          .orderBy(asc(chatMessages.createdAt), asc(chatMessages.id))
-          .all();
-
-        await d1Db.insert(chatMessages).values({
-          id: idClock.newId(),
-          selectionId: null,
-          pdfId,
-          role: "user",
-          content,
-          createdAt: idClock.now(),
-        });
-
-        // The pages picked, cut out of the book. Citations are still resolved
-        // against the whole of it, so a passage quoted from one of them is
-        // found on the page the book itself numbers it by.
-        const excerpt = selectRanges(pdfRow.fullText, scope.ranges);
-        const systemPrompt = buildSystemPrompt(excerpt, null, useWebSearch);
-
-        return streamChatReply({
-          llmConfig,
-          systemPrompt,
-          history: history.map((turn) => ({ role: turn.role, content: turn.content })),
-          question: content,
-          useWebSearch,
-          fullText: pdfRow.fullText,
-          pageCount: pdfRow.pageCount,
-          save: saveAnswerInto(c.env.DB, idClock, { pdfId, selectionId: null }),
-          waitUntil: (work) => c.executionCtx.waitUntil(work),
-        });
+        return removed.match(
+          () => c.json({ deleted: true }),
+          (failure) => serviceFailureResponse(c, failure, SESSION_NOT_FOUND),
+        );
       })
+      // Ask the book itself, in one of its sessions, over the pages the reader
+      // picked. The question hangs off the book rather than off a passage of
+      // it, so nothing is highlighted under it: what it is about is the scope
+      // it arrived with, which the session keeps for the next time it opens.
+      .post(
+        "/pdf/:pdfId/sessions/:sessionId/messages",
+        validate("json", sendBookChatRequestSchema),
+        async (c) => {
+          const pdfId = c.req.param("pdfId");
+          const sessionId = c.req.param("sessionId");
+          const d1Db = drizzle(c.env.DB);
+          const llmConfig = resolveLlmConfig(c.env);
+
+          if (!llmConfig.apiKey) {
+            return c.json(
+              {
+                error: {
+                  code: "CONFIG_ERROR" satisfies ErrorCode,
+                  message: "LLM_API_KEY not set",
+                },
+              },
+              500,
+            );
+          }
+
+          const session = await findSession(c.env.DB, pdfId, sessionId);
+          if (session.isErr()) {
+            return serviceFailureResponse(c, session.error, SESSION_NOT_FOUND);
+          }
+
+          const pdfRow = await d1Db
+            .select({ fullText: pdfs.fullText, pageCount: pdfs.pageCount })
+            .from(pdfs)
+            .where(eq(pdfs.id, pdfId))
+            .get();
+          if (!pdfRow) {
+            return c.json({ error: PDF_NOT_FOUND }, 404);
+          }
+
+          const { content, useWebSearch: readerWantsWebSearch, scope } = c.req.valid("json");
+          const useWebSearch = readerWantsWebSearch && llmConfig.webSearchSupported;
+
+          // Read before the question is saved, so the conversation the model is
+          // handed holds this session's earlier turns and not this one twice.
+          // Only this session's: the book's other sessions are other
+          // conversations, and a highlight's is about a passage.
+          const history = await sessionMessages(c.env.DB, sessionId);
+          if (history.isErr()) return storageFailureResponse(c, history.error.cause);
+
+          const now = idClock.now();
+          await d1Db.insert(chatMessages).values({
+            id: idClock.newId(),
+            selectionId: null,
+            sessionId,
+            pdfId,
+            role: "user",
+            content,
+            createdAt: now,
+          });
+          const noted = await noteQuestion(c.env.DB, sessionId, scope.ranges, now);
+          if (noted.isErr()) return storageFailureResponse(c, noted.error.cause);
+
+          // The pages picked, cut out of the book. Citations are still resolved
+          // against the whole of it, so a passage quoted from one of them is
+          // found on the page the book itself numbers it by.
+          const excerpt = selectRanges(pdfRow.fullText, scope.ranges);
+          const systemPrompt = buildSystemPrompt(excerpt, null, useWebSearch);
+
+          return streamChatReply({
+            llmConfig,
+            systemPrompt,
+            history: history.value.map((turn) => ({ role: turn.role, content: turn.content })),
+            question: content,
+            useWebSearch,
+            fullText: pdfRow.fullText,
+            pageCount: pdfRow.pageCount,
+            save: saveAnswerInto(c.env.DB, idClock, { pdfId, selectionId: null, sessionId }),
+            waitUntil: (work) => c.executionCtx.waitUntil(work),
+          });
+        },
+      )
       .get("/pdf/:pdfId/selections/:selId/chats", async (c) => {
         const selId = c.req.param("selId");
         const d1Db = drizzle(c.env.DB);
@@ -1114,7 +1175,11 @@ export function createPdfRoute(idClock: IdClock = systemIdClock) {
             useWebSearch,
             fullText,
             pageCount: pdfRow.pageCount,
-            save: saveAnswerInto(c.env.DB, idClock, { pdfId: sel.pdfId, selectionId: selId }),
+            save: saveAnswerInto(c.env.DB, idClock, {
+              pdfId: sel.pdfId,
+              selectionId: selId,
+              sessionId: null,
+            }),
             waitUntil: (work) => c.executionCtx.waitUntil(work),
           });
         },

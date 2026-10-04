@@ -96,7 +96,9 @@ atom に一度だけ書く——`useSWRImmutable` が解いた「引用箇所の
 ハイライトを `activeSelectionAtom` に（`openChat` 経由。下記「リーダーの URL は
 `useReadingLocation` が単独で書く」）、同じく `useBook` が返した本の `readingState` を
 `currentPageAtom` / `activeSelectionAtom` / `outlineOpenAtom` / `chatPanelOpenAtom` に
-（下記「読んでいた場所は本と一緒に運ぶ」）。これは写しではない: どの atom も「読者が今どこを
+（下記「読んでいた場所は本と一緒に運ぶ」）。もう 1 つ、`AppPage` の `loadConversation` が
+開いたセッションの範囲を `chatScopeAtom` に一度だけ当てる（下記「本全体への質問は
+セッションに分ける」）。これは写しではない: どの atom も「読者が今どこを
 見ているか」というクライアント状態で、キーボード・ページ送りボタン・目次・URL・一覧の
 クリックも書き込む。取得結果はその状態を**一度だけ動かすきっかけ**であって、サーバのデータを
 atom に常駐させているわけではない。
@@ -225,20 +227,24 @@ pdf.js は workerd 上で動かない（native canvas を要求して落ちる�
 
 ### ストレージの分担
 
-| 置き場所          | 内容                                                                                                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1 (`DB`)         | `pdfs` / `selections` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
-| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                        |
-| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                            |
+| 置き場所          | 内容                                                                                                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1 (`DB`)         | `pdfs` / `selections` / `chat_sessions` / `chat_messages` のメタデータ（`pdfs` は本ごとの設定＝ページめくりの向きも持つ）、`settings`（画面から変える設定。今は `dropbox_folder` だけ） |
+| R2 (`PDF_BUCKET`) | 本体 `pdfs/<sha256>.pdf` / `pdfs/<sha256>.epub`、表紙 `thumbnails/<sha256>.webp`、OCR の行 `ocr/<sha256>.json`                                                                          |
+| Dropbox（任意）   | PDF 本体。`pdfs.dropbox_id` が立っている本は Dropbox が正で、R2 はその写し                                                                                                              |
 
-**チャットは本に属し、ハイライトに（任意で）ぶら下がる。** `chat_messages` は `pdf_id` を
-必ず持ち、`selection_id` を持つのはハイライトの会話だけ。本そのものへの質問（要約・章ごとの
-質問）は **`selection_id IS NULL`** の行で、本ごとに 1 本。所有者の列が 2 つあるのは、
-ハイライトを消したときにその会話だけが CASCADE で落ち、本の会話は残るようにするため
-（本を消せば `pdf_id` の CASCADE で全部落ちる）。本の会話を引く索引は部分索引
-`idx_chat_messages_pdf_time`（`WHERE selection_id IS NULL`）で、ハイライトの会話は 1 行も
-載らない。ハイライトの検索（`findSelections`）は `selection_id` で EXISTS を取るので、
-本の会話は構造的に混ざらない。
+**チャットは本に属し、ハイライトか本のセッションのどちらかにぶら下がる。** `chat_messages` は
+`pdf_id` を必ず持ち、`selection_id` を持つのはハイライトの会話、`session_id`（0013）を持つのは
+本そのものへの質問（要約・章ごとの質問）。本の質問は**セッション**（`chat_sessions`）に分かれ、
+本ごとにいくつでも持てる（下記「本全体への質問はセッションに分ける」）。2 つの列は同時には
+立たない。ハイライトを消せばその会話だけが、セッションを消せばそのメッセージだけが CASCADE で
+落ち、本を消せば `pdf_id` の CASCADE で全部落ちる。セッションの会話を引く索引は部分索引
+`idx_chat_messages_session_time`（`WHERE session_id IS NOT NULL`）。0005 の
+`idx_chat_messages_pdf_time`（`WHERE selection_id IS NULL`）は残っているが、もう誰も引かない。
+ハイライトの検索（`findSelections`）は `selection_id` で EXISTS を取るので、本の会話は構造的に
+混ざらない。**`selection_id` も `session_id` も NULL の行は、どの画面からも見えない**
+（0013 を当ててから新しいコードを載せるまでの間に旧 Worker が書いた本の会話だけがそうなる。
+下記「マイグレーションを当ててから動かす」）。
 
 同一性は **内容の SHA-256** で判定する。同じ本を開き直すと同じ `pdfs.id` を返しつつ、
 `fileName` / `fullText` / `pageCount` / `outline` / OCR の行を最新の抽出結果で**上書き**する
@@ -389,7 +395,8 @@ union + `satisfies` で固定する。
   ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
   Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・
   本の題名の変更（`ShelfPage` → `BookTitleDialog`）・ページめくりの向きの保存
-  （`usePageDirection`）・目次の生成（`useReaderOutline`）の 12 個。
+  （`usePageDirection`）・目次の生成（`useReaderOutline`）・セッションの作成・削除・改名
+  （`useChatList`）の 15 個。
   **例外は `usePdfDocument.ts` の `storeCoverIfMissing` / `storeOutlineIfMissing` の 2 つ**で、
   これらは失敗を出さないと決めた書き込み（下記「意図的に握りつぶす」）なので
   `fetcher` + try/catch のままでよい
@@ -425,29 +432,31 @@ union + `satisfies` で固定する。
 
 失敗の受け皿と表示場所は次のとおり。新しい失敗を足すときはこの表のどれかに合流させる:
 
-| 失敗                                         | 受け皿                                                | 出る場所                                                                             |
-| -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 本棚の読み込み・削除・追加・ドロップの拒否   | `ShelfPage` の `actionError` と SWR の `error`        | 本棚上部の赤い枠                                                                     |
-| 追加する本の OCR（中止は失敗に数えない）     | `ShelfPage` の `actionError`（`importFailed`）        | 本棚上部の赤い枠                                                                     |
-| OCR の行の取得                               | `useOcrText` の `error`                               | ビューア上部（ページは描く。文字が選べないことを言う）                               |
-| Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
-| Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
-| Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
-| 本の題名の変更                               | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
-| 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
-| PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
-| ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
-| 目次の取得                                   | `usePdfOutline` の `error`                            | 目次パネル                                                                           |
-| 目次の生成（AI）                             | `useReaderOutline` の `generation.error`              | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
-| ページめくりの向きの保存                     | `usePageDirection` の `error`                         | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
-| ハイライトの保存（質問・色・メモのどれでも） | `useAskAboutSelection` の `saveError`                 | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
-| ハイライトの色とメモの変更                   | `HighlightEditor` の `error`                          | 編集欄の中（開いたまま。打ったメモも残る）                                           |
-| ハイライトの削除                             | `HighlightListPanel` の `actionError`                 | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
-| ハイライトの検索                             | `useHighlightSearch` の `searchError`                 | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
-| 本文の検索                                   | `useBookTextSearch` の `searchError`                  | 本文検索パネルの入力行の下                                                           |
-| チャットの送信・履歴の取得                   | `chatErrorAtom`                                       | チャットパネル（狭い画面ではシート）                                                 |
-| リンク先の passage が見つからない            | `useReadingLocation` の `passageMiss`                 | ヘッダ直下の帯                                                                       |
-| 読書位置の保存                               | `useReadingStateSync` の `saveError`                  | ヘッダ直下の帯                                                                       |
+| 失敗                                             | 受け皿                                                      | 出る場所                                                                             |
+| ------------------------------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 本棚の読み込み・削除・追加・ドロップの拒否       | `ShelfPage` の `actionError` と SWR の `error`              | 本棚上部の赤い枠                                                                     |
+| 追加する本の OCR（中止は失敗に数えない）         | `ShelfPage` の `actionError`（`importFailed`）              | 本棚上部の赤い枠                                                                     |
+| OCR の行の取得                                   | `useOcrText` の `error`                                     | ビューア上部（ページは描く。文字が選べないことを言う）                               |
+| Dropbox の本の取得・取り込み                     | `ShelfPage` の `actionError`                                | 本棚上部の赤い枠                                                                     |
+| Dropbox フォルダの一覧                           | `ShelfPage` の Dropbox 側 SWR の `error`                    | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
+| Dropbox フォルダの保存                           | `DropboxFolderDialog` の `error`                            | ダイアログの中（開いたまま）                                                         |
+| 本の題名の変更                                   | `BookTitleDialog` の `error`                                | ダイアログの中（開いたまま。打った題名も残る）                                       |
+| 本の読み込み                                     | `useBook` の `error` → `bookError` prop                     | ビューア中央とチャットパネル                                                         |
+| PDF バイナリの取得・pdf.js の構築                | `usePdfDocument` の `error`                                 | ビューア中央                                                                         |
+| ページの描画                                     | `PdfPage` の `onError` → `PdfViewer` の `renderError`       | ビューア上部（ページを移ると消える）                                                 |
+| 目次の取得                                       | `usePdfOutline` の `error`                                  | 目次パネル                                                                           |
+| 目次の生成（AI）                                 | `useReaderOutline` の `generation.error`                    | 目次パネルの「AIで目次を作る」の下（ボタンは残り、押し直せる）                       |
+| ページめくりの向きの保存                         | `usePageDirection` の `error`                               | 設定メニュー（⚙）の「ページめくり」の下（向きは保存前のまま）                        |
+| ハイライトの保存（質問・色・メモのどれでも）     | `useAskAboutSelection` の `saveError`                       | ビューア上部（ポップオーバーは開いたまま。狭い画面では提示バーか入力欄が開いたまま） |
+| ハイライトの色とメモの変更                       | `HighlightEditor` の `error`                                | 編集欄の中（開いたまま。打ったメモも残る）                                           |
+| ハイライトの削除                                 | `HighlightListPanel` の `actionError`                       | ハイライト一覧の検索行の下（次の削除で消える。下記の例外あり）                       |
+| ハイライトの検索                                 | `useHighlightSearch` の `searchError`                       | 同じ枠。削除の失敗が出ている間はそちらが優先される                                   |
+| 本文の検索                                       | `useBookTextSearch` の `searchError`                        | 本文検索パネルの入力行の下                                                           |
+| チャットの送信・履歴の取得・新しいチャットの作成 | `chatErrorAtom`                                             | チャットパネル（狭い画面ではシート）                                                 |
+| チャット一覧の読み込み・セッションの削除         | `useChatList` の `error` / `ChatListPanel` の `actionError` | チャット一覧の上の赤い枠（削除の失敗が優先）                                         |
+| セッションの名前の変更                           | `SessionTitle` の `error`                                   | 会話の見出しの下（入力欄は開いたまま、打った名前も残る）                             |
+| リンク先の passage が見つからない                | `useReadingLocation` の `passageMiss`                       | ヘッダ直下の帯                                                                       |
+| 読書位置の保存                                   | `useReadingStateSync` の `saveError`                        | ヘッダ直下の帯                                                                       |
 
 `chatErrorAtom` だけ二重の口がある。**atom が表示の正、`sendMessage` の戻り値
 （`ResultAsync<string, ApiError>`。成功時の値は保存された回答の id）は呼び出し元の
@@ -456,7 +465,7 @@ union + `satisfies` で固定する。
 
 #### 意図的に握りつぶす
 
-次の 13 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
+次の 14 行は失敗を画面に出さない（`HighlightListPanel.tsx` の行だけは、出す場所が残って
 いれば出す）。いずれも理由をコメントに書いてあり、**理由を書かずに握りつぶしを増やさない
 こと**:
 
@@ -468,6 +477,7 @@ union + `satisfies` で固定する。
 | `routes/pdf.ts` のクライアント切断後の送信                         | throw を通すと回答の保存に届かない                                                                               |
 | `pdfService.ts` の `readPositionData`                              | 壊れた 1 行で本ごと開けなくしない（下記「`positionData` の正準形」）                                             |
 | `chatService.ts` の `readCitations`                                | 出典が読めなくても回答そのものは見せる                                                                           |
+| `chatSessionService.ts` の `readStoredScope`                       | 壊れた範囲 1 列でセッションを開けなくしない。本全体として読む                                                    |
 | `textFragment.ts` のリンク解析                                     | 解析できない = passage へのリンクではない、という正常系                                                          |
 | `pdfOutline.ts` の `resolvePageNumber`                             | dest が解けない 1 項目はページ無しで並べ、残りは使える                                                           |
 | `documentExcerpt.ts` の `readStoredOutline`                        | 壊れた目次 1 列でチャットを止めない。ページ窓で動く                                                              |
@@ -859,16 +869,16 @@ Kindle と同じく、章を**ペインの大きさの画面に割って 1 画�
 
 本は 2 種類の会話を持ち、どちらも SSE でイベントは `token` / `citation` / `done` / `error`:
 
-| 会話                       | ルート                                                |
-| -------------------------- | ----------------------------------------------------- |
-| ハイライトにぶら下がる会話 | `POST /api/pdf/:pdfId/selections/:selId/chats`        |
-| 本そのものの会話           | `POST /api/pdf/:pdfId/chats`（本文を `scope` で指定） |
+| 会話                       | ルート                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| ハイライトにぶら下がる会話 | `POST /api/pdf/:pdfId/selections/:selId/chats`                               |
+| 本のセッション             | `POST /api/pdf/:pdfId/sessions/:sessionId/messages`（本文を `scope` で指定） |
 
 **配管は 1 箇所**——`src/server/services/chatStream.ts` の `streamChatReply` が、イベントの
 送り方・保存してから `done` を送ること・切断後も保存を完走させる `waitUntil` を持つ。ルートが
 持つのは履歴の読み出し・質問の保存・抜粋とプロンプトの組み立てだけ。回答の書き込みは
-`routes/pdf.ts` の `saveAnswerInto` が両ルートぶんを担う（所有者は `{ pdfId, selectionId }`
-で、本の会話は `selectionId: null`）。
+`routes/pdf.ts` の `saveAnswerInto` が両ルートぶんを担う（所有者は
+`{ pdfId, selectionId, sessionId }` で、どちらか片方が `null`）。
 
 - クライアントは `src/front/lib/sseParser.ts` の `createSseParser` で読む。
   SSE は**空行がブロック境界**で、`event:` は同じブロックの `data:` と対にする。
@@ -880,8 +890,9 @@ Kindle と同じく、章を**ペインの大きさの画面に割って 1 画�
 - 送信は **必ず `useChatStream` の `sendMessage` を通す**。ポップオーバーからの初回質問も
   `useAskAboutSelection` 経由でここに来る。生 `fetch` にすると質問文の即時表示と
   「考え中…」が出なくなる
-- **送り先は `selectionId` が決める**。`null` なら本そのものの会話
-  （`/api/pdf/:pdfId/chats`）、文字列ならハイライトの会話。本の会話には**本文の範囲を
+- **送り先は `ChatTarget` が決める**。`{ selectionId }` ならハイライトの会話、
+  `{ sessionId }` なら本のセッション（`/api/pdf/:pdfId/sessions/:sessionId/messages`。
+  セッションは先に作っておく）。本の会話には**本文の範囲を
   `options.scope`（`PageRange[]`）で渡し**、送信 body では `{ ranges }` に包まれる
   （`scope` を渡さない質問では `JSON.stringify` が丸ごと落とす）。範囲を作るのは
   `src/front/lib/chatScope.ts` の `scopeRanges`（空 = 本全体 = `[{1, pageCount}]`）
@@ -1696,17 +1707,19 @@ move より前にスクロールへ吸われる。**44 は `HANDLE_WIDTH` 1 箇�
 「gives the answer the whole pane once the sheet is drawn all the way up」が両方を見る）。
 
 **シートを開く口は 4 つ**——`PageToolbar` のチャットボタン、`AppPage` の `openChat`
-（ページ上のハイライトのタップ・一覧・URL の `?selection=` 復元がすべてここを通る。
-つまり `?selection=` 付きのリンクは狭い画面でもシートを `half` で開く）、**本について質問する**
-（`openBookChat`。入口がシートの中にあるので、押した時点で既に開いている——シートを上げる
-のは復元経路だけ）、そして**新しい質問の保存が成功したとき**（`useAskAboutSelection`）。
+（ページ上のハイライトのタップ・一覧のチャットボタン・URL の `?selection=` 復元がすべてここを
+通る。つまり `?selection=` 付きのリンクは狭い画面でもシートを `half` で開く）、**本の
+セッションを開く・新しいチャットを始める**（`openSession` / `startNewChat`。入口がシートの中に
+あるので、押した時点で既に開いている——シートを上げるのは復元経路だけ）、そして**新しい質問の保存が成功したとき**（`useAskAboutSelection`）。
 half と full の切り替えと閉じるのは `ChatSheet` 自身の `onChange`、読み手は `AppPage` だけ。
 
-**狭い画面でも本そのものの会話を持つ**——`bookChatOpenAtom` はここでも保存・復元され
-（`useReadingStateSync` が送る `place` に載る）、復元はページを変えずにシートを `half` まで
+**狭い画面でも本のセッションを持つ**——`activeSessionAtom` はここでも保存・復元され
+（`useReadingStateSync` が送る `place` の `sessionId`）、復元はページを変えずにシートを `half` まで
 上げる。広い画面との違いは置き場所だけ（あちらはペイン、こちらはシート）。範囲メニューは
 **シート半分でも最後の章まで届く**ことを `e2e/mobile.spec.ts` の
-「asks the book itself from the sheet…」がシートの箱と突き合わせて見ている。
+「asks the book itself from the sheet…」がシートの箱と突き合わせて見ている。シートの中で
+タブを行き来できることは同じファイルの「goes between the chats and the highlights inside the
+sheet…」が見ている。
 
 **質問することはチャットを開くことでもある。**質問を保存できたら、狭い画面ではシートを
 `closed → half`（既に上がっているシートは動かさない。`openChat` と同じ意味論）、広い画面では
@@ -1825,6 +1838,124 @@ Kindle と同じく、**本文を選んで色を付けるだけ・メモを付�
 | 会話の見出しから変える                        | `ChatArea.test.tsx`「changes the open highlight's colour and note…」ほか 2 本                               |
 | 実ブラウザで色とメモがリロードを越える        | `e2e/chatbook.spec.ts`「a passage marked in a colour with a note keeps both through a reload」（desktop）   |
 
+#### チャット一覧とハイライト一覧はタブで分ける
+
+パネル（狭い画面ではシート）の一覧の面は**「チャット」「ハイライト」の 2 つのタブ**
+（`ChatArea` の `role="tablist"`。どちらが出ているかは `chatListTabAtom`、既定は
+「ハイライト」）。以前はハイライト一覧の中に「本について質問する」があり、行を開くと
+ハイライトの会話、という入れ子だった。**何を尋ねたか**と**何に印を付けたか**は別の問いなので、
+入口を分けた。タブは一覧の面にだけ出し、会話を開いている間は出さない（狭い画面のシートは
+ヘッダー 1 行で、half だと縦が無い）。「← 一覧に戻る」は開いたときのタブへ戻る
+（`chatListTabAtom` は会話を開いても動かない）。保存はしない（本ごとのストアに載るだけ）。
+
+| 何を                                       | どこが                                                                                             |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| タブと 2 つの一覧の切り替え                | `src/front/components/ChatArea/ChatArea.tsx`                                                       |
+| チャット一覧                               | `src/front/components/ChatArea/ChatListPanel.tsx`                                                  |
+| 一覧の取得・セッションの作成/削除/改名     | `src/front/hooks/useChatList.ts`（`chatListKey(pdfId)` = `/api/pdf/:pdfId/chats`）                 |
+| 題・種類の印・時刻の書き方（純関数）       | `src/front/lib/chatList.ts`（`sessionTitle` / `titleFromQuestion` / `chatKind` / `chatTimeLabel`） |
+| 開いているセッションの名前と改名           | `src/front/components/ChatArea/SessionTitle.tsx`                                                   |
+| サーバ（一覧の SQL・セッションの読み書き） | `src/server/services/chatSessionService.ts`                                                        |
+
+- **チャット一覧は本の会話をすべて新しい順に並べる**——本のセッション（下記）と、**メッセージが
+  1 件以上ある**ハイライトの会話。色を付けただけのハイライトは読むものが無いので載らない
+  （ハイライト一覧にだけ在る）。行は種類の印（`本全体` / `範囲` / `ハイライト`。`chatKind`）・
+  題（セッションは `sessionTitle`、ハイライトは引用の冒頭 30 文字）・最後のメッセージの抜粋
+  （回答なら `AI: ` を前置き）・更新時刻（今日なら時刻、今年なら月/日、それ以前は年から）。
+  先頭に「＋ 新しいチャット」
+- **`範囲` は「本全体ではない」**——セッションに残った範囲が `null`（まだ何も尋ねていない）か、
+  1 ページ目から最終ページまでを覆うなら `本全体`（`coversWholeBook`）
+- **削除できるのはセッションだけ**（「チャット「題」を削除」→ `ConfirmDialog`）。ハイライトの
+  会話はハイライトと一緒に消えるもので、それはハイライト一覧の削除が持つ。削除の失敗は一覧の
+  中の赤い枠（`ChatListPanel` の `actionError`）、一覧の読み込みの失敗も同じ枠に
+  「チャット一覧を読み込めませんでした」と出す（空の一覧とは言わない）
+- **ハイライト一覧の行を押すと、そのハイライトのページへ移るだけ**（`AppPage` の
+  `goToHighlight`。狭い画面で `full` のシートは `half` まで下ろす——読者はページを見たいと
+  言っている）。会話は行の横の**チャットボタン**（「「…」のチャットを開く」。メッセージが
+  あれば件数を出す。件数はチャット一覧の SWR から）から開き、そちらはページも動かす
+  （`handleSelectionClick`。チャット一覧のハイライトの行も同じ）。ページ上のハイライトを
+  タップしたときは従来どおり会話を開く
+- **一覧の取得は SWR**（`useChatList`）。**質問が保存されたら読み直す**——`useChatStream` が
+  応答のヘッダが届いた時点（サーバは質問を保存してから回答を始める）と、ストリームが終わった
+  時点（中断を含む）に `mutate(chatListKey(pdfId))` する。セッションの作成も読み直し、削除と
+  改名はサーバの答えを書き込む（読み直さない）。ハイライトの削除・色とメモの変更も一覧を
+  読み直す（会話が消える・色が変わる）
+- **1 タップで行き来**——タブは並んでいるので、一覧どうしはどちらの画面でも 1 タップ。会話の
+  中からは「← 一覧に戻る」で一覧に戻ってから
+- **名前の衝突**: 「新しいチャット」は、何も尋ねていないセッションの題（`NEW_CHAT_TITLE`）でも
+  あり、その行のボタンと削除ボタン（「チャット「新しいチャット」を削除」）が部分一致で当たる。
+  E2E は `{ name: "新しいチャット", exact: true }` で名指す。タブは `role="tab"` なので
+  `getByRole("button", { name: "チャット" })`（`PageToolbar` のボタン）とは当たらない
+
+#### 本全体への質問はセッションに分ける
+
+本そのものへの質問は**セッション**（`chat_sessions`。`migrations/0013_chat_sessions.sql`）に
+分かれる。本ごとに 1 本だった頃は、要約を頼んだあとに無関係なことを尋ねると前の話が履歴として
+毎回モデルに渡っていた。**履歴はそのセッションのものだけを LLM に渡す**。
+
+| API                                                 | 何を                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /api/pdf/:pdfId/chats`                         | 会話の一覧（`chatListSchema`。`kind: "book"` のセッションと `kind: "highlight"`）           |
+| `POST /api/pdf/:pdfId/sessions`                     | セッションを作る（201。題も範囲も `null`）                                                  |
+| `GET /api/pdf/:pdfId/sessions/:sessionId/messages`  | セッションとそのメッセージ（`sessionHistorySchema`）                                        |
+| `POST /api/pdf/:pdfId/sessions/:sessionId/messages` | 質問を送る（SSE。body は `sendBookChatRequestSchema` = `{ content, useWebSearch, scope }`） |
+| `PATCH /api/pdf/:pdfId/sessions/:sessionId`         | 名前を付ける（`{ title }`。trim して 1〜100 文字、外れると 400）                            |
+| `DELETE /api/pdf/:pdfId/sessions/:sessionId`        | セッションとメッセージを消す（無くても `{ deleted: true }`。読書位置からも外す）            |
+
+別の本のセッションを名指したものは 404（`SESSION_NOT_FOUND`）。削除だけはハイライトと同じく
+冪等にしてある。
+
+- **セッションは最初の質問を送るときに作る**（`ChatArea` の `handleSend`）。「新しいチャット」を
+  押しただけではサーバに何も無い（`activeSessionAtom` = `{ id: null }`）。開いて何も聞かずに
+  戻っても一覧に空の行が残らないため。送信すると `startSession`（`POST /sessions`）→
+  `sessionStartedAtom` が `{ id }` を書く → `sendMessage(pdfId, { sessionId }, …)` の順。
+  **作っている間に読者が別の会話へ移ったら送らない**（`sessionStartedAtom` が `false` を返す）。
+  作れなかったら `chatErrorAtom` に「チャットを始められませんでした」（質問は送らない）。
+  作成中は入力欄を止める（`starting`。二重に作らないため）。作成と送信が別の口なのは、E2E が
+  ダミーキーのまま「質問が保存された」ことまでを見られるようにするためでもある
+  （下記「E2E の前提」）
+- **題は保存しない限り `null`**。画面は `sessionTitle` で、読者が付けた題 → 最初の質問の冒頭
+  30 文字（`titleFromQuestion`。回答の一節を引用した質問は引用の行 `>` を飛ばして問いの部分
+  から取る）→「新しいチャット」の順に決める。最初の質問は一覧の SQL が `firstQuestion` として
+  返す（題を書き込む処理をサーバに持たない——本の題が `title ?? ファイル名` なのと同じ形）。
+  改名は開いているセッションの見出しの ✎（「チャットの名前を変更」）から。失敗は見出しの下に
+  出し、打った名前は残す。**題を消す口は無い**（空は 400）
+- **範囲はセッションが持つ**。質問を送るとサーバが `chat_sessions.scope` に範囲（`PageRange[]`
+  の JSON）を書き、開き直すと `AppPage` の `loadConversation` がそれを `chatScopeAtom` に
+  一度だけ当てる（写しではない。上記「`useEffect` の扱い」の一度きりの入力）。新しいチャットは
+  本全体から始まる。**`chatScopeAtom` はページ範囲**で、章ではない——章の一覧（`useChapters`）
+  より先にセッションが開いても範囲を失わないため。`ChatScopeMenu` に渡す章は `ChatArea` が
+  ページの一致で選び直す（`pickedChapters`）。章の一覧が届く前に送ったときは atom の範囲を
+  そのまま送り、届いた後は章に一致したものだけを送る（目次が変わって一致しなくなった範囲は
+  本全体に戻る）。範囲を変えただけでは保存しない（送ったときに残る）
+- **`sendMessage` の宛先は `ChatTarget`**（`{ selectionId }` か `{ sessionId }`）。`null` で
+  本の会話を指す形はやめた
+- **読み出しの scope は寛容**（`readStoredScope`。壊れた JSON や形の違う値は `null` ＝本全体）
+- 一覧の SQL は**手書き 1 本**（`chatSessionService.ts` の `CHAT_LIST_SQL`）——`chat_messages`
+  を本の範囲でウィンドウ関数に 1 回通し（会話ごとの最後のメッセージと件数）、セッション側と
+  ハイライト側を `UNION ALL` する。本の存在確認と同じ `db.batch` に載せるので往復は 1 回。
+  抜粋は SQL で 200 文字に切る（`CHAT_LIST_SNIPPET_LENGTH`）。並びは「最後に何か言われた時刻」
+  で、何も言われていないセッションは作った時刻
+
+守っているテストは次のとおり:
+
+| 何を                                                | どのテスト                                                                                                     |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| API（作成・読み出し・送信・改名・削除・一覧の SQL） | `test/worker/bookChat.test.ts`                                                                                 |
+| 既存の本の会話をセッションへ移すマイグレーション    | `test/worker/sessionMigration.test.ts`（0013 の手前まで当てた D1 に会話を置いてから当てる）                    |
+| 題・種類・時刻の書き方                              | `src/front/lib/chatList.test.ts`                                                                               |
+| 一覧の SWR と作成・削除・改名の書き込み             | `src/front/hooks/useChatList.test.tsx`                                                                         |
+| 質問の保存・回答の後に一覧を読み直す                | `useChatStream.test.tsx`「has the chat list read again…」                                                      |
+| 作成中に会話を離れたら名指さない・削除で畳む        | `src/front/atoms/chatAtom.test.ts` の `sessionStartedAtom` / `sessionDeletedAtom`                              |
+| チャット一覧の見え方・削除                          | `ChatListPanel.test.tsx`                                                                                       |
+| タブ・最初の質問でセッションを作る・範囲・改名      | `ChatArea.test.tsx`                                                                                            |
+| 実ブラウザでタブを行き来する                        | `e2e/chatbook.spec.ts`「goes between the chat list and the highlight list, one tap each way」と mobile の 1 本 |
+| 新しいチャットが別セッションになり一覧に 2 つ並ぶ   | `e2e/chatbook.spec.ts`「a new chat is a session of its own, and the chat list holds both」                     |
+
+**E2E の 2 本目は回答を待たない**——ダミーキーでは回答が来ないが、サーバは質問を保存してから
+モデルを呼ぶので、送信の応答のヘッダが届いた（`waitForResponse`）時点で質問は D1 にある。
+そこで「← 一覧に戻る」で中断し、一覧とサーバの `/chats` の両方を見る。
+
 #### ハイライト一覧の検索はサーバ、削除はパネルが持つ
 
 一覧（`src/front/components/ChatArea/HighlightListPanel.tsx`）は**データ源を読まない
@@ -1835,14 +1966,14 @@ props のコンポーネントのまま**で、自分で持っているのは削
 `query` / `onQueryChange` / `onSearch` / `searched` / `searchError` と、絞り込み済みの
 `highlights` / 本の総数 `total` を props で渡す。
 
-**一覧は本そのものへの質問の入口でもある**（`onOpenBookChat`）。「本について質問する」を
-**2 つの面の両方に置く**——ハイライトが 1 つも無い案内の中と、一覧のヘッダー直下。片方だけに
-すると、ハイライトを 1 つ書いた読者から入口が消える。押すと `AppPage` の `openBookChat` が
-本の会話を開く（一覧の行と違って、押した時点でページを動かさない）。返るのは「← 一覧に戻る」。
+**本そのものへの質問の入口はこの一覧には無い**——「チャット」タブの「新しいチャット」が
+入口（上記「チャット一覧とハイライト一覧はタブで分ける」）。以前あった「本について質問する」は
+取り除いた。
 
-**範囲は質問ごとに選ぶ**（`src/front/components/ChatArea/ChatScopeMenu.tsx`）。会話の
+**範囲はセッションごとに選ぶ**（`src/front/components/ChatArea/ChatScopeMenu.tsx`）。会話の
 ヘッダー右端のチップで、押すと「本全体」＋章のチェックボックスが出る。状態は
-`chatScopeAtom`（`ScopeChapter[]`、空 = 本全体）で、本ごとのストアに載る。
+`chatScopeAtom`（`PageRange[]`、空 = 本全体）で、本ごとのストアに載り、セッションを開くと
+そのセッションの範囲に戻る（上記「本全体への質問はセッションに分ける」）。
 
 - 章の一覧は `GET /api/pdf/:pdfId/chapters`（`useChapters`）から。**クライアントで目次を
   解き直さない**——範囲を解くのはサーバの `chapterSpans` 1 箇所
@@ -1946,6 +2077,7 @@ props のコンポーネントのまま**で、自分で持っているのは削
 | 検索の SQL（本文・メモ・チャット・`%`・他の本） | `test/worker/pdf.test.ts` の `GET /api/pdf/:pdfId/search`（9 件。**チャット本文で見つかることを守る唯一の場所**） |
 | 入力と実行の分離・失敗の運び方                  | `src/front/hooks/useHighlightSearch.test.tsx`                                                                     |
 | 一覧の見え方・削除の確認と失敗表示              | `HighlightListPanel.test.tsx`                                                                                     |
+| チャットボタンと行の押し分け・件数              | `HighlightListPanel.test.tsx` / `ChatArea.test.tsx`「turns to a highlight picked from the list…」                 |
 | 検索結果で一覧が絞られる                        | `ChatArea.test.tsx`「narrows the list to what the server says holds the query, chats included」                   |
 | サーバが落とした分だけキャッシュから除く        | `useHighlights.test.tsx`「takes a highlight the reader deleted out of the list without re-reading the book」      |
 | 失敗しても一覧に残す                            | 同「keeps the highlight and hands back the reason when the server refuses to delete it」                          |
@@ -2125,7 +2257,8 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
   `(file, { signal, onOcrProgress })` を受け取るので、偽の `extract` がそれを呼んで OCR の
   進捗と中止を演じる）/
   `PdfViewer({ measureSelection, saveSelection, loadOcrText })`（`loadOcrText` は `useOcrText(pdfId, hasOcr, load)` へ渡る）/
-  `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights })` がその口。`measureSelection` は
+  `useChatList(pdfId, { load, create, remove, rename })` /
+  `ChatArea({ readQuote, deleteHighlight, changeHighlight, searchHighlights, chatRequests })` がその口。`measureSelection` は
   ポップオーバーを開く唯一の入口で、**実 DOM 選択と pdf.js が描いたページを両方要求する
   経路（質問・保存失敗の表示・二重送信の防止）を jsdom で動かすための seam**。
   キャッシュの中身を用意したいなら `src/test/swrTestCache.tsx` の `SwrTestCache` で包む
@@ -2136,29 +2269,32 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
 
 #### 読んでいた場所は本と一緒に運ぶ
 
-端末を変えても続きから読めるよう、**ページ・開いていたチャット（ハイライトの会話か、本そのもの
-の会話か）・目次とチャットパネルの開閉**を D1 の `pdfs` に持たせている
+端末を変えても続きから読めるよう、**ページ・開いていたチャット（ハイライトの会話か、本のセッションか）・
+目次とチャットパネルの開閉**を D1 の `pdfs` に持たせている
 （`migrations/0002_add_reading_state.sql` が足す `last_read_page` / `last_read_selection_id` /
 `last_read_outline_open`、`0003_add_reading_state_chat_panel.sql` が足す
 `last_read_chat_panel_open`、`0006_add_book_chat_reading_state.sql` が足す
-`last_read_book_chat`。5 列とも nullable で、**読んでいない本には戻る場所が無い**——それは
+`last_read_book_chat`（0013 で `last_read_session_id` に置き換わり、もう読まない）、
+`0013_chat_sessions.sql` が足す `last_read_session_id`。どれも nullable で、**読んでいない本には戻る場所が無い**——それは
 ページ 1 とは違う）。読み出しは本そのもの（`GET /api/pdf/:pdfId` の `readingState`）に載り、
 書き込みは `PUT /api/pdf/:pdfId/reading-state`。
 
-| 何を                                    | どこが                                                                                                                                                                              |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 保存（デバウンス 1 秒・離脱時の flush） | `src/front/hooks/useReadingStateSync.ts`                                                                                                                                            |
-| 復元（本の到着待ち）                    | `src/front/hooks/useReadingLocation.ts` の `pendingRestore`                                                                                                                         |
-| 保存・読み出しの service                | `src/server/services/pdfService.ts` の `saveReadingState` / `getPdf`                                                                                                                |
-| front と server が交わす形              | `src/shared/schemas/book.ts`。読み出しは `readingStateSchema`、書き込みは `saveReadingStateRequestSchema`（開閉の 2 つと `bookChat` が optional）、応答は `readingStateSavedSchema` |
+| 何を                                    | どこが                                                                                                                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 保存（デバウンス 1 秒・離脱時の flush） | `src/front/hooks/useReadingStateSync.ts`                                                                                                                                             |
+| 復元（本の到着待ち）                    | `src/front/hooks/useReadingLocation.ts` の `pendingRestore`                                                                                                                          |
+| 保存・読み出しの service                | `src/server/services/pdfService.ts` の `saveReadingState` / `getPdf`                                                                                                                 |
+| front と server が交わす形              | `src/shared/schemas/book.ts`。読み出しは `readingStateSchema`、書き込みは `saveReadingStateRequestSchema`（開閉の 2 つと `sessionId` が optional）、応答は `readingStateSavedSchema` |
 
 **EPUB の「ページ」は章**で、章の中のどの画面にいたかは運ばない（上記「画面ごとにめくる」）。
 画面の割り付けは窓と書体で変わるので、保存した画面番号は別の端末では別の語を指すうえ、
 文字位置を足すには `readingState` に列が要る。戻るのは章の先頭の画面。
 
-**`bookChat` は場所の側**（`selectionId` と同じ種類）。`true` なら開いていたのは本そのものの
-会話で、**同時に立つのは 2 つのうち片方だけ**。狭い画面でも送る——あちらに畳んでおく第 2 の
-ペインが無いだけで、会話は開いている。省略された場合は保存値を保つ（パネル 2 つと同じ規則）。
+**`sessionId` は場所の側**（`selectionId` と同じ種類）。開いていた本のセッションの id で、
+**同時に立つのは 2 つのうち片方だけ**。新しいチャット（まだサーバに無い）は `null` で送る。
+狭い画面でも送る——あちらに畳んでおく第 2 のペインが無いだけで、会話は開いている。省略された
+場合は保存値を保つ（パネル 2 つと同じ規則）。**セッションを消すと同じバッチでこの列も外す**
+（`deleteSession`）ので、消したセッションに戻ろうとはしない。
 
 **場所（ページとチャット）と開閉では、誰が正かが違う。** 開閉は広い画面ならどう開いた本でも
 本が正で、到着時に保存値を当てる。場所は**URL が何も名指していないとき（＝本棚から開いたとき）
@@ -2168,8 +2304,8 @@ createRequest)` へ渡る。**`onProgress` は props ではない**——`ShelfP
 ので、`?panel=closed` だけを持つ古いリンクは本棚から開いたのと同じ扱いになり、ページもサーバの
 位置が使われる。
 
-**本そのものの会話は場所より開閉に近い**——URL に載らず（`?selection=` が名指せるのはハイライト
-の会話だけ）、本が届いた時点で `place.bookChat` を見て開く。ただし**URL がハイライトを名指して
+**本のセッションは場所より開閉に近い**——URL に載らず（`?selection=` が名指せるのはハイライト
+の会話だけ）、本が届いた時点で `place.sessionId` を見て `openSession` で開く。ただし**URL がハイライトを名指して
 いるときは譲る**（読者がそのリンクをたどって来たのだから）。判定は `urlNamesAChat`（ref）で、
 `pendingSelectionId` は同じコミットではまだ null のため state では間に合わない。ページの規則
 （`?page=` があれば URL が正）はそのままなので、リロードでは「ページは URL から・会話はサーバ
@@ -2202,7 +2338,7 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 
 復元が届かない経路が 1 つある。**アップロードから開いた本ではハイライトの会話だけ復元されない**
 ——`useOpenPdfBook` のキャッシュ先充填は `selections: []` なので、保存されていた
-`selectionId` を解決できないまま復元が確定する（ページ・開閉・**本そのものの会話**は先充填の
+`selectionId` を解決できないまま復元が確定する（ページ・開閉・**本のセッション**は先充填の
 `readingState` から戻る。あちらは解決すべきハイライトを持たない）。`last_read_selection_id` に
 外部キーは張っていないので、別端末で消したハイライトを指す値も同じく一覧表示に落ち、次の保存
 まで残る。
@@ -2241,7 +2377,7 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 `0004_add_outline.sql` / `0006_add_book_chat_reading_state.sql` / `0007_add_dropbox.sql` / `0008_add_book_format.sql` /
 `0012_add_page_direction.sql` が未適用の D1 に新しいコードを
 載せると本を開く経路ごと 500 になる（列を絞って読む本棚一覧だけは生き残る。
-`saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `bookChat` は省略なら
+`saveReadingState` が落ちるのは、その列を実際に送ったときだけ——開閉と `sessionId` は省略なら
 `set` にも現れない。チャットは `outline` 列を select するので `0004` 未適用では 500）。
 **`0010_add_selection_note.sql`（`selections.note`）も同じ**——`readPdf` はハイライトを
 `selections` の全列で読むので、未適用の D1 では本を開く経路ごと 500、ハイライトの作成・変更・
@@ -2256,6 +2392,28 @@ is opened from the shelf」「an old link naming the panels no longer has a say 
 デプロイされ終わる」までで、その間に届いた回答が 1 件保存できなくなる（`CHAT_SAVE_FAILED` の帯が
 出る。データは失われない）。順番は変えられない——先にコードを出すと `pdf_id` 列が無くて同じ
 ように落ちる。E2E は Playwright が起動時に適用するので影響を受けない。
+**`0013_chat_sessions.sql` も先に当てる**——新しいコードは `chat_sessions` と
+`chat_messages.session_id` と `pdfs.last_read_session_id` を読むので、未適用の D1 では本を開く
+経路（`readPdf` が `pdfs` の全列を読む）もチャットも 500 になる。中身は列とテーブルの追加と、
+**本ごとの既存の会話（`selection_id IS NULL` の行）を 1 つのセッションへ移す
+`INSERT … SELECT` / `UPDATE`**、それに `last_read_book_chat = 1` の本の
+`last_read_session_id` をそのセッションにする `UPDATE`（id は SQL で ULID を作れないので
+`lower(hex(randomblob(16)))`。並びには使わないので困らない）。**旧コードは壊れない**
+（旧 Worker は `session_id` も新しい列も知らず、本の会話を `selection_id IS NULL` で読み書き
+し続ける）が、**当ててから新しいコードを載せ終わるまでの間に旧 Worker が書いた本の会話は
+`session_id` が NULL のまま残り、新しい画面からは見えない**。窓は短いので放ってよいが、拾うなら
+デプロイ後に次の 2 文を当てる:
+
+```sql
+INSERT INTO chat_sessions (id, pdf_id, title, scope, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), pdf_id, NULL, NULL, MIN(created_at), MAX(created_at)
+  FROM chat_messages WHERE selection_id IS NULL AND session_id IS NULL GROUP BY pdf_id;
+UPDATE chat_messages SET session_id = (SELECT s.id FROM chat_sessions s
+  WHERE s.pdf_id = chat_messages.pdf_id ORDER BY s.created_at DESC LIMIT 1)
+ WHERE selection_id IS NULL AND session_id IS NULL;
+```
+
+`last_read_book_chat` は消さずに残してある（旧 Worker が窓の間も読み書きするため）。
 OCR の `hasOcr` は列ではなく R2 の head なので、ここに足すマイグレーションは無い（上記
 「テキストの無い PDF（OCR）」）。
 
@@ -2439,7 +2597,7 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   経路。パネルの開閉はどう開いてもサーバから来る——ただし狭い画面は復元しないので `mobile`
   には効かない）。各 spec が
   持つ `openTestBook`（`chatbook.spec.ts` / `tablet.spec.ts` / `mobile.spec.ts` に別々の実装が
-  ある。共有していない）が開始前に selection を全削除し、ページめくりの向きを左開きに、読書位置をページ 1・両パネル開に
+  ある。共有していない）が開始前に selection と本のセッションを全削除し、ページめくりの向きを左開きに、読書位置をページ 1・両パネル開に
   戻す。**畳んだ状態から始めたいテストは URL ではなくサーバへ書いてから本を開き直す**
   （`chatbook.spec.ts` の `foldChatPane` → `page.goto`。復元は本の到着ごとに 1 回だけなので、
   `openTestBook` で本を開いたあとに書いただけでは畳まれない）
@@ -2498,6 +2656,9 @@ Claude Code はエージェント用の worktree を `.claude/worktrees/` に作
   質問ボックスの開閉を見ていた 1 本が「常に 1 件ある」になって落ち、**同じ名前を使っていた
   他の 8 本は入口のボタンで通ってしまい、見張りが黙って消えた**（テストは green のまま）。
   ポップオーバーやパネルの中のボタンを名指すときは `{ name: "...", exact: true }` を付ける。
+  「新しいチャット」もそう——何も尋ねていないセッションの題でもあるので、その行と削除ボタンに
+  当たる。ハイライトの会話はハイライト一覧の行ではなく、行の中の「…のチャットを開く」で開く
+  （`getByRole("listitem").filter({ hasText }).getByRole("button", { name: /のチャットを開く$/ })`）
   ボタンのラベルを足すときは、既存の部分一致に当たらないか `rg` で確かめる
 - UI の回帰テストを足したら、**実装を壊した状態で落ちること**を必ず確認する。
   ここは「動いていないのに通る」テストが生まれやすい。例: 計測用 canvas はサイズが 0 になる

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useAtom, useSetAtom } from "jotai";
+import { useSWRConfig } from "swr";
 import { ResultAsync, err, ok, type Result } from "neverthrow";
 import {
   chatMessagesAtom,
@@ -15,6 +16,21 @@ import type { ChatMessage, PageRange } from "../../shared/schemas/chat";
 import type { Citation } from "../../shared/schemas/citation";
 import type { ErrorCode } from "../../shared/schemas/error";
 import { chatSseEventSchema } from "../../shared/schemas/sse";
+import { chatListKey } from "./useChatList";
+
+/**
+ * Which conversation a question is asked in: a highlight's, or one of the
+ * book's own sessions. The session has to exist already — a new chat is made
+ * on the server before its first question is sent (`useChatList`'s
+ * `startSession`).
+ */
+export type ChatTarget = { selectionId: string } | { sessionId: string };
+
+function chatUrl(pdfId: string, target: ChatTarget): string {
+  return "selectionId" in target
+    ? `/api/pdf/${pdfId}/selections/${target.selectionId}/chats`
+    : `/api/pdf/${pdfId}/sessions/${target.sessionId}/messages`;
+}
 
 interface ChatStreamOptions {
   /**
@@ -63,23 +79,21 @@ export function useChatStream(fetchFn: typeof fetch = fetch, now: () => Date = s
   const [, setAbortController] = useAtom(chatAbortControllerAtom);
   const [, setChatError] = useAtom(chatErrorAtom);
   const abortChatStream = useSetAtom(abortChatStreamAtom);
+  const { mutate } = useSWRConfig();
 
   const sendMessage = useCallback(
     (
       pdfId: string,
-      /**
-       * The highlight the conversation hangs off, or null for the book's own
-       * conversation — the one asked about the work itself.
-       */
-      selectionId: string | null,
+      target: ChatTarget,
       content: string,
       useWebSearch: boolean,
       options: ChatStreamOptions = {},
     ): ResultAsync<string, ApiError> => {
-      const url =
-        selectionId === null
-          ? `/api/pdf/${pdfId}/chats`
-          : `/api/pdf/${pdfId}/selections/${selectionId}/chats`;
+      const url = chatUrl(pdfId, target);
+      // The chat list orders conversations by when they were last talked in,
+      // and shows how each one ends: both change with every question, so it
+      // is read again once the question is stored and once the answer is.
+      const refreshChatList = () => void mutate(chatListKey(pdfId));
 
       const run = async (): Promise<Result<string, ApiError>> => {
         // Only one answer streams at a time, so asking again never leaves an
@@ -119,6 +133,9 @@ export function useChatStream(fetchFn: typeof fetch = fetch, now: () => Date = s
           });
 
           if (!response.ok) throw await readRefusal(url, response);
+          // The server stores the question before it starts answering, so a
+          // stream that has begun is a question the list can already show.
+          refreshChatList();
 
           const reader = response.body?.getReader();
           if (!reader) {
@@ -214,6 +231,7 @@ export function useChatStream(fetchFn: typeof fetch = fetch, now: () => Date = s
           setChatError(chatFailureMessage(failure));
           return err(failure);
         } finally {
+          refreshChatList();
           if (!aborted) {
             setIsStreaming(false);
             // Only clear the stream this call owns; a newer one may have taken over
@@ -227,6 +245,7 @@ export function useChatStream(fetchFn: typeof fetch = fetch, now: () => Date = s
     [
       abortChatStream,
       fetchFn,
+      mutate,
       now,
       setMessages,
       setStreamingContent,

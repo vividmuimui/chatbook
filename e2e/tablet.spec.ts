@@ -51,7 +51,7 @@ async function openTestBook(page: Page): Promise<string> {
     selections: { id: string }[];
     readingState: {
       page: number;
-      bookChat: boolean | null;
+      sessionId: string | null;
       outlineOpen: boolean | null;
       chatPanelOpen: boolean | null;
     } | null;
@@ -59,19 +59,27 @@ async function openTestBook(page: Page): Promise<string> {
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
   }
+  // Chats about the book are the book's as well, and the chat list a test
+  // reads would otherwise hold every session an earlier one started.
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; id: string }[];
+  };
+  for (const chat of chats) {
+    if (chat.kind === "book") await page.request.delete(`/api/pdf/${pdfId}/sessions/${chat.id}`);
+  }
 
   // The three specs share this book, and the reader's place — both panels
   // included — is kept on the server now: uploading goes through the shelf,
   // which names no page, so an earlier test's place would be where this one
   // opens.
   await page.request.put(`/api/pdf/${pdfId}/reading-state`, {
-    // `bookChat` is spelled out because leaving it out keeps whatever was
-    // stored: a conversation about the book itself, left open by an earlier
-    // test, would otherwise be the one this one opens on.
+    // `sessionId` is spelled out because leaving it out keeps whatever was
+    // stored: a chat about the book, left open by an earlier test, would
+    // otherwise be the one this one opens on.
     data: {
       page: 1,
       selectionId: null,
-      bookChat: false,
+      sessionId: null,
       outlineOpen: true,
       chatPanelOpen: true,
     },
@@ -88,10 +96,15 @@ async function openTestBook(page: Page): Promise<string> {
   const resumedElsewhere =
     readingState !== null &&
     (readingState.page !== 1 ||
-      readingState.bookChat === true ||
+      readingState.sessionId !== null ||
       readingState.outlineOpen === false ||
       readingState.chatPanelOpen === false);
-  if (selections.length > 0 || resumedElsewhere || pageDirection !== "ltr") {
+  if (
+    selections.length > 0 ||
+    chats.some((chat) => chat.kind === "book") ||
+    resumedElsewhere ||
+    pageDirection !== "ltr"
+  ) {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // The page counter arrives with the book, but a tap or a drag needs the page

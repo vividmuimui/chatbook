@@ -19,9 +19,11 @@ export const pdfs = sqliteTable("pdfs", {
   // page.
   lastReadPage: integer("last_read_page"),
   lastReadSelectionId: text("last_read_selection_id"),
-  // Whether that conversation was the book's own. At most one of the two is
-  // set; both null is a place with no conversation open on it.
-  lastReadBookChat: integer("last_read_book_chat", { mode: "boolean" }),
+  // The session of the book's own that was open instead (0013). At most one of
+  // the two is set; both null is a place with no conversation open on it. The
+  // column it replaced, `last_read_book_chat`, is still in the table and read
+  // by nothing.
+  lastReadSessionId: text("last_read_session_id"),
   lastReadOutlineOpen: integer("last_read_outline_open", { mode: "boolean" }),
   lastReadChatPanelOpen: integer("last_read_chat_panel_open", { mode: "boolean" }),
   // Dropbox's id for the file this book is ("id:..."). Null for books that live
@@ -68,12 +70,33 @@ export const selections = sqliteTable("selections", {
   createdAt: text("created_at").notNull(),
 });
 
+/**
+ * One of the book's own conversations (0013). A highlight's conversation needs
+ * no record like this — the highlight is its record — but a book can hold any
+ * number of these.
+ */
+export const chatSessions = sqliteTable("chat_sessions", {
+  id: text("id").primaryKey(),
+  pdfId: text("pdf_id")
+    .notNull()
+    .references(() => pdfs.id, { onDelete: "cascade" }),
+  // What the reader named it; null calls it by its first question.
+  title: text("title"),
+  // The pages its last question was aimed at, as JSON (PageRange[]).
+  scope: text("scope"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const chatMessages = sqliteTable("chat_messages", {
   id: text("id").primaryKey(),
-  // Null for the book's own conversation, which hangs off no passage. A
+  // Null for the book's own conversations, which hang off no passage. A
   // highlight's conversation still goes with the highlight: deleting it takes
   // the messages, while the book's own outlive every highlight in it.
   selectionId: text("selection_id").references(() => selections.id, { onDelete: "cascade" }),
+  // The session of the book's own the message is in. Set exactly when
+  // `selectionId` is not; deleting the session takes its messages.
+  sessionId: text("session_id").references(() => chatSessions.id, { onDelete: "cascade" }),
   // Which book the message belongs to. Carried on every row rather than read
   // through the highlight, so a conversation about the book itself has one
   // place to hang from and deleting the book takes all of them.

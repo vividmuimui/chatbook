@@ -3,11 +3,13 @@ import { createStore } from "jotai";
 import {
   abortChatStreamAtom,
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatAbortControllerAtom,
   chatFaceAtom,
   isStreamingAtom,
   selectionDeletedAtom,
+  sessionDeletedAtom,
+  sessionStartedAtom,
   streamingContentAtom,
   type ActiveSelection,
 } from "./chatAtom";
@@ -53,15 +55,19 @@ describe("abortChatStreamAtom", () => {
 });
 
 describe("chatFaceAtom", () => {
-  it("shows the list while neither a highlight nor the book's own chat is open", () => {
+  it("shows the list while neither a highlight nor a chat about the book is open", () => {
     const store = createStore();
 
     expect(store.get(chatFaceAtom)).toBe("list");
   });
 
-  it("shows the book's own conversation once it is the one that was opened", () => {
+  it("shows a chat about the book once it is the one that was opened, saved or not", () => {
     const store = createStore();
-    store.set(bookChatOpenAtom, true);
+    store.set(activeSessionAtom, { id: null });
+
+    expect(store.get(chatFaceAtom)).toBe("book");
+
+    store.set(activeSessionAtom, { id: "01JSESSION" });
 
     expect(store.get(chatFaceAtom)).toBe("book");
   });
@@ -69,7 +75,7 @@ describe("chatFaceAtom", () => {
   it("shows the highlight's conversation over the book's when both are open", () => {
     const store = createStore();
     store.set(activeSelectionAtom, OPEN_CHAT);
-    store.set(bookChatOpenAtom, true);
+    store.set(activeSessionAtom, { id: "01JSESSION" });
 
     expect(store.get(chatFaceAtom)).toBe("highlight");
   });
@@ -108,6 +114,49 @@ describe("selectionDeletedAtom", () => {
     store.set(selectionDeletedAtom, OPEN_CHAT.id);
 
     expect(store.get(activeSelectionAtom)).toBeNull();
+    expect(controller.signal.aborted).toBe(true);
+  });
+});
+
+describe("sessionStartedAtom", () => {
+  it("names the new chat the reader is still in once the server has made it", () => {
+    const store = createStore();
+    store.set(activeSessionAtom, { id: null });
+
+    expect(store.set(sessionStartedAtom, "01JNEW")).toBe(true);
+
+    expect(store.get(activeSessionAtom)).toStrictEqual({ id: "01JNEW" });
+  });
+
+  it("leaves alone a reader who has moved on while the chat was being made", () => {
+    // They went back to the list, or opened another chat: the question that
+    // made this session was for a chat no longer on screen.
+    const store = createStore();
+    store.set(activeSessionAtom, { id: "01JOTHER" });
+
+    expect(store.set(sessionStartedAtom, "01JNEW")).toBe(false);
+    expect(store.get(activeSessionAtom)).toStrictEqual({ id: "01JOTHER" });
+
+    store.set(activeSessionAtom, null);
+    expect(store.set(sessionStartedAtom, "01JNEW")).toBe(false);
+    expect(store.get(activeSessionAtom)).toBeNull();
+  });
+});
+
+describe("sessionDeletedAtom", () => {
+  it("leaves the chat that has just been deleted, and no other", () => {
+    const store = createStore();
+    const controller = new AbortController();
+    store.set(activeSessionAtom, { id: "01JOPEN" });
+    store.set(chatAbortControllerAtom, controller);
+    store.set(isStreamingAtom, true);
+
+    store.set(sessionDeletedAtom, "01JOTHER");
+    expect(store.get(activeSessionAtom)).toStrictEqual({ id: "01JOPEN" });
+    expect(controller.signal.aborted).toBe(false);
+
+    store.set(sessionDeletedAtom, "01JOPEN");
+    expect(store.get(activeSessionAtom)).toBeNull();
     expect(controller.signal.aborted).toBe(true);
   });
 });
