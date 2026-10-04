@@ -10,10 +10,13 @@ import {
   type SetDropboxTitles,
   type SetHidden,
 } from "./ShelfPage";
-import type { DropboxTitles, HiddenBooks } from "../../shared/schemas/shelf";
+import type { Collection, DropboxTitles, HiddenBooks } from "../../shared/schemas/shelf";
+import type { CollectionsApi } from "../lib/collectionsApi";
 import { ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import { createOcrQueue } from "../lib/ocrQueue";
+import { createImportQueue, type ImportQueue } from "../lib/importQueue";
+import { uploadedFileFor } from "../lib/uploadedFileHandoff";
 import type { ReadStoredBookByOcr, SaveOcr } from "../hooks/useBackgroundOcr";
 import type { BookDetail, BookSummary } from "../../shared/schemas/book";
 import { useSWRConfig } from "swr";
@@ -39,6 +42,59 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
   };
 }
 
+/**
+ * The reader's collections, kept and answered the way the server does: every
+ * write answers with every collection. `fail` makes the writes refuse.
+ */
+function collectionStore(initial: Collection[] = [], fail = false) {
+  let collections = initial;
+  let nextId = 1;
+  const calls: string[] = [];
+  const answer = () => okAsync({ collections });
+  const refuse = () => errAsync(new ApiError("down", "INTERNAL_ERROR", 500, "http"));
+  const api: CollectionsApi = {
+    load: async () => ({ collections }),
+    create: (name, keys = []) => {
+      calls.push(`create ${name} [${keys.join(",")}]`);
+      if (fail) return refuse();
+      collections = [...collections, collectionOf(`c${nextId++}`, name, keys)];
+      return answer();
+    },
+    rename: (id, name) => {
+      calls.push(`rename ${id} ${name}`);
+      if (fail) return refuse();
+      collections = collections.map((c) => (c.id === id ? { ...c, name } : c));
+      return answer();
+    },
+    remove: (id) => {
+      calls.push(`remove ${id}`);
+      if (fail) return refuse();
+      collections = collections.filter((c) => c.id !== id);
+      return answer();
+    },
+    setItems: (id, keys, member) => {
+      calls.push(`${member ? "add" : "take"} ${id} [${keys.join(",")}]`);
+      if (fail) return refuse();
+      collections = collections.map((c) =>
+        c.id !== id
+          ? c
+          : {
+              ...c,
+              keys: member
+                ? [...new Set([...c.keys, ...keys])]
+                : c.keys.filter((k) => !keys.includes(k)),
+            },
+      );
+      return answer();
+    },
+  };
+  return { api, calls, current: () => collections };
+}
+
+function collectionOf(id: string, name: string, keys: string[] = []): Collection {
+  return { id, name, keys, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+}
+
 function renderShelf(props: {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
@@ -54,6 +110,10 @@ function renderShelf(props: {
   setDropboxTitles?: SetDropboxTitles;
   readByOcr?: ReadStoredBookByOcr;
   saveOcr?: SaveOcr;
+  collections?: CollectionsApi;
+  importQueue?: ImportQueue;
+  /** Where the shelf is opened, `?collection=` and all. */
+  initialEntry?: string;
   /** Entries already in the cache, standing in for what the server answered before. */
   seed?: Record<string, unknown>;
 }) {
@@ -64,11 +124,13 @@ function renderShelf(props: {
     loadHidden: async (): Promise<HiddenBooks> => ({ keys: [] }),
     loadDropboxTitles: async (): Promise<DropboxTitles> => ({ titles: [] }),
     ocrQueue: createOcrQueue(),
+    collections: collectionStore().api,
+    importQueue: createImportQueue(),
     ...props,
   };
   return render(
     <SwrTestCache seed={props.seed}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[props.initialEntry ?? "/"]}>
         <Routes>
           <Route path="/" element={<ShelfPage {...withDropbox} />} />
           <Route path="/books/:pdfId" element={<ReaderStub />} />
@@ -101,6 +163,18 @@ function recordingDeleter() {
       return okAsync({ deleted: true });
     }) satisfies DeleteBook,
   };
+}
+
+/**
+ * Opens an entry's 「…」 sheet and hands back the action named — renaming,
+ * filing in collections and hiding wait there, under the entry's title.
+ */
+async function entryAction(name: string) {
+  const title = name.replace(/ (を非表示|の題名を変更|のコレクションを選ぶ)$/, "");
+  await userEvent.click(await screen.findByRole("button", { name: `${title} のその他の操作` }));
+  return within(screen.getByRole("dialog", { name: `${title} の操作` })).getByRole("button", {
+    name,
+  });
 }
 
 /** Opens the shelf's settings, where the folder and the preferred format are chosen. */
@@ -884,7 +958,7 @@ describe("ShelfPage: putting books away", () => {
       ...store,
     });
 
-    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を非表示" }));
+    await userEvent.click(await entryAction("Rust 入門 を非表示"));
 
     expect(store.calls).toStrictEqual([{ keys: ["pdf-1", "epub-1"], hidden: true }]);
     await waitFor(() =>
@@ -933,7 +1007,7 @@ describe("ShelfPage: putting books away", () => {
       setHidden: () => errAsync(new ApiError("down", "INTERNAL_ERROR", 500, "http")),
     });
 
-    await userEvent.click(await screen.findByRole("button", { name: "Rust 入門 を非表示" }));
+    await userEvent.click(await entryAction("Rust 入門 を非表示"));
 
     expect(await screen.findByText(/非表示にすることに失敗しました: down/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
@@ -1116,9 +1190,7 @@ describe("ShelfPage: renaming a book", () => {
   }
 
   async function renameTo(entryTitle: string, typed: string) {
-    await userEvent.click(
-      await screen.findByRole("button", { name: `${entryTitle} の題名を変更` }),
-    );
+    await userEvent.click(await entryAction(`${entryTitle} の題名を変更`));
     const dialog = screen.getByRole("dialog", { name: "題名の変更" });
     const box = within(dialog).getByRole("textbox", { name: "題名" });
     expect(box).toHaveValue(entryTitle);
@@ -1206,9 +1278,7 @@ describe("ShelfPage: renaming a book", () => {
     const { calls, renameBook } = recordingRenamer();
     renderShelf({ loadBooks: async () => [book()], renameBook });
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Cloudflare Workers 入門 の題名を変更" }),
-    );
+    await userEvent.click(await entryAction("Cloudflare Workers 入門 の題名を変更"));
     await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -1478,5 +1548,573 @@ describe("ShelfPage: reading a book of pictures by OCR in the background", () =>
     reading.finish("\f \f");
 
     expect(await screen.findByText("このPDFからは文字を読み取れませんでした")).toBeInTheDocument();
+  });
+});
+
+describe("ShelfPage: collections", () => {
+  afterEach(() => localStorage.clear());
+
+  const SHELF = async () => [
+    book({ id: "pdf-1", fileName: "Rust 入門.pdf", hasThumbnail: true }),
+    book({ id: "epub-1", fileName: "Rust 入門.epub", format: "epub" }),
+    book({ id: "zig", fileName: "Zig 入門.pdf" }),
+    book({ id: "go", fileName: "Go 入門.pdf" }),
+  ];
+
+  /** Switches the shelf to its collections. */
+  async function showCollections() {
+    await userEvent.click(await screen.findByRole("radio", { name: "コレクション" }));
+  }
+
+  it("puts every file of an entry in the collection ticked in its 「…」, and ticks it", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書"), collectionOf("c2", "積読")]);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await userEvent.click(await entryAction("Rust 入門 のコレクションを選ぶ"));
+    const dialog = screen.getByRole("dialog", { name: "コレクションに入れる" });
+    const box = within(dialog).getByRole("checkbox", { name: "技術書" });
+    expect(box).not.toBeChecked();
+
+    await userEvent.click(box);
+
+    expect(store.calls).toStrictEqual(["add c1 [pdf-1,epub-1]"]);
+    await waitFor(() => expect(box).toBeChecked());
+    expect(within(dialog).getByRole("checkbox", { name: "積読" })).not.toBeChecked();
+
+    // And out again
+    await userEvent.click(box);
+    expect(store.calls).toStrictEqual(["add c1 [pdf-1,epub-1]", "take c1 [pdf-1,epub-1]"]);
+    await waitFor(() => expect(box).not.toBeChecked());
+  });
+
+  it("ticks a collection that holds only one of the entry's files", async () => {
+    // The EPUB turned up after the PDF was filed; the title is still in it.
+    const store = collectionStore([collectionOf("c1", "技術書", ["pdf-1"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await userEvent.click(await entryAction("Rust 入門 のコレクションを選ぶ"));
+
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "技術書" })).toBeChecked());
+  });
+
+  it("makes a collection with the entry already in it", async () => {
+    const store = collectionStore();
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await userEvent.click(await entryAction("Zig 入門 のコレクションを選ぶ"));
+    const dialog = screen.getByRole("dialog", { name: "コレクションに入れる" });
+    expect(within(dialog).getByText("まだコレクションがありません")).toBeInTheDocument();
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "新しいコレクションの名前" }),
+      "言語",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "作成して入れる" }));
+
+    expect(store.calls).toStrictEqual(["create 言語 [zig]"]);
+    expect(await within(dialog).findByRole("checkbox", { name: "言語" })).toBeChecked();
+  });
+
+  it("says why in the dialog when the server refuses, and leaves the box as it was", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書")], true);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await userEvent.click(await entryAction("Rust 入門 のコレクションを選ぶ"));
+    const box = screen.getByRole("checkbox", { name: "技術書" });
+    await userEvent.click(box);
+
+    expect(await screen.findByText("コレクションを変更できませんでした: down")).toBeInTheDocument();
+    expect(box).not.toBeChecked();
+    expect(screen.getByRole("dialog", { name: "コレクションに入れる" })).toBeInTheDocument();
+  });
+
+  it("shows a tile per collection with how many books it holds, and 未分類 for the rest", async () => {
+    const store = collectionStore([
+      collectionOf("c1", "積読", ["zig"]),
+      collectionOf("c2", "技術書", ["epub-1", "zig"]),
+    ]);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await showCollections();
+
+    const tiles = within(await screen.findByRole("list", { name: "コレクション" }));
+    // By name, the way a reader looks one up
+    expect(
+      tiles.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent),
+    ).toStrictEqual([
+      "コレクション「技術書」を開く",
+      "コレクション「積読」を開く",
+      "未分類の本を開く",
+      "＋新しいコレクション",
+    ]);
+    expect(tiles.getByRole("button", { name: "コレクション「技術書」を開く" })).toHaveTextContent(
+      "2 冊",
+    );
+    expect(tiles.getByRole("button", { name: "未分類の本を開く" })).toHaveTextContent("1 冊");
+    // The books are behind the tiles, not beside them
+    expect(screen.queryByRole("button", { name: "Go 入門 を開く" })).not.toBeInTheDocument();
+  });
+
+  it("stacks the covers of what a collection holds on its tile", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["pdf-1", "zig"])]);
+    const { container } = renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await showCollections();
+    await screen.findByRole("button", { name: "コレクション「技術書」を開く" });
+
+    expect(
+      [...container.querySelectorAll("img")].map((img) => img.getAttribute("src")),
+    ).toStrictEqual(["/api/pdf/pdf-1/thumbnail"]);
+  });
+
+  it("lists only a collection's books once its tile is opened, and goes back to the tiles", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["epub-1", "zig"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await showCollections();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "コレクション「技術書」を開く" }),
+    );
+
+    expect(screen.getByRole("heading", { name: /技術書/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go 入門 を開く" })).not.toBeInTheDocument();
+    // The shelf's own tools work inside it
+    await userEvent.type(screen.getByRole("searchbox", { name: "本棚を検索" }), "zig");
+    expect(screen.queryByRole("button", { name: "Rust 入門 を開く" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本を追加" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "← コレクション" }));
+    expect(
+      screen.getByRole("button", { name: "コレクション「技術書」を開く" }),
+    ).toBeInTheDocument();
+  });
+
+  it("lists what is in no collection under 未分類", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["pdf-1", "zig"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await showCollections();
+    await userEvent.click(await screen.findByRole("button", { name: "未分類の本を開く" }));
+
+    expect(screen.getByRole("button", { name: "Go 入門 を開く" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Zig 入門 を開く" })).not.toBeInTheDocument();
+    // 未分類 is not the reader's to rename or delete
+    expect(
+      screen.queryByRole("button", { name: "コレクションの名前を変更" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a hidden book out of its collection", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["zig", "go"])]);
+    renderShelf({
+      loadBooks: SHELF,
+      collections: store.api,
+      loadHidden: async () => ({ keys: ["go"] }),
+    });
+
+    await showCollections();
+    expect(
+      await screen.findByRole("button", { name: "コレクション「技術書」を開く" }),
+    ).toHaveTextContent("1 冊");
+    await userEvent.click(screen.getByRole("button", { name: "コレクション「技術書」を開く" }));
+
+    expect(screen.getByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go 入門 を開く" })).not.toBeInTheDocument();
+  });
+
+  it("opens straight into the collection the address names", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["zig"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api, initialEntry: "/?collection=c1" });
+
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go 入門 を開く" })).not.toBeInTheDocument();
+  });
+
+  it("comes back to the collections on the next visit", async () => {
+    localStorage.setItem("chatbook:shelf-view", JSON.stringify("collections"));
+    renderShelf({ loadBooks: SHELF, collections: collectionStore().api });
+
+    expect(await screen.findByRole("button", { name: "未分類の本を開く" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "コレクション" })).toBeChecked();
+
+    await userEvent.click(screen.getByRole("radio", { name: "一覧" }));
+    expect(screen.getByRole("button", { name: "Go 入門 を開く" })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("chatbook:shelf-view")!)).toBe("all");
+  });
+
+  it("makes a collection from the tile at the end", async () => {
+    const store = collectionStore();
+    renderShelf({ loadBooks: SHELF, collections: store.api });
+
+    await showCollections();
+    await userEvent.click(await screen.findByRole("button", { name: "新しいコレクション" }));
+    const dialog = screen.getByRole("dialog", { name: "新しいコレクション" });
+    const save = within(dialog).getByRole("button", { name: "作成" });
+    // Nothing to keep a collection under yet
+    expect(save).toBeDisabled();
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "コレクションの名前" }),
+      "積読",
+    );
+    await userEvent.click(save);
+
+    expect(store.calls).toStrictEqual(["create 積読 []"]);
+    expect(
+      await screen.findByRole("button", { name: "コレクション「積読」を開く" }),
+    ).toHaveTextContent("0 冊");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and says why when the name is refused", async () => {
+    renderShelf({ loadBooks: SHELF, collections: collectionStore([], true).api });
+
+    await showCollections();
+    await userEvent.click(await screen.findByRole("button", { name: "新しいコレクション" }));
+    const dialog = screen.getByRole("dialog", { name: "新しいコレクション" });
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "コレクションの名前" }),
+      "積読",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "作成" }));
+
+    expect(
+      await within(dialog).findByText("コレクションを保存できませんでした: down"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("textbox", { name: "コレクションの名前" })).toHaveValue("積読");
+  });
+
+  it("renames the collection it is in", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["zig"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api, initialEntry: "/?collection=c1" });
+
+    await userEvent.click(await screen.findByRole("button", { name: "コレクションの名前を変更" }));
+    const box = screen.getByRole("textbox", { name: "コレクションの名前" });
+    expect(box).toHaveValue("技術書");
+    await userEvent.clear(box);
+    await userEvent.type(box, "プログラミング");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(store.calls).toStrictEqual(["rename c1 プログラミング"]);
+    expect(await screen.findByRole("heading", { name: /プログラミング/ })).toBeInTheDocument();
+  });
+
+  it("deletes the collection it is in once the reader agrees, saying the books stay", async () => {
+    const store = collectionStore([collectionOf("c1", "技術書", ["zig"])]);
+    renderShelf({ loadBooks: SHELF, collections: store.api, initialEntry: "/?collection=c1" });
+
+    await userEvent.click(await screen.findByRole("button", { name: "コレクションの削除" }));
+    expect(
+      screen.getByText(
+        "コレクション「技術書」を削除しますか？中の本は削除されず、本棚に残ります。",
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "削除する" }));
+
+    expect(store.calls).toStrictEqual(["remove c1"]);
+    // Back at the whole shelf, where the book still is
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go 入門 を開く" })).toBeInTheDocument();
+  });
+
+  it("says why when a collection could not be deleted", async () => {
+    renderShelf({
+      loadBooks: SHELF,
+      collections: collectionStore([collectionOf("c1", "技術書", ["zig"])], true).api,
+      initialEntry: "/?collection=c1",
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "コレクションの削除" }));
+    await userEvent.click(screen.getByRole("button", { name: "削除する" }));
+
+    expect(await screen.findByText("コレクションを削除できませんでした: down")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /技術書/ })).toBeInTheDocument();
+  });
+
+  it("says the collections could not be read without taking the shelf down", async () => {
+    renderShelf({
+      loadBooks: SHELF,
+      collections: {
+        ...collectionStore().api,
+        load: async () => {
+          throw new Error("D1 is down");
+        },
+      },
+    });
+
+    expect(
+      await screen.findByText("コレクションを読めませんでした: D1 is down"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go 入門 を開く" })).toBeInTheDocument();
+  });
+});
+
+describe("ShelfPage: bringing the whole Dropbox folder in", () => {
+  afterEach(() => localStorage.clear());
+
+  const ZIG = DROPBOX_BOOK;
+  const ODIN: DropboxFile = {
+    dropboxId: "id:odin",
+    name: "Odin 入門.pdf",
+    path: "/lang/Odin 入門.pdf",
+    size: 1000,
+  };
+  const NIM: DropboxFile = {
+    dropboxId: "id:nim",
+    name: "Nim 入門.pdf",
+    path: "/Nim 入門.pdf",
+    size: 1,
+  };
+
+  /**
+   * A folder and a shelf that move together the way the server's do: a file
+   * stored through the upload becomes a book on the shelf and leaves the folder.
+   * The upload answers on its own; the downloads are stepped through by hand.
+   */
+  function folderAndShelf(files: DropboxFile[], options: { pictures?: boolean } = {}) {
+    let waiting = [...files];
+    const books: BookSummary[] = [];
+    const asked: string[] = [];
+    const sentIds: string[] = [];
+    const pending = new Map<
+      string,
+      { resolve: (file: File) => void; reject: (failure: ApiError) => void }
+    >();
+
+    const download: DownloadDropboxFile = (file, onProgress, signal) => {
+      asked.push(file.dropboxId);
+      onProgress(0.3);
+      return ResultAsync.fromPromise(
+        new Promise<File>((resolve, reject) => {
+          pending.set(file.dropboxId, { resolve, reject });
+          // As fetch does with the signal it is handed
+          signal?.addEventListener("abort", () =>
+            reject(new ApiError("aborted", "ABORTED", 0, "network")),
+          );
+        }),
+        (failure) => failure as ApiError,
+      );
+    };
+
+    const createUploadRequest = () => {
+      const sending = fakeUpload();
+      const send = (sending.request as unknown as { send: (body: unknown) => void }).send;
+      Object.assign(sending.request, {
+        send: (body: FormData) => {
+          send(body);
+          const dropboxId = body.get("dropboxId") as string;
+          sentIds.push(dropboxId);
+          const file = waiting.find((f) => f.dropboxId === dropboxId)!;
+          setTimeout(() => {
+            waiting = waiting.filter((f) => f.dropboxId !== dropboxId);
+            books.push(book({ id: `book-${dropboxId}`, fileName: file.name, inDropbox: true }));
+            sending.uploaded(1, 1);
+            sending.answers({
+              ...STORED_BOOK,
+              id: `book-${dropboxId}`,
+              fileName: file.name,
+              ...(options.pictures ? { fullText: "", ocrPending: true } : {}),
+            });
+          }, 0);
+        },
+      });
+      return sending.request;
+    };
+
+    return {
+      asked,
+      sentIds,
+      props: {
+        loadBooks: async () => [...books],
+        loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({
+          state: "ready",
+          folder: "/Books",
+          files: [...waiting],
+        }),
+        downloadDropbox: download,
+        extract: options.pictures
+          ? async (file: File) => ({ ...(await readsFine(file)), fullText: "", needsOcr: true })
+          : readsFine,
+        createUploadRequest,
+      },
+      finishes: (dropboxId: string) =>
+        act(() =>
+          pending
+            .get(dropboxId)!
+            .resolve(new File(["%PDF-1.7"], `${dropboxId}.pdf`, { type: "application/pdf" })),
+        ),
+      fails: (dropboxId: string, message: string) =>
+        act(() =>
+          pending.get(dropboxId)!.reject(new ApiError(message, "DROPBOX_ERROR", 502, "http")),
+        ),
+    };
+  }
+
+  /** Presses the button and agrees to what the dialog asks. */
+  async function importEverything(count: number) {
+    await userEvent.click(
+      await screen.findByRole("button", { name: `未読み込みをすべて取り込む (${count})` }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "取り込む" }));
+  }
+
+  const progress = () => within(screen.getByRole("region", { name: "Dropboxからの取り込み" }));
+
+  it("offers every unread file but those put away, and asks before it starts", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN, NIM]);
+    renderShelf({ ...shelf.props, loadHidden: async () => ({ keys: ["id:nim"] }) });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "未読み込みをすべて取り込む (2)" }),
+    );
+    const dialog = screen.getByRole("alertdialog", { name: "未読み込みの本の取り込み" });
+    expect(dialog).toHaveTextContent("Dropboxの未読み込みの本 2 冊を、1 冊ずつ取り込みます");
+    expect(dialog).toHaveTextContent("時間と通信量がかかります");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    expect(shelf.asked).toStrictEqual([]);
+  });
+
+  it("brings the files in one at a time, says how far it has got, and stays on the shelf", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+
+    await importEverything(2);
+
+    // One at a time: the second waits for the first
+    expect(shelf.asked).toStrictEqual(["id:zig"]);
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 0/2");
+    expect(await screen.findByText("Dropboxから取得中 30%")).toBeInTheDocument();
+    expect(screen.getByText("取り込み待ち")).toBeInTheDocument();
+    // Nothing more to offer while it runs
+    expect(screen.queryByRole("button", { name: /未読み込みをすべて取り込む/ })).toBeNull();
+
+    shelf.finishes("id:zig");
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]));
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 1/2");
+    // The server took the bytes from Dropbox: only the id went up
+    expect(shelf.sentIds).toStrictEqual(["id:zig"]);
+    // A book now, on the shelf, and its bytes were not kept for a viewer
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(uploadedFileFor("book-id:zig")).toBeNull();
+
+    shelf.finishes("id:odin");
+    expect(await screen.findByRole("button", { name: "Odin 入門 を開く" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+    expect(screen.queryByText(/^リーダー:/)).not.toBeInTheDocument();
+  });
+
+  it("goes on past a file that failed, says why on its card, and tries it again", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    shelf.fails("id:zig", "Dropbox is down");
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]));
+    expect(screen.getByText("取り込めませんでした: Dropbox is down")).toBeInTheDocument();
+    shelf.finishes("id:odin");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("1 冊を取り込めませんでした");
+
+    await userEvent.click(screen.getByRole("button", { name: "Zig 入門 の取り込みを再試行" }));
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin", "id:zig"]));
+    shelf.finishes("id:zig");
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+  });
+
+  it("tries every failed file again from the notice above the shelf", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+    shelf.fails("id:zig", "no");
+    await waitFor(() => expect(shelf.asked).toHaveLength(2));
+    shelf.fails("id:odin", "no");
+
+    await userEvent.click(await screen.findByRole("button", { name: "失敗した本を再試行" }));
+
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin", "id:zig"]));
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 0/2");
+  });
+
+  it("stops on 中止, leaving what was still waiting in the folder", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "取り込みを中止" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+    expect(shelf.asked).toStrictEqual(["id:zig"]);
+    expect(
+      screen.getByRole("button", { name: "Odin 入門 を Dropbox から開く" }),
+    ).toBeInTheDocument();
+    // Offered again in full
+    expect(
+      screen.getByRole("button", { name: "未読み込みをすべて取り込む (2)" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hands a book of pictures to OCR without its bytes, to be fetched when its turn comes", async () => {
+    const shelf = folderAndShelf([ZIG], { pictures: true });
+    const asked: (File | null)[] = [];
+    renderShelf({
+      ...shelf.props,
+      readByOcr: (_pdfId, file) => {
+        asked.push(file);
+        return new Promise(() => {});
+      },
+    });
+    await importEverything(1);
+
+    shelf.finishes("id:zig");
+
+    await waitFor(() => expect(asked).toStrictEqual([null]));
+  });
+
+  it("brings a waiting file in at once when the reader opens it, and leaves it out of the queue", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Odin 入門 を Dropbox から開く" }));
+    expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]);
+    shelf.finishes("id:odin");
+
+    expect(await screen.findByText("リーダー: book-id:odin")).toBeInTheDocument();
+  });
+
+  it("opens the file the import is bringing in once it is a book, rather than fetching it twice", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Zig 入門 を Dropbox から開く" }));
+    expect(
+      screen.getByText("まとめて取り込んでいる途中です。終わりしだい開きます..."),
+    ).toBeInTheDocument();
+    shelf.finishes("id:zig");
+
+    expect(await screen.findByText("リーダー: book-id:zig")).toBeInTheDocument();
+    expect(shelf.asked.filter((id) => id === "id:zig")).toHaveLength(1);
+  });
+
+  it("offers only the unread files of the collection the reader is in", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf({
+      ...shelf.props,
+      collections: collectionStore([collectionOf("c1", "積読", ["id:odin"])]).api,
+      initialEntry: "/?collection=c1",
+    });
+
+    await importEverything(1);
+
+    expect(shelf.asked).toStrictEqual(["id:odin"]);
   });
 });

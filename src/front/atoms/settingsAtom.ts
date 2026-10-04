@@ -90,6 +90,20 @@ export const shelfLayoutAtom = atomWithStorage<ShelfLayout>(
   { getOnInit: true },
 );
 
+/** What the shelf shows first: every entry, or the reader's collections. */
+export type ShelfView = "all" | "collections";
+
+/**
+ * Persisted like the layout: a reader who keeps their books in collections
+ * wants to come back to the collections, not to the whole shelf.
+ */
+export const shelfViewAtom = atomWithStorage<ShelfView>(
+  "chatbook:shelf-view",
+  "all",
+  validatedStorage(z.enum(["all", "collections"])),
+  { getOnInit: true },
+);
+
 /**
  * Which format the shelf opens a title in when it has both a PDF and an EPUB.
  *

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const pdfs = sqliteTable("pdfs", {
   id: text("id").primaryKey(),
@@ -66,6 +66,35 @@ export const bookTitles = sqliteTable("book_titles", {
   key: text("key").primaryKey(),
   title: text("title").notNull(),
 });
+
+/**
+ * The reader's collections (0016). What is in each is `collectionItems`; the
+ * books themselves are not owned by one, and deleting it leaves them alone.
+ */
+export const collections = sqliteTable("collections", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/**
+ * What is in a collection, by the keys `hidden_books` uses: a book's id, or a
+ * Dropbox id for a file not brought in yet (no foreign key, like there). The
+ * import moves a file's rows onto the book it becomes; deleting the book moves
+ * them back to its file, or drops them when it has none.
+ */
+export const collectionItems = sqliteTable(
+  "collection_items",
+  {
+    collectionId: text("collection_id")
+      .notNull()
+      .references(() => collections.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    addedAt: text("added_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.collectionId, table.key] })],
+);
 
 export const selections = sqliteTable("selections", {
   id: text("id").primaryKey(),

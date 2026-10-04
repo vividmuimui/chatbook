@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { ResultAsync, err, ok } from "neverthrow";
 import { bookTitles, pdfs, selections } from "../db/schema";
+import { dropCollectionKey, moveCollectionKey } from "./collectionsService";
 import {
   bookFormatSchema,
   pageDirectionSchema,
@@ -296,6 +297,7 @@ async function storePdf(
         ...(existing.title === null && adoptedTitle !== null ? { title: adoptedTitle } : {}),
       })
       .where(eq(pdfs.id, existing.id));
+    if (dropboxId) await moveCollectionKey(db, dropboxId, existing.id);
 
     return {
       id: existing.id,
@@ -330,6 +332,10 @@ async function storePdf(
     createdAt: now,
     updatedAt: now,
   });
+  // The collections the file was put in while it waited in the folder are the
+  // book's now — like its title, they follow the file rather than staying behind
+  // under a key that no longer names anything on the shelf.
+  if (dropboxId) await moveCollectionKey(db, dropboxId, id);
 
   return {
     id,
@@ -555,6 +561,10 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
       .values({ key: pdf.dropboxId, title: pdf.title })
       .onConflictDoUpdate({ target: bookTitles.key, set: { title: pdf.title } });
   }
+  // Its collections go with it to the file when there is one — the file is back
+  // on the shelf, waiting to be brought in — and lapse otherwise.
+  if (pdf.dropboxId !== null) await moveCollectionKey(db, pdfId, pdf.dropboxId);
+  else await dropCollectionKey(db, pdfId);
   // The key the book was stored under, which carries its format's extension
   await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash), ocrObjectKey(pdf.fileHash)]);
 

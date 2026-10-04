@@ -66,4 +66,21 @@ describe("downloadDropboxFile", () => {
 
     expect(result._unsafeUnwrapErr()).toMatchObject({ kind: "network" });
   });
+
+  it("hands the request the signal it is stopped by", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      init?.signal?.throwIfAborted();
+      return new Response(streamOf("%PDF"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await downloadDropboxFile(FILE, () => {}, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/dropbox/file?id=id%3Aabc", {
+      signal: controller.signal,
+    });
+    expect(result.isErr()).toBe(true);
+  });
 });

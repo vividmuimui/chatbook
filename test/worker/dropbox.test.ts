@@ -305,6 +305,37 @@ describe("POST /api/pdf/open with a Dropbox file", () => {
     expect(after.titles).toContainEqual({ key: file.id, title: "詳解 Rust" });
   });
 
+  it("carries the collections the file was put in onto the book, and back when it is deleted", async () => {
+    const file = dropbox.add("/books/Collected.pdf", uniquePdfBytes("collected-import"));
+    await chooseFolder("/books");
+    const collectionsApi = (path: string, method: string, body?: unknown) =>
+      apiFetch(`https://example.com/api/shelf/collections${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    const keysOf = async (name: string) => {
+      const { collections } = (await (await collectionsApi("", "GET")).json()) as {
+        collections: { name: string; keys: string[] }[];
+      };
+      return collections.find((c) => c.name === name)?.keys;
+    };
+    await collectionsApi("", "POST", { name: "取り込み前に入れた", keys: [file.id] });
+    // A collection holding the file and, already, something else
+    await collectionsApi("", "POST", { name: "もう一つ", keys: ["book-other", file.id] });
+
+    const book = (await (await importFromDropbox(file.id)).json()) as { id: string };
+
+    // Moved, not copied: the file's key is a book now
+    expect(await keysOf("取り込み前に入れた")).toStrictEqual([book.id]);
+    expect(await keysOf("もう一つ")).toStrictEqual(["book-other", book.id]);
+
+    // The file goes back to waiting in the folder, still in its collections
+    await apiFetch(`https://example.com/api/pdf/${book.id}`, { method: "DELETE" });
+    expect(await keysOf("取り込み前に入れた")).toStrictEqual([file.id]);
+    expect(await keysOf("もう一つ")).toStrictEqual(["book-other", file.id]);
+  });
+
   it("refuses a file outside the folder", async () => {
     const outside = dropbox.add("/other/Outside.pdf", uniquePdfBytes("outside-import"));
     await chooseFolder("/books");

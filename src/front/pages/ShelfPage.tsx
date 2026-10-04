@@ -1,23 +1,43 @@
 import { useState, useCallback, useId, useMemo, useRef } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { useAtom, useAtomValue } from "jotai";
 import useSWR, { useSWRConfig } from "swr";
 import { ResultAsync, errAsync, okAsync } from "neverthrow";
 import { BookTitleDialog } from "../components/BookTitleDialog";
+import { CollectionNameDialog } from "../components/CollectionNameDialog";
+import { CollectionPickerDialog } from "../components/CollectionPickerDialog";
+import {
+  CollectionHeader,
+  CollectionTiles,
+  UNFILED,
+  type CollectionTile,
+} from "../components/CollectionTiles";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { EntryActionsDialog } from "../components/EntryActionsDialog";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
-import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
+import { preferredFormatAtom, shelfLayoutAtom, shelfViewAtom } from "../atoms/settingsAtom";
 import { ShelfSettingsMenu } from "../components/ShelfSettingsMenu";
 import { bookKey } from "../hooks/useBook";
 import { useOpenPdfBook, type StoredBook } from "../hooks/useOpenPdfBook";
+import { useDropboxImport, type DropboxImport } from "../hooks/useDropboxImport";
+import type { ImportJob, ImportQueue } from "../lib/importQueue";
 import { bookTitle } from "../lib/bookTitle";
+import { COLLECTIONS_KEY, collectionsApi, type CollectionsApi } from "../lib/collectionsApi";
+import {
+  collectionsOf,
+  entriesOf,
+  filesToImport,
+  sortCollections,
+  tileCovers,
+  unfiledEntries,
+} from "../lib/shelfCollections";
 import { pickDroppedBook } from "../lib/droppedBook";
 import { downloadDropboxFile, type DownloadDropboxFile } from "../lib/dropboxDownload";
 import { fetcher, resultFetcher, type ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import type { OcrQueue } from "../lib/ocrQueue";
 import { ocrRunning, ocrStopped, ocrWording } from "../lib/ocrWording";
-import { SHELF_KEY } from "../lib/shelfKey";
+import { DROPBOX_KEY, SHELF_KEY, TITLES_KEY } from "../lib/shelfKey";
 import {
   useBackgroundOcr,
   type BackgroundOcr,
@@ -45,6 +65,7 @@ import {
 import {
   dropboxTitlesSchema,
   hiddenBooksSchema,
+  type Collection,
   type DropboxTitles,
   type HiddenBooks,
   type SetDropboxTitlesRequest,
@@ -75,12 +96,6 @@ const requestRename: RenameBook = (id, title) =>
     body: JSON.stringify({ title } satisfies RenameBookRequest),
   });
 
-/**
- * Cache key of the Dropbox folder's books that are not on the shelf yet. Read
- * apart from the shelf so the books already on it never wait for Dropbox.
- */
-const DROPBOX_KEY = "/api/dropbox/files";
-
 const fetchDropboxFolder = () => fetcher(DROPBOX_KEY, dropboxFolderListingSchema);
 
 const requestFolderSave: SaveDropboxFolder = (folder) =>
@@ -104,9 +119,6 @@ const requestHidden: SetHidden = (keys, hidden) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ keys, hidden }),
   });
-
-/** Cache key of the titles the reader gave Dropbox files not brought in yet. */
-const TITLES_KEY = "/api/shelf/titles";
 
 const fetchDropboxTitles = () => fetcher(TITLES_KEY, dropboxTitlesSchema);
 
@@ -145,6 +157,10 @@ interface ShelfPageProps {
   readByOcr?: ReadStoredBookByOcr;
   saveOcr?: SaveOcr;
   ocrQueue?: OcrQueue;
+  /** The collections' reads and writes, as one so a test stands in for them together. */
+  collections?: CollectionsApi;
+  /** Injectable so a test has a queue of its own for the import of the whole folder. */
+  importQueue?: ImportQueue;
 }
 
 /**
@@ -158,6 +174,8 @@ interface ShelfPageProps {
  * book's own entry (`OcrNotice`).
  */
 type Importing =
+  /** Waiting for the import of the whole folder, which is bringing this very file in. */
+  | { phase: "queued" }
   | { phase: "downloading"; ratio: number }
   | { phase: "reading" }
   | { phase: "uploading"; ratio: number }
@@ -166,6 +184,8 @@ type Importing =
 /** What the reader is told while a book is on its way in. */
 function importWording(importing: Importing): string {
   switch (importing.phase) {
+    case "queued":
+      return "まとめて取り込んでいる途中です。終わりしだい開きます...";
     case "downloading":
       return `Dropboxから取得中 ${Math.round(importing.ratio * 100)}%`;
     case "reading":
@@ -178,6 +198,12 @@ function importWording(importing: Importing): string {
 }
 
 const FORMAT_LABEL: Record<BookFormat, string> = { pdf: "PDF", epub: "EPUB" };
+
+/** The shelf's two views, as the header's switch names them. */
+const VIEWS = [
+  ["all", "一覧"],
+  ["collections", "コレクション"],
+] as const;
 
 /**
  * How long a book is, in what it is made of: an EPUB has no pages of its own,
@@ -344,36 +370,113 @@ function OcrNotice({ group, ocr }: { group: ShelfGroup; ocr: BackgroundOcr }) {
   );
 }
 
-interface EntryActions {
-  ocr: BackgroundOcr;
-  onOpen: (member: ShelfMember) => void;
-  onHide: (group: ShelfGroup) => void;
-  onDelete: (books: BookSummary[]) => void;
-  onRename: (group: ShelfGroup) => void;
+/** What a Dropbox file's card says while the import of the whole folder has it. */
+function importJobWording(job: ImportJob): string {
+  switch (job.phase) {
+    case "waiting":
+      return "取り込み待ち";
+    case "downloading":
+      return `Dropboxから取得中 ${Math.round(job.ratio * 100)}%`;
+    case "reading":
+      return "本を読み取り中...";
+    case "storing":
+      return "保存中...";
+    case "failed":
+      return `取り込めませんでした: ${job.reason}`;
+  }
 }
 
 /**
- * The buttons of an entry that are not "open". Hiding and renaming are always
- * there — a file waiting in Dropbox keeps the title the reader gives it apart
- * from its name, which is the file system's and is left alone. Deleting only
- * where the entry holds a book: the Dropbox file is not ours to delete.
+ * Where an entry's Dropbox files stand in the import of the whole folder, with
+ * the way to try one that failed again. Nothing for an entry the import does
+ * not hold. Out of the entry's open button, like `OcrNotice`.
+ */
+function ImportNotice({
+  group,
+  bulk,
+  onRetry,
+}: {
+  group: ShelfGroup;
+  bulk: DropboxImport;
+  onRetry: (file: DropboxFile) => void;
+}) {
+  const held = group.members.flatMap((m) => {
+    const job = m.kind === "dropbox" ? bulk.jobs.get(m.key) : undefined;
+    return m.kind === "dropbox" && job ? [{ file: m.file, format: m.format, job }] : [];
+  });
+  if (held.length === 0) return null;
+
+  return (
+    <div className="mt-1 flex flex-col gap-1">
+      {held.map(({ file, format, job }) => (
+        <div key={file.dropboxId} className="text-xs text-gray-600">
+          <p role="status" className={`truncate ${job.phase === "failed" ? "text-red-600" : ""}`}>
+            {held.length > 1 && `${FORMAT_LABEL[format]}: `}
+            {importJobWording(job)}
+          </p>
+          {job.phase === "downloading" && (
+            <span
+              aria-hidden="true"
+              className="mt-0.5 block h-1 overflow-hidden rounded-full bg-sky-100"
+            >
+              <span
+                className="block h-full rounded-full bg-sky-600"
+                style={{ width: `${Math.round(job.ratio * 100)}%` }}
+              />
+            </span>
+          )}
+          {/* Named apart from 「開く」「削除」「非表示」, which are reached for by
+              partial name. */}
+          {job.phase === "failed" && (
+            <button
+              type="button"
+              aria-label={`${group.title} の取り込みを再試行`}
+              onClick={() => onRetry(file)}
+              className="mt-0.5 rounded border border-sky-300 bg-white px-1.5 py-0.5 text-[11px] text-sky-700 cursor-pointer hover:bg-sky-50"
+            >
+              再試行
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface EntryActions {
+  ocr: BackgroundOcr;
+  bulk: DropboxImport;
+  onRetryImport: (file: DropboxFile) => void;
+  onOpen: (member: ShelfMember) => void;
+  /** Opens the sheet of what else can be done to the entry (`EntryActionsDialog`). */
+  onMore: (group: ShelfGroup) => void;
+  onDelete: (books: BookSummary[]) => void;
+}
+
+/**
+ * The buttons of an entry that are not "open": 「…」, behind which renaming,
+ * filing in collections and hiding wait — there for every entry, a file waiting
+ * in Dropbox included — and ×. Deleting only where the entry holds a book: the
+ * Dropbox file is not ours to delete. It stays out of the sheet, where nothing
+ * else is a thing that cannot be taken back.
+ *
+ * Two buttons rather than one per action: on a phone the card is half the
+ * screen wide, and the four would not fit across its cover a thumb wide each.
  */
 function EntryButtons({
   group,
-  onHide,
+  onMore,
   onDelete,
-  onRename,
   className,
   buttonClassName,
-  hideClassName,
+  moreClassName,
 }: {
   group: ShelfGroup;
-  onHide: EntryActions["onHide"];
+  onMore: EntryActions["onMore"];
   onDelete: EntryActions["onDelete"];
-  onRename: EntryActions["onRename"];
   className: string;
   buttonClassName: string;
-  hideClassName: string;
+  moreClassName: string;
 }) {
   const books = booksOf(group);
   return (
@@ -382,19 +485,12 @@ function EntryButtons({
           E2E reach for by partial name. */}
       <button
         type="button"
-        aria-label={`${group.title} の題名を変更`}
-        onClick={() => onRename(group)}
-        className={`${buttonClassName} ${hideClassName}`}
+        aria-label={`${group.title} のその他の操作`}
+        aria-haspopup="dialog"
+        onClick={() => onMore(group)}
+        className={`${buttonClassName} ${moreClassName}`}
       >
-        <span aria-hidden="true">✎</span>
-      </button>
-      <button
-        type="button"
-        aria-label={`${group.title} を非表示`}
-        onClick={() => onHide(group)}
-        className={`${buttonClassName} ${hideClassName}`}
-      >
-        非表示
+        <span aria-hidden="true">…</span>
       </button>
       {books.length > 0 && (
         <button
@@ -445,10 +541,11 @@ function FormatChips({ group, onOpen }: { group: ShelfGroup } & Pick<EntryAction
 function GroupCard({
   group,
   ocr,
+  bulk,
+  onRetryImport,
   onOpen,
-  onHide,
+  onMore,
   onDelete,
-  onRename,
 }: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
@@ -520,18 +617,18 @@ function GroupCard({
       </button>
       {!single && <FormatChips group={group} onOpen={onOpen} />}
       <OcrNotice group={group} ocr={ocr} />
+      <ImportNotice group={group} bulk={bulk} onRetry={onRetryImport} />
 
       {/* Kept out of the way until the pointer arrives — but only where there
           is a pointer to arrive. A finger never hovers, so on a touch-sized
           screen the buttons are simply there, at a size a thumb can hit. */}
       <EntryButtons
         group={group}
-        onHide={onHide}
+        onMore={onMore}
         onDelete={onDelete}
-        onRename={onRename}
         className="absolute right-1.5 top-1.5 flex gap-1 transition-opacity md:opacity-0 md:focus-within:opacity-100 md:group-hover/card:opacity-100 [@media(hover:none)]:opacity-100"
         buttonClassName="flex h-11 items-center justify-center rounded-full bg-black/55 px-3 text-lg leading-normal text-white cursor-pointer hover:bg-red-600 md:h-auto md:px-2 md:py-0.5 md:text-sm"
-        hideClassName="!text-xs hover:!bg-gray-700"
+        moreClassName="hover:!bg-gray-700"
       />
     </div>
   );
@@ -541,10 +638,11 @@ function GroupCard({
 function GroupRow({
   group,
   ocr,
+  bulk,
+  onRetryImport,
   onOpen,
-  onHide,
+  onMore,
   onDelete,
-  onRename,
 }: { group: ShelfGroup } & EntryActions) {
   const [coverFailed, setCoverFailed] = useState(false);
   const cover = coverOf(group);
@@ -592,16 +690,16 @@ function GroupRow({
       {!single && <FormatChips group={group} onOpen={onOpen} />}
       <div className="max-w-44 shrink-0">
         <OcrNotice group={group} ocr={ocr} />
+        <ImportNotice group={group} bulk={bulk} onRetry={onRetryImport} />
       </div>
       {/* Always shown: a row has room for it, and a finger never hovers. */}
       <EntryButtons
         group={group}
-        onHide={onHide}
+        onMore={onMore}
         onDelete={onDelete}
-        onRename={onRename}
         className="ml-1 flex shrink-0 items-center gap-1 pr-1"
         buttonClassName="flex h-11 min-w-11 items-center justify-center rounded-full text-lg text-gray-400 cursor-pointer hover:bg-red-50 hover:text-red-600"
-        hideClassName="!px-2 !text-xs hover:!bg-gray-100 hover:!text-gray-700"
+        moreClassName="hover:!bg-gray-100 hover:!text-gray-700"
       />
     </div>
   );
@@ -626,6 +724,78 @@ function HiddenRow({ group, onShow }: { group: ShelfGroup; onShow: (group: Shelf
         表示に戻す
       </button>
     </li>
+  );
+}
+
+/**
+ * How the import of the whole folder is going, above the shelf: how many of
+ * how many while it runs, with the way to stop it, and afterwards how many
+ * failed, with the way to try those again. Nothing is left once every file is in.
+ */
+function BulkImportStatus({
+  batch,
+  onCancel,
+  onRetry,
+  onDismiss,
+}: {
+  batch: NonNullable<DropboxImport["batch"]>;
+  onCancel: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  const finished = batch.succeeded + batch.failed;
+  return (
+    <section
+      aria-label="Dropboxからの取り込み"
+      className={`mb-4 rounded-md border p-3 text-sm ${
+        batch.running ? "border-sky-200 bg-sky-50 text-sky-900" : "border-red-200 bg-red-50"
+      }`}
+    >
+      {batch.running ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p role="status" className="min-w-0 flex-1">
+            Dropboxから取り込み中 {finished}/{batch.total}
+            {batch.failed > 0 && `（${batch.failed} 冊失敗）`}
+          </p>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="shrink-0 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-700 cursor-pointer hover:bg-gray-100"
+          >
+            取り込みを中止
+          </button>
+          <span
+            aria-hidden="true"
+            className="block h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
+          >
+            <span
+              className="block h-full rounded-full bg-sky-600"
+              style={{ width: `${Math.round((finished / batch.total) * 100)}%` }}
+            />
+          </span>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p role="alert" className="min-w-0 flex-1 text-red-700">
+            {batch.failed} 冊を取り込めませんでした（理由は本ごとに出ています）
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="shrink-0 rounded border border-sky-300 bg-white px-2 py-0.5 text-xs text-sky-700 cursor-pointer hover:bg-sky-50"
+          >
+            失敗した本を再試行
+          </button>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="shrink-0 rounded px-2 py-0.5 text-xs text-gray-600 cursor-pointer hover:bg-white"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -699,6 +869,8 @@ export function ShelfPage({
   readByOcr,
   saveOcr,
   ocrQueue,
+  collections: collectionsStore = collectionsApi,
+  importQueue,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { mutate: mutateKey } = useSWRConfig();
@@ -740,7 +912,55 @@ export function ShelfPage({
   // method composition included: it is a filter over what is already here, so
   // a half-converted word costs nothing and breaks nothing.
   const [query, setQuery] = useState("");
-  const visible = useMemo(() => filterShelf(shown, query), [shown, query]);
+  // The reader's collections, read apart from the shelf like the hidden books:
+  // until they arrive (or when they cannot be read) every entry is unfiled.
+  const {
+    data: collectionsData,
+    error: collectionsError,
+    mutate: mutateCollections,
+  } = useSWR(COLLECTIONS_KEY, collectionsStore.load);
+  const collections = useMemo(
+    () => sortCollections(collectionsData?.collections ?? []),
+    [collectionsData],
+  );
+  const [view, setView] = useAtom(shelfViewAtom);
+  // The collection the reader is in, in the address so the browser's back button
+  // leaves it and a reload comes back to it. 未分類 is one too (`UNFILED`).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openCollectionId = searchParams.get("collection");
+  const openCollection: Collection | typeof UNFILED | null =
+    openCollectionId === UNFILED
+      ? UNFILED
+      : (collections.find((c) => c.id === openCollectionId) ?? null);
+  // The tiles stand in for the shelf on the collections view, until one is opened.
+  const showingTiles = view === "collections" && openCollection === null;
+  // Whether the page lists entries — the whole shelf or a collection's — rather
+  // than the tiles or the hidden books.
+  const listing = !showingHidden && !showingTiles;
+  // What the shelf lists: every entry, or one collection's. Hidden entries stay
+  // out of a collection too — `shown` has none of them.
+  const scoped = useMemo(
+    () =>
+      openCollection === null
+        ? shown
+        : openCollection === UNFILED
+          ? unfiledEntries(shown, collections)
+          : entriesOf(shown, openCollection),
+    [shown, collections, openCollection],
+  );
+  const tiles = useMemo((): { tiles: CollectionTile[]; unfiled: CollectionTile } => {
+    const tileOf = (id: string, name: string, entries: ShelfGroup[]): CollectionTile => ({
+      id,
+      name,
+      count: entries.length,
+      covers: tileCovers(entries),
+    });
+    return {
+      tiles: collections.map((c) => tileOf(c.id, c.name, entriesOf(shown, c))),
+      unfiled: tileOf(UNFILED, "未分類", unfiledEntries(shown, collections)),
+    };
+  }, [shown, collections]);
+  const visible = useMemo(() => filterShelf(scoped, query), [scoped, query]);
   const visibleHidden = useMemo(() => filterShelf(putAway, query), [putAway, query]);
   const noMatch = `「${query.trim()}」に一致する本はありません`;
   const [layout, setLayout] = useAtom(shelfLayoutAtom);
@@ -754,11 +974,28 @@ export function ShelfPage({
     (ratio) => setImporting(ratio >= 1 ? { phase: "storing" } : { phase: "uploading", ratio }),
     createUploadRequest,
   );
+  const bulk = useDropboxImport({
+    download: downloadDropbox,
+    openFile,
+    startOcr: ocr.start,
+    queue: importQueue,
+  });
+  // The import of the whole folder asked about, until the reader says yes.
+  const [confirmingImport, setConfirmingImport] = useState<DropboxFile[] | null>(null);
   // What the reader's last action did wrong: adding a book, or removing one.
   // Both are worded by whoever detected them and shown in the same place.
   const [actionError, setActionError] = useState<string | null>(null);
   // The entry whose title the reader is changing, while its dialog is open.
   const [renaming, setRenaming] = useState<ShelfGroup | null>(null);
+  // The entry whose 「…」 sheet is open.
+  const [actionsFor, setActionsFor] = useState<ShelfGroup | null>(null);
+  // The entry being put in collections, while the dialog that ticks them is open.
+  const [filing, setFiling] = useState<ShelfGroup | null>(null);
+  // A collection being made (no collection yet) or renamed, while its name is asked.
+  const [naming, setNaming] = useState<{ collection: Collection | null } | null>(null);
+  const [collectionPendingDeletion, setCollectionPendingDeletion] = useState<Collection | null>(
+    null,
+  );
   // The books of the entry the reader pressed × on, all of which go together.
   const [booksPendingDeletion, setBooksPendingDeletion] = useState<BookSummary[] | null>(null);
   // How many elements of the shelf the drag is currently inside. Every card it
@@ -772,7 +1009,12 @@ export function ShelfPage({
     (hiddenError
       ? `非表示の本の一覧を読めませんでした: ${(hiddenError as Error).message}`
       : null) ??
-    (titlesError ? `Dropboxの本の題名を読めませんでした: ${(titlesError as Error).message}` : null);
+    (titlesError
+      ? `Dropboxの本の題名を読めませんでした: ${(titlesError as Error).message}`
+      : null) ??
+    (collectionsError
+      ? `コレクションを読めませんでした: ${(collectionsError as Error).message}`
+      : null);
 
   const openBook = useCallback((id: string) => navigate(`/books/${id}`), [navigate]);
 
@@ -824,6 +1066,24 @@ export function ShelfPage({
   const handleDropboxFile = async (entry: DropboxFile) => {
     if (importing) return;
     setActionError(null);
+
+    // The import of the whole folder may have the file. One still waiting is
+    // taken over and brought in now, beside the one the import is on — two
+    // books' bytes at most. The one it is bringing in already is waited for
+    // rather than fetched a second time, and opened once it is a book.
+    const job = bulk.jobs.get(entry.dropboxId);
+    if (job?.phase === "waiting") bulk.take(entry.dropboxId);
+    else if (job?.phase === "failed") bulk.forget(entry.dropboxId);
+    else if (job) {
+      setImporting({ phase: "queued" });
+      const id = await bulk.settled(entry.dropboxId);
+      if (id !== null) {
+        void openBook(id);
+        return;
+      }
+      // Stopped, or failed: the reader asked for this one, so it is brought in here
+    }
+
     setImporting({ phase: "downloading", ratio: 0 });
 
     const outcome = await downloadDropbox(entry, (ratio) =>
@@ -955,34 +1215,109 @@ export function ShelfPage({
       return failure ? errAsync(failure) : okAsync(undefined);
     });
 
+  /**
+   * Takes what the server answered a collections write with as the list itself:
+   * every write answers with every collection as it now stands.
+   */
+  const collectionsWritten = (now: { collections: Collection[] }) =>
+    void mutateCollections(now, { revalidate: false });
+
+  /** Leaves a collection for the tiles, or the whole shelf for one. */
+  const showCollection = (id: string | null) =>
+    setSearchParams(id === null ? {} : { collection: id });
+
+  const chooseView = (next: typeof view) => {
+    setView(next);
+    showCollection(null);
+  };
+
+  /** Deletes a collection, leaving its books on the shelf, and goes back to the tiles. */
+  const removeCollection = async (doomed: Collection) => {
+    setCollectionPendingDeletion(null);
+    setActionError(null);
+    const result = await collectionsStore.remove(doomed.id);
+    result.match(
+      (now) => {
+        collectionsWritten(now);
+        if (openCollectionId === doomed.id) showCollection(null);
+      },
+      (failure) => setActionError(`コレクションを削除できませんでした: ${failure.message}`),
+    );
+  };
+
+  /**
+   * The Dropbox files the import of the whole folder would bring in from here:
+   * those of the entries the page lists — every entry on the tiles, else the
+   * shelf or collection as searched — less what the reader put away and what
+   * the import already holds. Failed ones are offered again apart.
+   */
+  const importable = useMemo(
+    () =>
+      showingHidden
+        ? []
+        : filesToImport(showingTiles ? shown : visible, new Set(hidden?.keys ?? [])).filter(
+            (file) => !bulk.jobs.has(file.dropboxId),
+          ),
+    [showingHidden, showingTiles, shown, visible, hidden, bulk.jobs],
+  );
+
+  /** The files whose import failed, as they stand in the folder now. */
+  const failedImports = () =>
+    dropboxFiles.filter((file) => bulk.jobs.get(file.dropboxId)?.phase === "failed");
+
   const entryActions = {
     ocr,
+    bulk,
+    onRetryImport: (file: DropboxFile) => bulk.importAll([file]),
     onOpen: openMember,
-    onHide: (group: ShelfGroup) => void setGroupHidden(group, true),
+    onMore: setActionsFor,
     onDelete: setBooksPendingDeletion,
-    onRename: setRenaming,
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="flex h-12 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4">
-        <h1 className="text-lg font-bold text-gray-800">chatbook</h1>
-        <div className="ml-auto flex min-w-0 items-center gap-2">
+      <header className="flex h-12 items-center justify-between gap-3 border-b border-gray-200 bg-white px-2 sm:px-4">
+        {/* Left out on a phone, whose header the buttons beside it fill. */}
+        <h1 className="hidden text-lg font-bold text-gray-800 sm:block">chatbook</h1>
+        <div className="ml-auto flex min-w-0 items-center gap-1.5 sm:gap-2">
+          {/* Radios rather than buttons: 「コレクション」 as a button's name would be
+              matched in part by every entry's 「… のコレクションを選ぶ」. */}
+          <div
+            role="radiogroup"
+            aria-label="本棚の表示"
+            className="flex shrink-0 overflow-hidden rounded-md border border-gray-300"
+          >
+            {VIEWS.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={view === value}
+                onClick={() => chooseView(value)}
+                className="px-2 py-1 text-xs text-gray-700 cursor-pointer hover:bg-gray-100 aria-checked:bg-blue-50 aria-checked:text-blue-700 sm:px-3 sm:text-sm"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {(putAway.length > 0 || showingHidden) && (
             <button
               type="button"
               aria-pressed={showingHidden}
+              aria-label={`非表示の本 (${putAway.length})`}
               onClick={() => setShowingHidden(!showingHidden)}
-              className="shrink-0 rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
+              className="shrink-0 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700 sm:px-3 sm:text-sm"
             >
-              非表示の本 ({putAway.length})
+              {/* 「の本」 is left out on a phone, whose header has no room for it;
+                  the label keeps the whole name. */}
+              非表示<span className="max-sm:hidden">の本</span> ({putAway.length})
             </button>
           )}
           <button
             type="button"
             aria-pressed={compact}
             onClick={() => setLayout(compact ? "grid" : "compact")}
-            className="shrink-0 rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700"
+            className="shrink-0 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 cursor-pointer hover:bg-gray-100 aria-pressed:border-blue-400 aria-pressed:bg-blue-50 aria-pressed:text-blue-700 sm:px-3 sm:text-sm"
           >
             コンパクト表示
           </button>
@@ -1034,17 +1369,52 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
+        {!showingHidden && openCollection !== null && (
+          <CollectionHeader
+            collection={openCollection}
+            count={scoped.length}
+            onBack={() => showCollection(null)}
+            onRename={(collection) => setNaming({ collection })}
+            onDelete={setCollectionPendingDeletion}
+          />
+        )}
+
+        {bulk.batch && (
+          <BulkImportStatus
+            batch={bulk.batch}
+            onCancel={bulk.cancel}
+            onRetry={() => bulk.importAll(failedImports())}
+            onDismiss={() => {
+              for (const [key, job] of bulk.jobs) if (job.phase === "failed") bulk.forget(key);
+            }}
+          />
+        )}
+
         {/* Out of the header: on a phone it already holds its buttons. */}
-        {(shown.length > 0 || putAway.length > 0 || query !== "") && (
+        {((!showingTiles && (shown.length > 0 || putAway.length > 0 || query !== "")) ||
+          (importable.length > 0 && !bulk.batch?.running)) && (
           <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2">
-            <input
-              type="search"
-              aria-label="本棚を検索"
-              placeholder="題名で検索"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-            />
+            {!showingTiles && (shown.length > 0 || putAway.length > 0 || query !== "") && (
+              <input
+                type="search"
+                aria-label="本棚を検索"
+                placeholder="題名で検索"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            )}
+            {/* Not while an import of the folder is going: what it would add is
+                in it already, or can wait for it to finish. */}
+            {importable.length > 0 && !bulk.batch?.running && (
+              <button
+                type="button"
+                onClick={() => setConfirmingImport(importable)}
+                className="shrink-0 rounded-md border border-sky-300 bg-white px-3 py-1.5 text-sm text-sky-700 cursor-pointer hover:bg-sky-50"
+              >
+                未読み込みをすべて取り込む ({importable.length})
+              </button>
+            )}
           </div>
         )}
 
@@ -1071,7 +1441,24 @@ export function ShelfPage({
           </section>
         )}
 
-        {!showingHidden && books?.length === 0 && dropboxFiles.length === 0 && (
+        {!showingHidden && showingTiles && (
+          <CollectionTiles
+            tiles={tiles.tiles}
+            unfiled={tiles.unfiled}
+            onOpen={showCollection}
+            onCreate={() => setNaming({ collection: null })}
+          />
+        )}
+
+        {listing && openCollection !== null && scoped.length === 0 && (
+          <p className="mb-4 text-sm text-gray-500">
+            {openCollection === UNFILED
+              ? "どのコレクションにも入っていない本はありません"
+              : "このコレクションにはまだ本がありません。本の「…」から入れられます"}
+          </p>
+        )}
+
+        {listing && openCollection === null && books?.length === 0 && dropboxFiles.length === 0 && (
           <div className="pt-10 pb-8 text-center">
             <p className="text-lg font-medium text-gray-700">まだ本がありません</p>
             <p className="mt-1 text-sm text-gray-500">
@@ -1085,11 +1472,11 @@ export function ShelfPage({
             whatever the list did — while it loads, and when it could not be
             read at all — because adding a book does not go through it, and a
             shelf that answered with an error would otherwise have no way in. */}
-        {!showingHidden && shown.length > 0 && visible.length === 0 && (
+        {listing && scoped.length > 0 && visible.length === 0 && (
           <p className="mb-4 text-sm text-gray-500">{noMatch}</p>
         )}
 
-        {!showingHidden && (
+        {listing && (
           <ul
             className={
               compact
@@ -1144,6 +1531,96 @@ export function ShelfPage({
           confirmLabel="削除する"
           onConfirm={() => removeBooks(booksPendingDeletion)}
           onCancel={() => setBooksPendingDeletion(null)}
+        />
+      )}
+
+      {actionsFor && (
+        <EntryActionsDialog
+          title={actionsFor.title}
+          onClose={() => setActionsFor(null)}
+          actions={[
+            {
+              label: "題名を変更",
+              name: `${actionsFor.title} の題名を変更`,
+              onSelect: () => setRenaming(actionsFor),
+            },
+            {
+              label: "コレクションに入れる…",
+              name: `${actionsFor.title} のコレクションを選ぶ`,
+              onSelect: () => setFiling(actionsFor),
+            },
+            {
+              label: "非表示にする",
+              name: `${actionsFor.title} を非表示`,
+              onSelect: () => void setGroupHidden(actionsFor, true),
+            },
+          ]}
+        />
+      )}
+
+      {filing && (
+        <CollectionPickerDialog
+          title={filing.title}
+          collections={collections}
+          memberOf={collectionsOf(filing, collections)}
+          setMember={(collectionId, member) =>
+            collectionsStore
+              .setItems(
+                collectionId,
+                filing.members.map((m) => m.key),
+                member,
+              )
+              .map(collectionsWritten)
+          }
+          create={(name) =>
+            collectionsStore
+              .create(
+                name,
+                filing.members.map((m) => m.key),
+              )
+              .map(collectionsWritten)
+          }
+          onClose={() => setFiling(null)}
+        />
+      )}
+
+      {naming && (
+        <CollectionNameDialog
+          label={naming.collection ? "コレクションの名前を変更" : "新しいコレクション"}
+          current={naming.collection?.name ?? ""}
+          submitLabel={naming.collection ? "保存" : "作成"}
+          save={(name) =>
+            (naming.collection
+              ? collectionsStore.rename(naming.collection.id, name)
+              : collectionsStore.create(name)
+            ).map(collectionsWritten)
+          }
+          onSaved={() => setNaming(null)}
+          onCancel={() => setNaming(null)}
+        />
+      )}
+
+      {confirmingImport && (
+        <ConfirmDialog
+          message={`Dropboxの未読み込みの本 ${confirmingImport.length} 冊を、1 冊ずつ取り込みます。本の大きさに応じて時間と通信量がかかります。取り込んでいる間も本棚と本は使えます（このタブを閉じると止まります）。`}
+          dialogLabel="未読み込みの本の取り込み"
+          confirmLabel="取り込む"
+          tone="primary"
+          onConfirm={() => {
+            bulk.importAll(confirmingImport);
+            setConfirmingImport(null);
+          }}
+          onCancel={() => setConfirmingImport(null)}
+        />
+      )}
+
+      {collectionPendingDeletion && (
+        <ConfirmDialog
+          message={`コレクション「${collectionPendingDeletion.name}」を削除しますか？中の本は削除されず、本棚に残ります。`}
+          dialogLabel="コレクションの削除"
+          confirmLabel="削除する"
+          onConfirm={() => void removeCollection(collectionPendingDeletion)}
+          onCancel={() => setCollectionPendingDeletion(null)}
         />
       )}
 
