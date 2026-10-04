@@ -1553,10 +1553,15 @@ test("switching to emacs in settings changes the bindings and survives a reload"
 
 test("logging out takes the session back and puts the password box up", async ({ page }) => {
   // The one way out, and the only thing between a borrowed laptop and the
-  // books. It lives in the settings menu because that is the one control on
-  // screen in both layouts.
+  // books. It lives in the shelf's settings menu: every book is one tap
+  // (「← 本棚」) away from the shelf, and the reader's own menu no longer has it.
   await openTestBook(page);
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Vim" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ログアウト" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
+  await page.getByRole("link", { name: "← 本棚" }).click();
   await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("button", { name: "ログアウト" }).click();
 

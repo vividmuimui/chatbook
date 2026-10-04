@@ -375,7 +375,7 @@ union + `satisfies` で固定する。
   質問するときも色だけ・メモだけで作るときも同じ口）・ハイライトの色とメモの変更
   （`useHighlights` の `updateHighlight`）・ハイライトの削除（`useHighlights`）・
   チャット履歴の取得（`AppPage`）・読書位置の保存（`useReadingStateSync`）・
-  ログイン（`RequireSession`）・ログアウト（`SettingsMenu`）・
+  ログイン（`RequireSession`）・ログアウト（`ShelfSettingsMenu`）・
   Dropbox フォルダの保存（`ShelfPage` → `DropboxFolderDialog`）・
   本の題名の変更（`ShelfPage` → `BookTitleDialog`）・ページめくりの向きの保存
   （`usePageDirection`）・目次の生成（`useReaderOutline`）の 12 個。
@@ -1284,8 +1284,18 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 だけ。Dropbox の欄は Dropbox の資格情報があるデプロイにだけ出し、読めなかったフォルダでも
 「Dropboxフォルダを設定」から直せる（押すとメニューを閉じて `DropboxFolderDialog` を開く）。
 **新しい本棚の設定もここに足す**——狭い画面のヘッダーはもうボタンで埋まっている。
+
+**ログアウトもここにある**（メニューの末尾。以前はリーダーの ⚙ にあった）。リーダーの
+`SettingsMenu` には置かない——どの本からも「← 本棚」の 1 タップで本棚へ戻れるので、出口は
+1 つの方が探しやすい。失敗したら（`resultFetcher` の `Err`）「ログアウトできませんでした: …」を
+メニューの中に出し、メニューは開いたまま（Cookie はまだ残っているので、出たと思わせない）。
+成功したら `window.location.assign("/")` で読み直し、`RequireSession` がパスワードを聞く。
+
 守っているのは `ShelfPage.test.tsx` の「keeps the setting in the shelf's settings menu…」と、
-Dropbox のフォルダの設定・保存の 4 本（どれも ⚙ を開いてから操作する）。
+Dropbox のフォルダの設定・保存の 4 本（どれも ⚙ を開いてから操作する）、ログアウトは
+`ShelfSettingsMenu.test.tsx`（成功で読み直す・失敗を言う）と `SettingsMenu.test.tsx`
+「leaves logging out to the shelf's menu」、desktop の E2E「logging out takes the session
+back…」（リーダーの ⚙ に無いことを見てから本棚へ戻り、ログアウト後に `/api/pdfs` が 401）。
 
 #### 本棚は題名ごとに 1 項目、不要な本は非表示にできる
 
