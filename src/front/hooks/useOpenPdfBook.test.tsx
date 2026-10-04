@@ -232,6 +232,22 @@ describe("useOpenPdfBook", () => {
     expect(seen).toStrictEqual([0.25, 1]);
   });
 
+  it("leaves the file with nobody, and reports to the call's own listener, when told to", async () => {
+    // The import of a whole Dropbox folder: nobody is about to open these books,
+    // and the one slot would hold each one's bytes until the next replaced it.
+    const shelfWide: number[] = [];
+    const ownCard: number[] = [];
+    const { outcome } = await openAPdf(COVER, {
+      onProgress: (r) => shelfWide.push(r),
+      options: { handOff: false, onProgress: (r) => ownCard.push(r) },
+    });
+
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
+    expect(uploadedFileFor(PDF_ID)).toBeNull();
+    expect(ownCard).toStrictEqual([0.25, 1]);
+    expect(shelfWide).toStrictEqual([]);
+  });
+
   it("leaves nothing behind when the upload was refused", async () => {
     // There is no book to open, so the next one opened must not be handed the
     // bytes of a file that was never stored.

@@ -4,6 +4,11 @@ interface ConfirmDialogProps {
   /** Names the dialog to a screen reader, e.g. "本の削除". */
   dialogLabel: string;
   confirmLabel: string;
+  /**
+   * Red for what cannot be taken back (the default), blue for a step that is
+   * only long — the import of a whole Dropbox folder.
+   */
+  tone?: "danger" | "primary";
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -13,6 +18,7 @@ export function ConfirmDialog({
   message,
   dialogLabel,
   confirmLabel,
+  tone = "danger",
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -47,7 +53,9 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white cursor-pointer hover:bg-red-700"
+            className={`rounded-md px-3 py-1.5 text-sm font-medium text-white cursor-pointer ${
+              tone === "danger" ? "bg-red-600 hover:bg-red-700" : "bg-blue-600 hover:bg-blue-700"
+            }`}
           >
             {confirmLabel}
           </button>

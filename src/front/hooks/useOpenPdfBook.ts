@@ -18,6 +18,19 @@ export interface OpenBookOptions {
    * it has only just received.
    */
   dropboxId?: string;
+  /**
+   * How far the upload has got, for this call alone — the import of a whole
+   * Dropbox folder reports each file on its own card rather than on the shelf's
+   * covering notice, which the hook's own `onProgress` drives.
+   */
+  onProgress?: (ratio: number) => void;
+  /**
+   * Whether the file is left for the viewer to take over (`rememberUploadedFile`)
+   * — true by default, for the reader who is about to open the book. The import
+   * of a whole folder passes false: nobody is about to open those books, and the
+   * one slot would otherwise hold each book's bytes until the next replaced it.
+   */
+  handOff?: boolean;
 }
 
 /** A book the reader's file became. */
@@ -54,7 +67,10 @@ export function useOpenPdfBook(
 ): OpenPdfBook {
   const { mutate } = useSWRConfig();
 
-  return (file: File, { dropboxId }: OpenBookOptions = {}) =>
+  return (
+    file: File,
+    { dropboxId, onProgress: reportUpload = onProgress, handOff = true }: OpenBookOptions = {},
+  ) =>
     // Reading the file is pdf.js' job and can fail on its own (a file that is
     // not really a PDF), so it is part of the same result as the upload.
     ResultAsync.fromPromise(extract(file), asError)
@@ -83,7 +99,7 @@ export function useOpenPdfBook(
           "/api/pdf/open",
           pdfMetadataSchema,
           formData,
-          onProgress,
+          reportUpload,
           createRequest,
         ).map((result) => ({
           result,
@@ -132,7 +148,7 @@ export function useOpenPdfBook(
         // book: the viewer this navigates to would otherwise ask the API for
         // the very file that has just gone up, which over a phone's connection
         // costs the upload all over again.
-        rememberUploadedFile(result.id, file);
+        if (handOff) rememberUploadedFile(result.id, file);
 
         return ResultAsync.fromPromise(
           mutate(bookKey(result.id), book, { revalidate: false }),

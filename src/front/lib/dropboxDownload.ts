@@ -6,6 +6,8 @@ import type { DropboxFile } from "../../shared/schemas/dropbox";
 export type DownloadDropboxFile = (
   file: DropboxFile,
   onProgress: (ratio: number) => void,
+  /** Stops the download — the import of a whole folder is stopped this way. */
+  signal?: AbortSignal,
 ) => ResultAsync<File, ApiError>;
 
 /**
@@ -21,11 +23,11 @@ export type DownloadDropboxFile = (
  * pdf.js reads it for the text, and the viewer takes it over instead of asking
  * for the same bytes again.
  */
-export const downloadDropboxFile: DownloadDropboxFile = (file, onProgress) => {
+export const downloadDropboxFile: DownloadDropboxFile = (file, onProgress, signal) => {
   const url = `/api/dropbox/file?id=${encodeURIComponent(file.dropboxId)}`;
 
   const downloaded = (async () => {
-    const response = await fetch(url);
+    const response = await (signal ? fetch(url, { signal }) : fetch(url));
     if (!response.ok) throw await readRefusal(url, response);
     if (!response.body) return new File([await response.blob()], file.name);
 

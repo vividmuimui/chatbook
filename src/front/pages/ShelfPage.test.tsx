@@ -15,6 +15,8 @@ import type { CollectionsApi } from "../lib/collectionsApi";
 import { ApiError } from "../lib/fetcher";
 import type { ExtractedPdfData } from "../lib/pdfLoader";
 import { createOcrQueue } from "../lib/ocrQueue";
+import { createImportQueue, type ImportQueue } from "../lib/importQueue";
+import { uploadedFileFor } from "../lib/uploadedFileHandoff";
 import type { ReadStoredBookByOcr, SaveOcr } from "../hooks/useBackgroundOcr";
 import type { BookDetail, BookSummary } from "../../shared/schemas/book";
 import { useSWRConfig } from "swr";
@@ -109,6 +111,7 @@ function renderShelf(props: {
   readByOcr?: ReadStoredBookByOcr;
   saveOcr?: SaveOcr;
   collections?: CollectionsApi;
+  importQueue?: ImportQueue;
   /** Where the shelf is opened, `?collection=` and all. */
   initialEntry?: string;
   /** Entries already in the cache, standing in for what the server answered before. */
@@ -122,6 +125,7 @@ function renderShelf(props: {
     loadDropboxTitles: async (): Promise<DropboxTitles> => ({ titles: [] }),
     ocrQueue: createOcrQueue(),
     collections: collectionStore().api,
+    importQueue: createImportQueue(),
     ...props,
   };
   return render(
@@ -1842,5 +1846,275 @@ describe("ShelfPage: collections", () => {
       await screen.findByText("コレクションを読めませんでした: D1 is down"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Go 入門 を開く" })).toBeInTheDocument();
+  });
+});
+
+describe("ShelfPage: bringing the whole Dropbox folder in", () => {
+  afterEach(() => localStorage.clear());
+
+  const ZIG = DROPBOX_BOOK;
+  const ODIN: DropboxFile = {
+    dropboxId: "id:odin",
+    name: "Odin 入門.pdf",
+    path: "/lang/Odin 入門.pdf",
+    size: 1000,
+  };
+  const NIM: DropboxFile = {
+    dropboxId: "id:nim",
+    name: "Nim 入門.pdf",
+    path: "/Nim 入門.pdf",
+    size: 1,
+  };
+
+  /**
+   * A folder and a shelf that move together the way the server's do: a file
+   * stored through the upload becomes a book on the shelf and leaves the folder.
+   * The upload answers on its own; the downloads are stepped through by hand.
+   */
+  function folderAndShelf(files: DropboxFile[], options: { pictures?: boolean } = {}) {
+    let waiting = [...files];
+    const books: BookSummary[] = [];
+    const asked: string[] = [];
+    const sentIds: string[] = [];
+    const pending = new Map<
+      string,
+      { resolve: (file: File) => void; reject: (failure: ApiError) => void }
+    >();
+
+    const download: DownloadDropboxFile = (file, onProgress, signal) => {
+      asked.push(file.dropboxId);
+      onProgress(0.3);
+      return ResultAsync.fromPromise(
+        new Promise<File>((resolve, reject) => {
+          pending.set(file.dropboxId, { resolve, reject });
+          // As fetch does with the signal it is handed
+          signal?.addEventListener("abort", () =>
+            reject(new ApiError("aborted", "ABORTED", 0, "network")),
+          );
+        }),
+        (failure) => failure as ApiError,
+      );
+    };
+
+    const createUploadRequest = () => {
+      const sending = fakeUpload();
+      const send = (sending.request as unknown as { send: (body: unknown) => void }).send;
+      Object.assign(sending.request, {
+        send: (body: FormData) => {
+          send(body);
+          const dropboxId = body.get("dropboxId") as string;
+          sentIds.push(dropboxId);
+          const file = waiting.find((f) => f.dropboxId === dropboxId)!;
+          setTimeout(() => {
+            waiting = waiting.filter((f) => f.dropboxId !== dropboxId);
+            books.push(book({ id: `book-${dropboxId}`, fileName: file.name, inDropbox: true }));
+            sending.uploaded(1, 1);
+            sending.answers({
+              ...STORED_BOOK,
+              id: `book-${dropboxId}`,
+              fileName: file.name,
+              ...(options.pictures ? { fullText: "", ocrPending: true } : {}),
+            });
+          }, 0);
+        },
+      });
+      return sending.request;
+    };
+
+    return {
+      asked,
+      sentIds,
+      props: {
+        loadBooks: async () => [...books],
+        loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({
+          state: "ready",
+          folder: "/Books",
+          files: [...waiting],
+        }),
+        downloadDropbox: download,
+        extract: options.pictures
+          ? async (file: File) => ({ ...(await readsFine(file)), fullText: "", needsOcr: true })
+          : readsFine,
+        createUploadRequest,
+      },
+      finishes: (dropboxId: string) =>
+        act(() =>
+          pending
+            .get(dropboxId)!
+            .resolve(new File(["%PDF-1.7"], `${dropboxId}.pdf`, { type: "application/pdf" })),
+        ),
+      fails: (dropboxId: string, message: string) =>
+        act(() =>
+          pending.get(dropboxId)!.reject(new ApiError(message, "DROPBOX_ERROR", 502, "http")),
+        ),
+    };
+  }
+
+  /** Presses the button and agrees to what the dialog asks. */
+  async function importEverything(count: number) {
+    await userEvent.click(
+      await screen.findByRole("button", { name: `未読み込みをすべて取り込む (${count})` }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "取り込む" }));
+  }
+
+  const progress = () => within(screen.getByRole("region", { name: "Dropboxからの取り込み" }));
+
+  it("offers every unread file but those put away, and asks before it starts", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN, NIM]);
+    renderShelf({ ...shelf.props, loadHidden: async () => ({ keys: ["id:nim"] }) });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "未読み込みをすべて取り込む (2)" }),
+    );
+    const dialog = screen.getByRole("alertdialog", { name: "未読み込みの本の取り込み" });
+    expect(dialog).toHaveTextContent("Dropboxの未読み込みの本 2 冊を、1 冊ずつ取り込みます");
+    expect(dialog).toHaveTextContent("時間と通信量がかかります");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    expect(shelf.asked).toStrictEqual([]);
+  });
+
+  it("brings the files in one at a time, says how far it has got, and stays on the shelf", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+
+    await importEverything(2);
+
+    // One at a time: the second waits for the first
+    expect(shelf.asked).toStrictEqual(["id:zig"]);
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 0/2");
+    expect(await screen.findByText("Dropboxから取得中 30%")).toBeInTheDocument();
+    expect(screen.getByText("取り込み待ち")).toBeInTheDocument();
+    // Nothing more to offer while it runs
+    expect(screen.queryByRole("button", { name: /未読み込みをすべて取り込む/ })).toBeNull();
+
+    shelf.finishes("id:zig");
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]));
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 1/2");
+    // The server took the bytes from Dropbox: only the id went up
+    expect(shelf.sentIds).toStrictEqual(["id:zig"]);
+    // A book now, on the shelf, and its bytes were not kept for a viewer
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    expect(uploadedFileFor("book-id:zig")).toBeNull();
+
+    shelf.finishes("id:odin");
+    expect(await screen.findByRole("button", { name: "Odin 入門 を開く" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+    expect(screen.queryByText(/^リーダー:/)).not.toBeInTheDocument();
+  });
+
+  it("goes on past a file that failed, says why on its card, and tries it again", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    shelf.fails("id:zig", "Dropbox is down");
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]));
+    expect(screen.getByText("取り込めませんでした: Dropbox is down")).toBeInTheDocument();
+    shelf.finishes("id:odin");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("1 冊を取り込めませんでした");
+
+    await userEvent.click(screen.getByRole("button", { name: "Zig 入門 の取り込みを再試行" }));
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin", "id:zig"]));
+    shelf.finishes("id:zig");
+    expect(await screen.findByRole("button", { name: "Zig 入門 を開く" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+  });
+
+  it("tries every failed file again from the notice above the shelf", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+    shelf.fails("id:zig", "no");
+    await waitFor(() => expect(shelf.asked).toHaveLength(2));
+    shelf.fails("id:odin", "no");
+
+    await userEvent.click(await screen.findByRole("button", { name: "失敗した本を再試行" }));
+
+    await waitFor(() => expect(shelf.asked).toStrictEqual(["id:zig", "id:odin", "id:zig"]));
+    expect(progress().getByRole("status")).toHaveTextContent("Dropboxから取り込み中 0/2");
+  });
+
+  it("stops on 中止, leaving what was still waiting in the folder", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "取り込みを中止" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Dropboxからの取り込み" })).toBeNull(),
+    );
+    expect(shelf.asked).toStrictEqual(["id:zig"]);
+    expect(
+      screen.getByRole("button", { name: "Odin 入門 を Dropbox から開く" }),
+    ).toBeInTheDocument();
+    // Offered again in full
+    expect(
+      screen.getByRole("button", { name: "未読み込みをすべて取り込む (2)" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hands a book of pictures to OCR without its bytes, to be fetched when its turn comes", async () => {
+    const shelf = folderAndShelf([ZIG], { pictures: true });
+    const asked: (File | null)[] = [];
+    renderShelf({
+      ...shelf.props,
+      readByOcr: (_pdfId, file) => {
+        asked.push(file);
+        return new Promise(() => {});
+      },
+    });
+    await importEverything(1);
+
+    shelf.finishes("id:zig");
+
+    await waitFor(() => expect(asked).toStrictEqual([null]));
+  });
+
+  it("brings a waiting file in at once when the reader opens it, and leaves it out of the queue", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Odin 入門 を Dropbox から開く" }));
+    expect(shelf.asked).toStrictEqual(["id:zig", "id:odin"]);
+    shelf.finishes("id:odin");
+
+    expect(await screen.findByText("リーダー: book-id:odin")).toBeInTheDocument();
+  });
+
+  it("opens the file the import is bringing in once it is a book, rather than fetching it twice", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf(shelf.props);
+    await importEverything(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Zig 入門 を Dropbox から開く" }));
+    expect(
+      screen.getByText("まとめて取り込んでいる途中です。終わりしだい開きます..."),
+    ).toBeInTheDocument();
+    shelf.finishes("id:zig");
+
+    expect(await screen.findByText("リーダー: book-id:zig")).toBeInTheDocument();
+    expect(shelf.asked.filter((id) => id === "id:zig")).toHaveLength(1);
+  });
+
+  it("offers only the unread files of the collection the reader is in", async () => {
+    const shelf = folderAndShelf([ZIG, ODIN]);
+    renderShelf({
+      ...shelf.props,
+      collections: collectionStore([collectionOf("c1", "積読", ["id:odin"])]).api,
+      initialEntry: "/?collection=c1",
+    });
+
+    await importEverything(1);
+
+    expect(shelf.asked).toStrictEqual(["id:odin"]);
   });
 });
