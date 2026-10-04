@@ -20,6 +20,8 @@ import {
   tokenEvent,
 } from "../../test/streamingFetchStub";
 import { ApiError } from "../lib/fetcher";
+import { useChatList } from "./useChatList";
+import { SwrTestCache } from "../../test/swrTestCache";
 import type { Citation } from "../../shared/schemas/citation";
 
 const QUESTION = "Durable Objects とは?";
@@ -44,7 +46,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("単一の"));
@@ -66,13 +68,13 @@ describe("useChatStream", () => {
     expect(store.get(chatAbortControllerAtom)).toBeNull();
   });
 
-  it("asks the book itself when there is no passage under the question, over the pages picked", async () => {
+  it("asks the book itself in a session of its own, over the pages picked", async () => {
     const { fetchFn, calls } = streamingFetchStub();
     const { view } = renderChatStream(fetchFn);
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", null, QUESTION, false, {
+      sent = view.result.current.sendMessage("p1", { sessionId: "sess" }, QUESTION, false, {
         scope: [{ startPage: 5, endPage: 8 }],
       });
     });
@@ -83,12 +85,12 @@ describe("useChatStream", () => {
       await sent;
     });
 
-    // A conversation with no highlight in it is the book's own, and the pages
-    // ride with the question — under the name the endpoint takes them by, so
-    // that the same thread can be asked about another chapter on the next turn.
+    // A session is the book's own conversation, and the pages ride with the
+    // question — under the name the endpoint takes them by, so that the same
+    // thread can be asked about another chapter on the next turn.
     expect(calls.map((call) => [call.url, call.body])).toStrictEqual([
       [
-        "/api/pdf/p1/chats",
+        "/api/pdf/p1/sessions/sess/messages",
         {
           content: QUESTION,
           useWebSearch: false,
@@ -104,7 +106,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("単一の"));
@@ -138,7 +140,7 @@ describe("useChatStream", () => {
 
     let firstSent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      firstSent = view.result.current.sendMessage("p1", "s1", "最初の質問", false);
+      firstSent = view.result.current.sendMessage("p1", { selectionId: "s1" }, "最初の質問", false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("途中まで"));
@@ -147,7 +149,7 @@ describe("useChatStream", () => {
 
     let secondSent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      secondSent = view.result.current.sendMessage("p1", "s1", "次の質問", false);
+      secondSent = view.result.current.sendMessage("p1", { selectionId: "s1" }, "次の質問", false);
     });
     await act(async () => {
       calls[1].emit(tokenEvent("こちらが答えです"));
@@ -175,7 +177,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false, {
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false, {
         onCitation: (citation) => received.push(citation),
       });
     });
@@ -201,7 +203,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(errorEvent("AI_API_ERROR", "upstream is down"));
@@ -227,7 +229,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("単一のインスタンスです"));
@@ -261,7 +263,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("単一の"));
@@ -293,7 +295,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
       await sent;
     });
 
@@ -314,7 +316,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
       await sent;
     });
 
@@ -336,7 +338,7 @@ describe("useChatStream", () => {
 
     let failed!: ResultAsync<string, ApiError>;
     await act(async () => {
-      failed = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      failed = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(errorEvent("AI_API_ERROR", "upstream is down"));
@@ -347,7 +349,7 @@ describe("useChatStream", () => {
 
     let retried!: ResultAsync<string, ApiError>;
     await act(async () => {
-      retried = view.result.current.sendMessage("p1", "s1", "もう一度", false);
+      retried = view.result.current.sendMessage("p1", { selectionId: "s1" }, "もう一度", false);
     });
     await act(async () => {
       calls[1].emit(tokenEvent("単一のインスタンスです"));
@@ -367,7 +369,7 @@ describe("useChatStream", () => {
 
     let sent!: ResultAsync<string, ApiError>;
     await act(async () => {
-      sent = view.result.current.sendMessage("p1", "s1", QUESTION, false);
+      sent = view.result.current.sendMessage("p1", { selectionId: "s1" }, QUESTION, false);
     });
     await act(async () => {
       calls[0].emit(tokenEvent("単一のインスタンスです"));
@@ -391,5 +393,40 @@ describe("useChatStream", () => {
         createdAt: "2026-01-02T03:04:05.678Z",
       },
     ]);
+  });
+
+  it("has the chat list read again once the question is stored, and again once answered", async () => {
+    const { fetchFn, calls } = streamingFetchStub();
+    const store = createStore();
+    let reads = 0;
+    const load = async () => {
+      reads += 1;
+      return { chats: [] };
+    };
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <SwrTestCache>
+        <Provider store={store}>{children}</Provider>
+      </SwrTestCache>
+    );
+    const view = renderHook(
+      () => ({ stream: useChatStream(fetchFn), list: useChatList("p1", { load }) }),
+      { wrapper },
+    );
+    await waitFor(() => expect(reads).toBe(1));
+
+    let sent!: ResultAsync<string, ApiError>;
+    await act(async () => {
+      sent = view.result.current.stream.sendMessage("p1", { sessionId: "sess" }, QUESTION, false);
+    });
+    // The stream has begun, so the server has the question: the list can
+    // already put this conversation at the top.
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      calls[0].emit(doneEvent("m1"));
+      calls[0].end();
+      await sent;
+    });
+    await waitFor(() => expect(reads).toBe(3));
   });
 });

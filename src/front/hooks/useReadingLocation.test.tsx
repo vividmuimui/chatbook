@@ -7,7 +7,7 @@ import { useReadingLocation, type LocatePassage } from "./useReadingLocation";
 import { currentPageAtom, outlineOpenAtom } from "../atoms/pdfAtom";
 import {
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatPanelOpenAtom,
   type ActiveSelection,
 } from "../atoms/chatAtom";
@@ -72,7 +72,7 @@ function useHarness(
   visited: string[],
   book: BookDetail | undefined,
   openChat: (selection: ActiveSelection) => void,
-  openBookChat: () => void,
+  openSession: (sessionId: string) => void,
 ) {
   const { passageMiss, locationReady } = useReadingLocation(
     PDF_ID,
@@ -80,7 +80,7 @@ function useHarness(
     linkedPassage,
     book,
     openChat,
-    openBookChat,
+    openSession,
   );
 
   const { search } = useLocation();
@@ -120,18 +120,18 @@ function renderAt(
   // Stands in for the reader's own opener: the chat it puts on screen is the
   // active selection, which is also what keeps the id in the URL afterwards.
   const openChat = vi.fn((selection: ActiveSelection) => store.set(activeSelectionAtom, selection));
-  // The other opener: the book's own conversation has no highlight to name, so
-  // what it puts on screen is the flag the panel reads.
-  const openBookChat = vi.fn(() => store.set(bookChatOpenAtom, true));
+  // The other opener: a session of the book's own has no highlight to name, so
+  // what it puts on screen is the session the panel reads.
+  const openSession = vi.fn((sessionId: string) => store.set(activeSessionAtom, { id: sessionId }));
 
   return {
     store,
     visited,
     openChat,
-    openBookChat,
+    openSession,
     view: renderHook(
       ({ book }: { book: BookDetail | undefined }) =>
-        useHarness(locatePassage, linkedPassage, visited, book, openChat, openBookChat),
+        useHarness(locatePassage, linkedPassage, visited, book, openChat, openSession),
       { wrapper, initialProps: { book } },
     ),
   };
@@ -384,7 +384,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: "a2",
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -413,7 +413,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 4,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -432,7 +432,7 @@ describe("useReadingLocation resuming where another device left off", () => {
       book: bookLeftAt({
         page: 17,
         selectionId: null,
-        bookChat: null,
+        sessionId: null,
         outlineOpen: null,
         chatPanelOpen: null,
       }),
@@ -455,7 +455,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -479,7 +479,7 @@ describe("useReadingLocation resuming where another device left off", () => {
           ...bookLeftAt({
             page: BOOK.pageCount + 1,
             selectionId: null,
-            bookChat: null,
+            sessionId: null,
             outlineOpen: null,
             chatPanelOpen: null,
           }),
@@ -498,7 +498,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: "deleted",
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -519,7 +519,7 @@ describe("useReadingLocation resuming where another device left off", () => {
       book: bookLeftAt({
         page: 17,
         selectionId: null,
-        bookChat: null,
+        sessionId: null,
         outlineOpen: null,
         chatPanelOpen: null,
       }),
@@ -538,7 +538,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: false,
           chatPanelOpen: null,
         }),
@@ -560,7 +560,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: true,
           chatPanelOpen: null,
         }),
@@ -579,7 +579,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -600,7 +600,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -621,7 +621,7 @@ describe("useReadingLocation resuming where another device left off", () => {
         book: bookLeftAt({
           page: 17,
           selectionId: null,
-          bookChat: null,
+          sessionId: null,
           outlineOpen: null,
           chatPanelOpen: null,
         }),
@@ -632,49 +632,50 @@ describe("useReadingLocation resuming where another device left off", () => {
   });
 });
 
-describe("useReadingLocation restoring the book's own conversation", () => {
-  /** A book left with the conversation about the book itself open on it. */
+describe("useReadingLocation restoring a chat about the book", () => {
+  /** A book left with one of its own sessions open on it. */
   const BOOK_CHAT_LEFT_OPEN = {
     page: 17,
     selectionId: null,
-    bookChat: true,
+    sessionId: "sess-1",
     outlineOpen: null,
     chatPanelOpen: null,
   } as const;
 
   it("opens the conversation the book was left in when the URL names no other", async () => {
-    const { store, openBookChat, view } = renderAt(`/books/${PDF_ID}`);
+    const { store, openSession, view } = renderAt(`/books/${PDF_ID}`);
 
     await act(async () => view.rerender({ book: bookLeftAt(BOOK_CHAT_LEFT_OPEN) }));
 
-    expect(openBookChat).toHaveBeenCalledTimes(1);
-    expect(store.get(bookChatOpenAtom)).toBe(true);
+    expect(openSession).toHaveBeenCalledTimes(1);
+    expect(openSession).toHaveBeenCalledWith("sess-1");
+    expect(store.get(activeSessionAtom)).toStrictEqual({ id: "sess-1" });
   });
 
   it("leaves it for the highlight a URL names instead", async () => {
     // The URL can name a highlight and nothing else, so where it names one that
     // is the conversation the reader followed a link to.
-    const { openChat, openBookChat, view } = renderAt(`/books/${PDF_ID}?page=5&selection=a1`);
+    const { openChat, openSession, view } = renderAt(`/books/${PDF_ID}?page=5&selection=a1`);
 
     await act(async () => view.rerender({ book: bookLeftAt(BOOK_CHAT_LEFT_OPEN) }));
 
     expect(openChat).toHaveBeenCalledTimes(1);
-    expect(openBookChat).not.toHaveBeenCalled();
+    expect(openSession).not.toHaveBeenCalled();
   });
 
   it("opens the list when no conversation was left open at all", async () => {
-    const { store, openChat, openBookChat, view } = renderAt(`/books/${PDF_ID}`);
+    const { store, openChat, openSession, view } = renderAt(`/books/${PDF_ID}`);
 
     await act(async () =>
       view.rerender({
-        book: bookLeftAt({ ...BOOK_CHAT_LEFT_OPEN, bookChat: null }),
+        book: bookLeftAt({ ...BOOK_CHAT_LEFT_OPEN, sessionId: null }),
       }),
     );
 
     expect(view.result.current.locationReady).toBe(true);
-    expect(openBookChat).not.toHaveBeenCalled();
+    expect(openSession).not.toHaveBeenCalled();
     expect(openChat).not.toHaveBeenCalled();
-    expect(store.get(bookChatOpenAtom)).toBe(false);
+    expect(store.get(activeSessionAtom)).toBeNull();
   });
 });
 
@@ -689,7 +690,7 @@ describe("useReadingLocation restoring the panels the book was left with", () =>
   const OUTLINE_UP_CHAT_AWAY = {
     page: 17,
     selectionId: null,
-    bookChat: null,
+    sessionId: null,
     outlineOpen: true,
     chatPanelOpen: false,
   } as const;
@@ -799,7 +800,7 @@ describe("useReadingLocation restoring the panels the book was left with", () =>
     const chatUpOutlineAway = {
       page: 17,
       selectionId: null,
-      bookChat: null,
+      sessionId: null,
       outlineOpen: false,
       chatPanelOpen: true,
     } as const;

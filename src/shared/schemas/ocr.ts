@@ -34,3 +34,21 @@ export const ocrTextSchema = z.object({
 });
 
 export type OcrText = z.infer<typeof ocrTextSchema>;
+
+/**
+ * What OCR read off a book that was stored before it was read
+ * (`PUT /api/pdf/:pdfId/ocr`): the book's whole text with the pages OCR read
+ * filled in, and the lines of those pages. No pages at all is a reading that
+ * found nothing — the book is done, with no text to lay over its pages.
+ */
+export const saveOcrRequestSchema = z.object({
+  fullText: z.string(),
+  pages: z.array(ocrPageSchema),
+});
+
+export type SaveOcrRequest = z.infer<typeof saveOcrRequestSchema>;
+
+/** The book once its OCR text is stored. */
+export const ocrSavedSchema = z.object({ id: z.string(), hasOcr: z.boolean() });
+
+export type OcrSaved = z.infer<typeof ocrSavedSchema>;

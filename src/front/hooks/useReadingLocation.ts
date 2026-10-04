@@ -17,8 +17,8 @@ export type PassageMiss = PageMiss | "lookup-failed";
 /** Puts the chat about a highlight on screen, with whatever was asked before. */
 export type OpenChat = (selection: ActiveSelection) => void;
 
-/** Puts the book's own conversation on screen, with whatever was asked before. */
-export type OpenBookChat = () => void;
+/** Puts one of the book's own sessions on screen, with whatever was asked in it. */
+export type OpenSession = (sessionId: string) => void;
 
 const PAGE_PARAM = "page";
 const SELECTION_PARAM = "selection";
@@ -108,7 +108,7 @@ export function useReadingLocation(
   linkedPassage: string | null,
   book: BookDetail | undefined,
   openChat: OpenChat,
-  openBookChat: OpenBookChat,
+  openSession: OpenSession,
 ): { passageMiss: PassageMiss | null; locationReady: boolean } {
   const [searchParams, setSearchParams] = useSearchParams();
   const [currentPage, setCurrentPage] = useAtom(currentPageAtom);
@@ -261,14 +261,14 @@ export function useReadingLocation(
       }
     }
 
-    // The book's own conversation, taken out of the book however it was opened.
-    // The URL cannot name it — `?selection=` is the only conversation a link
-    // carries — so where the reader followed a link to a highlight, that is the
-    // one they asked for and this stays out of its way. Nothing here waits on
-    // the reader having moved first, unlike the panels: the entry to this
-    // conversation is inside the panel, so there is no way to open it before
-    // the book arrives.
-    if (place?.bookChat === true && !urlNamesAChat.current) openBookChat();
+    // The session of the book's own that was open, taken out of the book
+    // however it was opened. The URL cannot name one — `?selection=` is the
+    // only conversation a link carries — so where the reader followed a link to
+    // a highlight, that is the one they asked for and this stays out of its
+    // way. Nothing here waits on the reader having moved first, unlike the
+    // panels: the way into a session is inside the panel, so there is no way
+    // to open one before the book arrives.
+    if (place?.sessionId && !urlNamesAChat.current) openSession(place.sessionId);
 
     // The panels are settled here whatever the book says, since they start away
     // and this is what puts them up: what the book was left with, or open where
@@ -291,7 +291,7 @@ export function useReadingLocation(
     pendingRestore,
     book,
     openChat,
-    openBookChat,
+    openSession,
     setCurrentPage,
     setOutlineOpen,
     setChatPanelOpen,

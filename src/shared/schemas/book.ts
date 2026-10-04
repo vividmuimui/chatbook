@@ -43,6 +43,15 @@ export type SavePageDirectionRequest = z.infer<typeof savePageDirectionRequestSc
 /** The direction as the server now holds it. */
 export const pageDirectionSavedSchema = z.object({ pageDirection: pageDirectionSchema });
 
+/**
+ * Whether the book is a book of pictures whose text OCR has still to read: it
+ * was stored first and is read afterwards in the browser, and until then it
+ * can be read but not selected, searched or asked about. The server always
+ * says; optional so a book from before there was a word for it — and every
+ * fixture that has no reason to name it — reads as not waiting.
+ */
+const ocrPendingSchema = z.boolean().optional();
+
 /** A book as the shelf shows it. */
 export const bookSummarySchema = z.object({
   id: z.string(),
@@ -58,6 +67,7 @@ export const bookSummarySchema = z.object({
   // book never opened in a reader — which is not the same as page 1.
   lastReadPage: z.number().int().nullable(),
   title: bookTitleSchema,
+  ocrPending: ocrPendingSchema,
 });
 
 export type BookSummary = z.infer<typeof bookSummarySchema>;
@@ -72,17 +82,16 @@ export const bookListSchema = z.object({ books: z.array(bookSummarySchema) });
  * outline and the chat pane sat beside them. `null` for either panel is "no
  * wide screen has said either way" — narrow screens do not save them, since
  * there the outline is a drawer and the chat a sheet over the page rather than
- * places next to it. `bookChat` is part of the place rather than of the panels
+ * places next to it. `sessionId` is part of the place rather than of the panels
  * for the opposite reason: a narrow screen has a conversation open on the book
  * too.
  */
 export const readingStateSchema = z.object({
   page: z.number().int().positive(),
   selectionId: z.string().nullable(),
-  // True when the conversation open was the book's own rather than a
-  // highlight's; at most one of the two is set. Null on a place saved before
-  // this was recorded, which reads as no conversation open.
-  bookChat: z.boolean().nullable(),
+  // The session of the book's own that was open, when the conversation was
+  // one of those rather than a highlight's; at most one of the two is set.
+  sessionId: z.string().nullable(),
   outlineOpen: z.boolean().nullable(),
   chatPanelOpen: z.boolean().nullable(),
 });
@@ -93,13 +102,13 @@ export type ReadingState = z.infer<typeof readingStateSchema>;
  * What a device sends to save its place. The two panels are optional rather
  * than nullable: leaving them out keeps whatever was stored, which is how a
  * narrow screen saves a page without folding away what a wide screen opened.
- * `bookChat` is optional for the same reason rather than for that one: a device
+ * `sessionId` is optional for the same reason rather than for that one: a device
  * that does not say keeps what was there.
  */
 export const saveReadingStateRequestSchema = z.object({
   page: z.number().int().positive(),
   selectionId: z.string().nullable(),
-  bookChat: z.boolean().optional(),
+  sessionId: z.string().nullable().optional(),
   outlineOpen: z.boolean().optional(),
   chatPanelOpen: z.boolean().optional(),
 });
@@ -172,6 +181,10 @@ export const pdfMetadataSchema = z.object({
   // Likewise: a right-opening book added again would otherwise open turning
   // the wrong way until the book was read back.
   pageDirection: pageDirectionSchema,
+  // Whether OCR is still to read the book — which is also what tells the
+  // picker to start reading it. A book of pictures added again after it was
+  // read says no: its text is kept.
+  ocrPending: ocrPendingSchema,
 });
 
 export type PdfMetadata = z.infer<typeof pdfMetadataSchema>;
@@ -187,10 +200,11 @@ export const bookDetailSchema = z.object({
   // book stored before outlines were kept gets its chapters extracted from
   // the document the reader has open anyway (usePdfDocument).
   hasOutline: z.boolean(),
-  // Whether pages of the book were read by OCR at upload (a scanned book).
+  // Whether pages of the book were read by OCR (a scanned book).
   // The viewer asks `/ocr` for the lines to lay over those pages only when
   // this says there are any, so a typeset book costs no extra request.
   hasOcr: z.boolean(),
+  ocrPending: ocrPendingSchema,
   selections: z.array(selectionHighlightSchema),
   readingState: readingStateSchema.nullable(),
   title: bookTitleSchema,

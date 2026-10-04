@@ -120,6 +120,25 @@ export const epubTypographyAtom = atomWithStorage<EpubTypography>(
   { getOnInit: true },
 );
 
+/**
+ * How a book is read: a page (or an EPUB's screen) at a time, turned, or every
+ * page down one column, scrolled — a Kindle's 「連続スクロール」.
+ *
+ * The reader's habit rather than a property of one book, so kept across books
+ * and sessions and not per book as the zoom is: a reader who scrolls on a phone
+ * scrolls whatever they open, and a setting that had to be found again for each
+ * book would be one they stopped using. Turning pages stays the default, which
+ * is how every book read before there was a choice.
+ */
+export type ReadingMode = "paged" | "scroll";
+
+export const readingModeAtom = atomWithStorage<ReadingMode>(
+  "chatbook:reading-mode",
+  "paged",
+  validatedStorage(z.enum(["paged", "scroll"])),
+  { getOnInit: true },
+);
+
 function createZoomAtom(pdfId: string) {
   return atomWithStorage<number>(
     `chatbook:zoom:${pdfId}`,

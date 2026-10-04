@@ -72,26 +72,37 @@ function memberOrder(member: ShelfMember, preferred: BookFormat): number {
  * the Dropbox files are named by the reader's file system, which the rename
  * never touches, and the EPUB of a renamed PDF would otherwise be left on the
  * shelf under the name the reader replaced.
+ *
+ * **A Dropbox file that is not a book yet can carry a title too**
+ * (`fileTitles`, by Dropbox id — `GET /api/shelf/titles`), and is gathered by it
+ * the same way a renamed book is. Once the file is brought in, the server moves
+ * its title onto the book.
  */
 export function groupShelf(
   books: BookSummary[],
   files: DropboxFile[],
   preferred: BookFormat = "pdf",
+  fileTitles: ReadonlyMap<string, string> = new Map(),
 ): ShelfGroup[] {
   const groups = new Map<string, ShelfGroup>();
   // Entries whose title is one the reader wrote, which no file name overrides.
   const titledByReader = new Set<string>();
+  const titleOfFile = (file: DropboxFile) => fileTitles.get(file.dropboxId) ?? null;
 
-  // A renamed book's file name, pointing at the entry its new title makes. A
-  // file still called what the book was called before — its Dropbox copy in the
+  // A renamed file's name, pointing at the entry its new title makes. A file
+  // still called what the book was called before — its Dropbox copy in the
   // other format, or that format once it is brought in and not renamed yet —
   // is the same book, and goes where the book went. Read in a pass of its own
-  // so the order books arrive in does not decide it.
+  // so the order books arrive in does not decide it; the books' titles are
+  // read before the Dropbox files', as their entries come first.
   const renamedFrom = new Map<string, string>();
-  for (const book of books) {
-    const id = book.title === null ? null : comparable(book.title);
-    if (id !== null && !renamedFrom.has(groupIdOf(book.fileName))) {
-      renamedFrom.set(groupIdOf(book.fileName), id);
+  const named: [string, string | null][] = [
+    ...books.map((b): [string, string | null] => [b.fileName, b.title]),
+    ...files.map((f): [string, string | null] => [f.name, titleOfFile(f)]),
+  ];
+  for (const [fileName, title] of named) {
+    if (title !== null && !renamedFrom.has(groupIdOf(fileName))) {
+      renamedFrom.set(groupIdOf(fileName), comparable(title));
     }
   }
 
@@ -118,7 +129,7 @@ export function groupShelf(
     add(book.fileName, book.title, { kind: "book", key: book.id, format: book.format, book });
   }
   for (const file of files) {
-    add(file.name, null, {
+    add(file.name, titleOfFile(file), {
       kind: "dropbox",
       key: file.dropboxId,
       format: formatOfName(file.name),

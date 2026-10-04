@@ -4,11 +4,10 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig, type Cache } from "swr";
 import { useOpenPdfBook } from "./useOpenPdfBook";
 import { bookKey } from "./useBook";
-import { ocrKey } from "./useOcrText";
 import { forgetUploadedFile, uploadedFileFor } from "../lib/uploadedFileHandoff";
 import { fakeUpload } from "../../test/fakeUpload";
 import { ApiError } from "../lib/fetcher";
-import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractedPdfData } from "../lib/pdfLoader";
 import type { BookDetail } from "../../shared/schemas/book";
 
 const PDF_ID = "01JBOOK";
@@ -23,7 +22,7 @@ const FULL_TEXT = "エッジはサーバーレス実行基盤です。";
 const SAVED_PLACE = {
   page: 87,
   selectionId: "01JSEL",
-  bookChat: false,
+  sessionId: null,
   outlineOpen: false,
   chatPanelOpen: false,
 };
@@ -34,15 +33,10 @@ const OUTLINE = [
   { title: "第2章", pageNumber: 87 },
 ];
 
-/** What OCR read off a scanned book, as the extractor hands it over. */
-const OCR = {
-  pages: [{ pageNumber: 1, lines: [{ text: "灯台の記録", x: 72, y: 90, width: 120, height: 14 }] }],
-};
-
 function extraction(
   thumbnail: Blob | null,
   outline: ExtractedPdfData["outline"] = null,
-  ocr: ExtractedPdfData["ocr"] = null,
+  needsOcr = false,
 ): ExtractedPdfData {
   return {
     fileName: FILE_NAME,
@@ -52,7 +46,7 @@ function extraction(
     fileContentBase64: "",
     thumbnail,
     outline,
-    ocr,
+    needsOcr,
   };
 }
 
@@ -65,9 +59,9 @@ async function openAPdf(
     onProgress = () => {},
     outline = null,
     title = null,
-    ocr = null,
+    needsOcr = false,
+    ocrPending,
     options,
-    seenOptions = [],
   }: {
     refuse?: boolean;
     title?: string | null;
@@ -75,11 +69,12 @@ async function openAPdf(
     pageDirection?: BookDetail["pageDirection"];
     onProgress?: (ratio: number) => void;
     outline?: ExtractedPdfData["outline"];
-    ocr?: ExtractedPdfData["ocr"];
+    /** Whether the extractor found a book of pictures, for OCR to read later. */
+    needsOcr?: boolean;
+    /** What the server says of the book's OCR; left out, as a server before it would. */
+    ocrPending?: boolean;
     /** What the caller hands the opener along with the file. */
     options?: Parameters<ReturnType<typeof useOpenPdfBook>>[1];
-    /** Filled with what the extractor was handed. */
-    seenOptions?: ExtractOptions[];
   } = {},
 ) {
   // The upload goes through XMLHttpRequest — the only way to hear how much of
@@ -96,10 +91,7 @@ async function openAPdf(
   const { result } = renderHook(
     () =>
       useOpenPdfBook(
-        async (_file, extractOptions) => {
-          seenOptions.push(extractOptions);
-          return extraction(thumbnail, outline, ocr);
-        },
+        async () => extraction(thumbnail, outline, needsOcr),
         onProgress,
         () => sending.request,
       ),
@@ -128,6 +120,7 @@ async function openAPdf(
       readingState,
       title,
       pageDirection,
+      ...(ocrPending === undefined ? {} : { ocrPending }),
     });
   }
 
@@ -147,7 +140,7 @@ describe("useOpenPdfBook", () => {
     // book that was read on another device back to page 1.
     const { cache, outcome } = await openAPdf(COVER, { outline: OUTLINE, pageDirection: "rtl" });
 
-    expect(outcome._unsafeUnwrap()).toBe(PDF_ID);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
     expect(cache.get(bookKey(PDF_ID))?.data).toStrictEqual({
       id: PDF_ID,
       fileName: FILE_NAME,
@@ -158,6 +151,7 @@ describe("useOpenPdfBook", () => {
       // reader's own backfill must not run on the freshly-added book.
       hasOutline: true,
       hasOcr: false,
+      ocrPending: false,
       selections: [],
       readingState: SAVED_PLACE,
       title: null,
@@ -176,7 +170,7 @@ describe("useOpenPdfBook", () => {
   it("records that a book whose cover could not be rendered has none", async () => {
     const { cache, outcome } = await openAPdf(null, { readingState: null });
 
-    expect(outcome._unsafeUnwrap()).toBe(PDF_ID);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
     expect(cache.get(bookKey(PDF_ID))?.data).toStrictEqual({
       id: PDF_ID,
       fileName: FILE_NAME,
@@ -185,6 +179,7 @@ describe("useOpenPdfBook", () => {
       hasThumbnail: false,
       hasOutline: false,
       hasOcr: false,
+      ocrPending: false,
       selections: [],
       readingState: null,
       title: null,
@@ -224,7 +219,7 @@ describe("useOpenPdfBook", () => {
     // book again, which on a phone is the upload's cost paid a second time.
     const { chosen, outcome } = await openAPdf(COVER);
 
-    expect(outcome._unsafeUnwrap()).toBe(PDF_ID);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
     expect(uploadedFileFor(PDF_ID)).toBe(chosen);
   });
 
@@ -233,7 +228,7 @@ describe("useOpenPdfBook", () => {
     const seen: number[] = [];
     const { outcome } = await openAPdf(COVER, { onProgress: (r) => seen.push(r) });
 
-    expect(outcome._unsafeUnwrap()).toBe(PDF_ID);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
     expect(seen).toStrictEqual([0.25, 1]);
   });
 
@@ -267,42 +262,35 @@ describe("useOpenPdfBook", () => {
   });
 });
 
-describe("useOpenPdfBook with a book read by OCR", () => {
+describe("useOpenPdfBook with a book of pictures", () => {
   afterEach(() => forgetUploadedFile(PDF_ID));
 
-  it("sends what OCR read as a JSON file of its own", async () => {
-    const { sent } = await openAPdf(COVER, { ocr: OCR });
+  it("tells the server the book's text is still to be read by OCR", async () => {
+    const { sent } = await openAPdf(COVER, { needsOcr: true, ocrPending: true });
 
     const body = sent as FormData;
-    expect(formKeys(body)).toStrictEqual(["file", "fullText", "ocr", "pageCount", "thumbnail"]);
-    const field = body.get("ocr") as File;
-    expect(field.type).toBe("application/json");
-    expect(JSON.parse(await field.text())).toStrictEqual(OCR);
+    expect(formKeys(body)).toStrictEqual([
+      "file",
+      "fullText",
+      "ocrPending",
+      "pageCount",
+      "thumbnail",
+    ]);
+    expect(body.get("ocrPending")).toBe("true");
   });
 
-  it("files the lines under the key the viewer reads them by, so they are not fetched back", async () => {
-    const { cache } = await openAPdf(COVER, { ocr: OCR });
+  it("hands back that OCR is waiting, and files the book as waiting, with no lines yet", async () => {
+    const { cache, outcome } = await openAPdf(COVER, { needsOcr: true, ocrPending: true });
 
-    expect(cache.get(bookKey(PDF_ID))?.data).toMatchObject({ hasOcr: true });
-    expect(cache.get(ocrKey(PDF_ID))?.data).toStrictEqual(OCR);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: true });
+    expect(cache.get(bookKey(PDF_ID))?.data).toMatchObject({ hasOcr: false, ocrPending: true });
   });
 
-  it("files no lines for a book that needed no OCR", async () => {
-    const { cache } = await openAPdf(COVER);
+  it("goes by the server when it already holds what OCR read off the same book", async () => {
+    // Added again: the server kept the text, and nothing is left to read.
+    const { outcome } = await openAPdf(COVER, { needsOcr: true, ocrPending: false });
 
-    expect(cache.get(ocrKey(PDF_ID))).toBeUndefined();
-  });
-
-  it("hands the extractor the reader's way to cancel and to hear how far OCR has got", async () => {
-    const controller = new AbortController();
-    const onOcrProgress = vi.fn();
-    const seenOptions: ExtractOptions[] = [];
-
-    await openAPdf(COVER, { options: { signal: controller.signal, onOcrProgress }, seenOptions });
-
-    expect(seenOptions).toHaveLength(1);
-    expect(seenOptions[0].signal).toBe(controller.signal);
-    expect(seenOptions[0].onOcrProgress).toBe(onOcrProgress);
+    expect(outcome._unsafeUnwrap()).toStrictEqual({ id: PDF_ID, ocrPending: false });
   });
 });
 

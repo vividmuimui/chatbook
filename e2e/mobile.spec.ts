@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { FIXTURE_FILE_NAME, OUTLINE, PAGE_COUNT } from "./fixtures/testBookManifest.ts";
+import { FIXTURE_FILE_NAME, OUTLINE, PAGE_COUNT, pageText } from "./fixtures/testBookManifest.ts";
 import { EPUB_CHAPTERS, EPUB_FILE_NAME } from "./fixtures/testEpubManifest.ts";
 
 /**
@@ -55,7 +55,7 @@ async function openTestBook(page: Page): Promise<string> {
     selections: { id: string }[];
     readingState: {
       page: number;
-      bookChat: boolean | null;
+      sessionId: string | null;
       outlineOpen: boolean | null;
       chatPanelOpen: boolean | null;
     } | null;
@@ -63,19 +63,27 @@ async function openTestBook(page: Page): Promise<string> {
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
   }
+  // Chats about the book are the book's as well, and the chat list a test
+  // reads would otherwise hold every session an earlier one started.
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; id: string }[];
+  };
+  for (const chat of chats) {
+    if (chat.kind === "book") await page.request.delete(`/api/pdf/${pdfId}/sessions/${chat.id}`);
+  }
 
   // The three specs share this book, and the reader's place — both panels
   // included — is kept on the server now: uploading goes through the shelf,
   // which names no page, so an earlier test's place would be where this one
   // opens.
   await page.request.put(`/api/pdf/${pdfId}/reading-state`, {
-    // `bookChat` is spelled out because leaving it out keeps whatever was
-    // stored: a conversation about the book itself, left open by an earlier
-    // test, would otherwise be the one this one opens on.
+    // `sessionId` is spelled out because leaving it out keeps whatever was
+    // stored: a chat about the book, left open by an earlier test, would
+    // otherwise be the one this one opens on.
     data: {
       page: 1,
       selectionId: null,
-      bookChat: false,
+      sessionId: null,
       outlineOpen: true,
       chatPanelOpen: true,
     },
@@ -92,10 +100,15 @@ async function openTestBook(page: Page): Promise<string> {
   const resumedElsewhere =
     readingState !== null &&
     (readingState.page !== 1 ||
-      readingState.bookChat === true ||
+      readingState.sessionId !== null ||
       readingState.outlineOpen === false ||
       readingState.chatPanelOpen === false);
-  if (selections.length > 0 || resumedElsewhere || pageDirection !== "ltr") {
+  if (
+    selections.length > 0 ||
+    chats.some((chat) => chat.kind === "book") ||
+    resumedElsewhere ||
+    pageDirection !== "ltr"
+  ) {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // The page counter arrives with the book, but a tap or a drag needs the page
@@ -196,6 +209,43 @@ test("gives the answer the whole pane once the sheet is drawn all the way up", a
   await expect(page.getByRole("button", { name: "チャットを縮める" })).toBeVisible();
 });
 
+test("goes between the chats and the highlights inside the sheet, a tap each way", async ({
+  page,
+}) => {
+  const pdfId = await openTestBook(page);
+  const passage = pageText(2).body[0];
+  await page.request.post(`/api/pdf/${pdfId}/selections`, {
+    data: {
+      selectedText: passage,
+      pageNumber: 2,
+      positionData: { rects: [{ x: 40, y: 40, width: 160, height: 24 }] },
+    },
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "チャット" }).tap({ timeout: 60000 });
+  const sheet = page.getByRole("region", { name: "チャット" });
+  await expect(sheet.getByText("ハイライト 1件")).toBeVisible();
+
+  await sheet.getByRole("tab", { name: "チャット" }).tap();
+  await expect(sheet.getByRole("button", { name: "新しいチャット", exact: true })).toBeVisible();
+  await expect(sheet.getByText("ハイライト 1件")).toBeHidden();
+
+  await sheet.getByRole("tab", { name: "ハイライト" }).tap();
+  await expect(sheet.getByText("ハイライト 1件")).toBeVisible();
+
+  // The highlight's conversation is the button beside it, and the way back
+  // comes to the list it was opened from
+  await sheet
+    .getByRole("listitem")
+    .filter({ hasText: passage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .tap();
+  await expect(sheet.getByPlaceholder("質問を入力...")).toBeVisible();
+  await sheet.getByRole("button", { name: "一覧に戻る" }).tap();
+  await expect(sheet.getByText("ハイライト 1件")).toBeVisible();
+});
+
 // What the desktop spec's test of the same name does not cover: this one is
 // about the sheet, since what is drawn half way up a phone is the least room
 // the chapter menu will ever be given. Nothing here is sent, so no model is
@@ -207,7 +257,8 @@ test("asks the book itself from the sheet, with the chapters within reach of it"
 
   await page.getByRole("button", { name: "チャット" }).tap();
   const sheet = page.getByRole("region", { name: "チャット" });
-  await sheet.getByRole("button", { name: "本について質問する" }).tap();
+  await sheet.getByRole("tab", { name: "チャット" }).tap();
+  await sheet.getByRole("button", { name: "新しいチャット", exact: true }).tap();
 
   // Opened from the sheet, the conversation takes it over rather than a second
   // one being drawn: the toolbar's chat button is still the way back.
@@ -282,8 +333,10 @@ test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ 
   // The second chapter, which fills several screens of a phone
   const bookId = new URL(page.url()).pathname.split("/").pop()!;
   await page.goto(`/books/${bookId}?page=2`);
-  const chapters = EPUB_CHAPTERS.length;
-  await expect(page.getByText(`2 / ${chapters} 章`, { exact: true })).toBeVisible();
+  // Said by the heading the reader is under, never "2 / 3" of the spine
+  await expect(page.getByRole("navigation", { name: "ページ操作" })).toContainText(
+    EPUB_CHAPTERS[1].heading,
+  );
   const screenLabel = page.getByText(/^\d+ \/ \d+$/);
   await expect(screenLabel).toHaveText(/^1 \//);
   // Waited for, not read once: the chapter counts as one screen until it has
@@ -324,4 +377,35 @@ test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ 
   await expect(
     page.locator(".epubChapter p", { hasText: EPUB_CHAPTERS[1].paragraphs[0] }),
   ).not.toBeInViewport();
+});
+
+test("reads a PDF by scrolling on a phone, the toolbar following the scroll and stepping the column", async ({
+  page,
+}) => {
+  await openTestBook(page);
+  await page.getByRole("button", { name: "設定" }).tap();
+  await page.getByRole("radio", { name: "スクロール" }).tap();
+  await page.keyboard.press("Escape");
+  const pane = page.locator('[data-reading-mode="scroll"]');
+  await expect(pane).toBeVisible();
+
+  // Every page of the fixture is A4, so where one starts is a share of the column
+  await pane.evaluate((el, count) => {
+    const stack = el.firstElementChild as HTMLElement;
+    el.scrollTop = stack.offsetTop + (stack.offsetHeight / count) * 2 + 40;
+  }, PAGE_COUNT);
+  await expect(page.getByText(pageLabel(3), { exact: true })).toBeVisible();
+
+  // A tap at the edge turns nothing while scrolling
+  const box = (await pane.boundingBox())!;
+  await page.touchscreen.tap(box.x + box.width * 0.9, box.y + box.height / 2);
+  await expect(page.getByText(pageLabel(3), { exact: true })).toBeVisible();
+
+  // The toolbar's step scrolls the column to the next page
+  await page
+    .getByRole("navigation", { name: "ページ操作" })
+    .getByRole("button", { name: "次のページ" })
+    .tap();
+  await expect(page.getByText(pageLabel(4), { exact: true })).toBeVisible();
+  await expect(page.locator('.textLayer span[data-page-number="4"]').first()).toBeInViewport();
 });

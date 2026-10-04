@@ -47,6 +47,27 @@ export function pagedLayout(paneWidth: number): PagedLayout {
 }
 
 /**
+ * How a chapter read by scrolling is laid out: one column down the paper, as
+ * wide as one screen would be — never a spread, which would be two columns to
+ * scroll down side by side.
+ */
+export function scrolledLayout(paneWidth: number): PagedLayout {
+  return {
+    columns: 1,
+    viewWidth: Math.min(Math.max(0, Math.floor(paneWidth)), MAX_SCREEN_WIDTH_PX),
+  };
+}
+
+/**
+ * Where a turn by chapter leads, for a book read by scrolling: the top of the
+ * next chapter, or the top of the one before. Null past either end.
+ */
+export function turnChapter(page: number, turn: PageTurn, pageCount: number): number | null {
+  const to = turn === "next" ? page + 1 : page - 1;
+  return to >= 1 && to <= pageCount ? to : null;
+}
+
+/**
  * How many screens the chapter's columns fill.
  *
  * `scrollWidth` is the chapter's laid out in columns: every column and the gaps

@@ -15,6 +15,7 @@ import {
   EPUB_CHAPTERS,
   EPUB_FILE_NAME,
   EPUB_TITLE,
+  chapterParagraphs,
   LINKED_ANCHOR,
 } from "./fixtures/testEpubManifest.ts";
 import {
@@ -92,7 +93,7 @@ async function logIn(page: Page): Promise<void> {
 /** The place the book reports, as much of it as the reset has to undo. */
 type StoredPlace = {
   page: number;
-  bookChat: boolean | null;
+  sessionId: string | null;
   outlineOpen: boolean | null;
   chatPanelOpen: boolean | null;
 } | null;
@@ -102,7 +103,7 @@ function resumedElsewhere(place: StoredPlace): boolean {
   return (
     place !== null &&
     (place.page !== 1 ||
-      place.bookChat === true ||
+      place.sessionId !== null ||
       place.outlineOpen === false ||
       place.chatPanelOpen === false)
   );
@@ -158,19 +159,27 @@ async function openTestBook(page: Page): Promise<string> {
   for (const selection of selections) {
     await page.request.delete(`/api/pdf/${pdfId}/selections/${selection.id}`);
   }
+  // Chats about the book are the book's as well, and the chat list a test
+  // reads would otherwise hold every session an earlier one started.
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; id: string }[];
+  };
+  for (const chat of chats) {
+    if (chat.kind === "book") await page.request.delete(`/api/pdf/${pdfId}/sessions/${chat.id}`);
+  }
 
   // The three specs share this book, and the reader's place — both panels
   // included — is kept on the server now: uploading goes through the shelf,
   // which names no page, so an earlier test's place would be where this one
   // opens.
   await page.request.put(`/api/pdf/${pdfId}/reading-state`, {
-    // `bookChat` is spelled out because leaving it out keeps whatever was
-    // stored: a conversation about the book itself, left open by an earlier
-    // test, would otherwise be the one this one opens on.
+    // `sessionId` is spelled out because leaving it out keeps whatever was
+    // stored: a chat about the book, left open by an earlier test, would
+    // otherwise be the one this one opens on.
     data: {
       page: 1,
       selectionId: null,
-      bookChat: false,
+      sessionId: null,
       outlineOpen: true,
       chatPanelOpen: true,
     },
@@ -184,7 +193,12 @@ async function openTestBook(page: Page): Promise<string> {
 
   // Reload only where the reader is showing something the reset has just
   // replaced: a second load of the book costs as much as the first one.
-  if (selections.length > 0 || resumedElsewhere(readingState) || pageDirection !== "ltr") {
+  if (
+    selections.length > 0 ||
+    chats.some((chat) => chat.kind === "book") ||
+    resumedElsewhere(readingState) ||
+    pageDirection !== "ltr"
+  ) {
     await page.goto(`/books/${pdfId}?page=1`);
   }
   // A tap or a drag needs the page itself to have been drawn, not merely the
@@ -334,8 +348,8 @@ test("a book with CID-keyed fonts renders without asking for a CMap", async ({ p
 
 /**
  * A book of scans: every page is a picture of its lines, so pdf.js reads no
- * text off it and the shelf has to read it by OCR before it can be stored.
- * Drawn by `fixtures/generateScannedBook.ts` and committed alongside it.
+ * text off it and its text has to be read by OCR. Drawn by
+ * `fixtures/generateScannedBook.ts` and committed alongside it.
  */
 const SCANNED_BOOK = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -343,18 +357,52 @@ const SCANNED_BOOK = path.join(
   SCANNED_FIXTURE_FILE_NAME,
 );
 
-test("a scanned book is read by OCR as it is added, and what was read can be searched and marked on the page", async ({
+test("a scanned book is added at once and read by OCR in the background, the shelf says how far it has got, and what was read can be searched and marked on the page", async ({
   page,
 }) => {
   // Real Tesseract, served from the app: the engine and two language models
-  // load, then each page is read — tens of seconds on a slow machine.
-  test.setTimeout(240000);
+  // load, then each page is read — tens of seconds on a slow machine. Twice
+  // over, since the reading is started again after a reload.
+  test.setTimeout(300000);
   await logIn(page);
+  const title = SCANNED_FIXTURE_FILE_NAME.replace(/\.pdf$/, "");
+
+  // What OCR read is held back at the server until the test lets it through,
+  // so the shelf can be looked at while the reading is still going on — the
+  // two pages are otherwise read in a few seconds.
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/pdf/*/ocr", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    await released;
+    await route.fallback();
+  });
 
   await page.goto("/");
   await page.setInputFiles('input[type="file"]', SCANNED_BOOK);
-  await expect(page.getByRole("status")).toContainText("文字を読み取り中", { timeout: 60000 });
-  await expect(page).toHaveURL(/\/books\//, { timeout: 180000 });
+  // Stored without waiting for OCR: the reader opens straight away, and says
+  // why nothing on the pages can be selected yet
+  await expect(page).toHaveURL(/\/books\//, { timeout: 60000 });
+  await expect(page.getByText(/読み取りが終わるまで、文字の選択・本文検索/)).toBeVisible();
+
+  // The reading carries on behind the reader's back, and the shelf shows it
+  await page.getByRole("link", { name: "← 本棚" }).click();
+  await expect(page.getByText(/^文字を(読み取り中|保存中)/)).toBeVisible({ timeout: 120000 });
+  await expect(page.getByRole("button", { name: `${title} の文字の読み取りを中止` })).toBeVisible();
+
+  // A reload takes the reading with it; the server still has the book
+  // waiting, and the shelf offers to start it again
+  await page.reload();
+  await expect(page.getByText("文字の読み取りが途中です")).toBeVisible({ timeout: 30000 });
+  release();
+  await page.unroute("**/api/pdf/*/ocr");
+  await page.getByRole("button", { name: `${title} の文字の読み取りを再開` }).click();
+  await expect(page.getByText(/^文字(の読み取り|を読み取り中|を保存中)/)).toHaveCount(0, {
+    timeout: 180000,
+  });
+
+  await page.getByRole("button", { name: `${title} を開く` }).click();
+  await expect(page.getByText(/読み取りが終わるまで/)).toHaveCount(0);
   // The spans of page 1 carry its number only once the text layer — built
   // from the OCR lines, since the page has none of its own — is drawn
   await expect(drawnPage(page, 1).first()).toBeVisible({ timeout: 60000 });
@@ -616,7 +664,9 @@ test("gives the chat the window on the maximize toggle, and the page back on the
   // second pane beside it left to size.
   await expect(page.locator("canvas.block").first()).toBeHidden();
   await expect(page.getByRole("separator", { name: "PDFとチャットの幅を変更" })).toBeHidden();
-  await expect(chatPane.getByText("本文のテキストを選択して質問してください")).toBeVisible();
+  await expect(
+    chatPane.getByText("本文のテキストを選択して、色を付けるか質問してください"),
+  ).toBeVisible();
   expect((await chatPane.boundingBox())!.width).toBeCloseTo(paneRow, 0);
 
   await page.getByRole("button", { name: "最大化を解除" }).click();
@@ -1553,10 +1603,15 @@ test("switching to emacs in settings changes the bindings and survives a reload"
 
 test("logging out takes the session back and puts the password box up", async ({ page }) => {
   // The one way out, and the only thing between a borrowed laptop and the
-  // books. It lives in the settings menu because that is the one control on
-  // screen in both layouts.
+  // books. It lives in the shelf's settings menu: every book is one tap
+  // (「← 本棚」) away from the shelf, and the reader's own menu no longer has it.
   await openTestBook(page);
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Vim" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ログアウト" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
+  await page.getByRole("link", { name: "← 本棚" }).click();
   await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("button", { name: "ログアウト" }).click();
 
@@ -1709,8 +1764,20 @@ test("the chat panel lists the highlights, opens one, and comes back to the list
   await expect(chatPanel.getByText("ハイライト 2件")).toBeVisible({ timeout: 60000 });
   await expect(chatPanel.getByText(firstPassage, { exact: true })).toBeVisible();
 
-  // Opening a highlight of another page brings the viewer along
+  // Picking a highlight goes back to its page, and leaves the list where it is
   await chatPanel.getByText(laterPassage, { exact: true }).click();
+  await expect(drawnPage(page, 3).first()).toBeVisible();
+  await expect(chatPanel.getByText("ハイライト 2件")).toBeVisible();
+  await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeHidden();
+
+  // Its conversation is the button beside it, which brings the viewer along too
+  await page.keyboard.press("h");
+  await expect(drawnPage(page, 2).first()).toBeVisible();
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: laterPassage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click();
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
   await expect(drawnPage(page, 3).first()).toBeVisible();
 
@@ -1719,19 +1786,111 @@ test("the chat panel lists the highlights, opens one, and comes back to the list
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeHidden();
 });
 
+test("goes between the chat list and the highlight list, one tap each way", async ({ page }) => {
+  const pdfId = await openTestBook(page);
+  const passage = pageText(2).body[0];
+  await page.request.post(`/api/pdf/${pdfId}/selections`, {
+    data: {
+      selectedText: passage,
+      pageNumber: 2,
+      positionData: { rects: [{ x: 40, y: 40, width: 160, height: 24 }] },
+    },
+  });
+  await page.reload();
+  const chatPanel = page.locator("main > div").last();
+
+  // The highlights are what the panel opens on
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeVisible({ timeout: 60000 });
+  await expect(chatPanel.getByRole("tab", { name: "ハイライト" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  // A highlight that was only marked has no conversation to list
+  await expect(chatPanel.getByText("チャットはまだありません")).toBeVisible();
+  await expect(
+    chatPanel.getByRole("button", { name: "新しいチャット", exact: true }),
+  ).toBeVisible();
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeHidden();
+
+  await chatPanel.getByRole("tab", { name: "ハイライト" }).click();
+  await expect(chatPanel.getByText("ハイライト 1件")).toBeVisible();
+  await expect(chatPanel.getByRole("button", { name: "新しいチャット", exact: true })).toBeHidden();
+
+  // Leaving a conversation comes back to the list it was opened from
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
+  await expect(chatPanel.getByRole("heading", { name: "新しいチャット" })).toBeVisible();
+  await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
+  await expect(chatPanel.getByRole("tab", { name: "チャット" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+test("a new chat is a session of its own, and the chat list holds both", async ({ page }) => {
+  // Nothing here waits on an answer: the dummy key in `.dev.vars.example` gets
+  // none (a real key does, which is why the list below is not read in order).
+  // The server stores a question before it asks the model, and the stream
+  // starting is the reader's sign that it has — which is all the list needs.
+  const pdfId = await openTestBook(page);
+  const chatPanel = page.locator("main > div").last();
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await expect(chatPanel.getByText("チャットはまだありません")).toBeVisible({ timeout: 60000 });
+
+  for (const question of ["最初のチャットの質問", "二つ目のチャットの質問"]) {
+    await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
+    await expect(chatPanel.getByRole("heading", { name: "新しいチャット" })).toBeVisible();
+    const stored = page.waitForResponse(
+      (response) =>
+        /\/api\/pdf\/[^/]+\/sessions\/[^/]+\/messages$/.test(response.url()) &&
+        response.request().method() === "POST",
+    );
+    await chatPanel.getByPlaceholder("質問を入力...").fill(question);
+    await chatPanel.getByRole("button", { name: "送信" }).click();
+    expect((await stored).status()).toBe(200);
+    await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
+  }
+
+  // Each called by its own first question. Not in a set order: with the real
+  // key a main clone's `.dev.vars` carries, an answer lands in the first one
+  // after the second was asked, and the list puts the newest first.
+  const rows = chatPanel.getByRole("listitem");
+  await expect(rows).toHaveCount(2);
+  const first = rows.filter({ hasText: "最初のチャットの質問" });
+  await expect(first).toHaveCount(1);
+  await expect(rows.filter({ hasText: "二つ目のチャットの質問" })).toHaveCount(1);
+  await expect(first).toContainText("本全体");
+
+  const { chats } = (await (await page.request.get(`/api/pdf/${pdfId}/chats`)).json()) as {
+    chats: { kind: string; firstQuestion: string | null }[];
+  };
+  expect(chats.map((chat) => chat.kind)).toStrictEqual(["book", "book"]);
+  expect(chats.map((chat) => chat.firstQuestion)).toStrictEqual(
+    expect.arrayContaining(["最初のチャットの質問", "二つ目のチャットの質問"]),
+  );
+
+  // Each holds its own thread and none of the other's
+  await first.click();
+  await expect(chatPanel.getByText("最初のチャットの質問", { exact: true })).toBeVisible();
+  await expect(chatPanel.getByText("二つ目のチャットの質問", { exact: true })).toHaveCount(0);
+});
+
 test("asks the book itself, aiming the question at chapters of its table of contents", async ({
   page,
 }) => {
   await openTestBook(page);
   const chatPanel = page.locator("main > div").last();
 
-  // Nothing is marked in this book, so the list offers both ways to start
-  const entry = chatPanel.getByRole("button", { name: "本について質問する" });
+  // A new chat, off the chat list: about the book, with no passage under it
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  const entry = chatPanel.getByRole("button", { name: "新しいチャット", exact: true });
   await expect(entry).toBeVisible({ timeout: 60000 });
   const { sent } = await stubBookConversation(page, "この本の要点です。");
   await entry.click();
 
-  // The book's own conversation: no passage under it, and the scope where the
+  // A chat about the book: no passage under it, and the scope where the
   // quoted passage would otherwise sit
   await expect(chatPanel.getByRole("button", { name: "範囲: 本全体" })).toBeVisible();
 
@@ -1766,22 +1925,26 @@ test("asks the book itself, aiming the question at chapters of its table of cont
     },
   ]);
 
-  // And the way back leaves the book's conversation for the list
+  // And the way back leaves the chat for the list, where the session made for
+  // its first question is now one of the book's chats
   await chatPanel.getByRole("button", { name: "一覧に戻る" }).click();
-  await expect(chatPanel.getByText("チャットを開始するには")).toBeVisible();
-  await expect(chatPanel.getByRole("button", { name: "本について質問する" })).toBeVisible();
+  await expect(
+    chatPanel.getByRole("button", { name: "新しいチャット", exact: true }),
+  ).toBeVisible();
+  await expect(chatPanel.getByRole("listitem")).toHaveCount(1);
 });
 
 test("comes back to the book's own conversation when the book is opened again", async ({
   page,
 }) => {
-  // The conversation is the book's answer rather than the address bar's, so a
+  // The session is the book's answer rather than the address bar's, so a
   // reload lands in the thread that was left open rather than on the list.
   await openTestBook(page);
   const chatPanel = page.locator("main > div").last();
   await stubBookConversation(page, "この本の要点です。");
 
-  await chatPanel.getByRole("button", { name: "本について質問する" }).click();
+  await chatPanel.getByRole("tab", { name: "チャット" }).click();
+  await chatPanel.getByRole("button", { name: "新しいチャット", exact: true }).click();
   await chatPanel.getByPlaceholder("質問を入力...").fill("この本を要約して");
   await chatPanel.getByRole("button", { name: "送信" }).click();
   await expect(chatPanel.getByText("承知しました")).toBeVisible({ timeout: 30000 });
@@ -2048,7 +2211,11 @@ test("reloading brings back the folded panel and the chat that was open in it", 
 
   // Scope to the panel: the passage can also appear in the page's text layer
   const chatPanel = page.locator("main > div").last();
-  await chatPanel.getByText(passage, { exact: true }).click({ timeout: 60000 });
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: passage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click({ timeout: 60000 });
   await expect(chatPanel.getByPlaceholder("質問を入力...")).toBeVisible();
 
   const saved = placeSaved(page);
@@ -2113,25 +2280,34 @@ async function stubConversation(page: Page, answer: string): Promise<{ sent: str
 }
 
 /**
- * The book's own conversation, answered and remembered without a model.
+ * A session of the book's own, answered and remembered without a model.
  *
  * Both directions of the endpoint, as `stubConversation` does for a highlight:
- * the thread the panel reads on opening the conversation, and the question it
+ * the thread the panel reads on opening the session, and the question it
  * sends. The body each question arrives with is kept, which is how a test sees
- * what the question was aimed at. `**` does not cross a slash, so this matches
- * the book's own endpoint and not a highlight's.
+ * what the question was aimed at. Every session's messages are answered, so a
+ * test does not need to know the id the server gave a new chat.
  */
 async function stubBookConversation(
   page: Page,
   answer: string,
 ): Promise<{ sent: { content: string; scope?: unknown }[] }> {
   const sent: { content: string; scope?: unknown }[] = [];
-  await page.route("**/api/pdf/*/chats", async (route) => {
+  // Only the conversation itself: the session it is in is made by the real
+  // server, so the chat list and the reader's place name one that exists.
+  await page.route("**/api/pdf/*/sessions/*/messages", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
+      const sessionId = new URL(request.url()).pathname.split("/").at(-2)!;
       await route.fulfill({
         json: {
-          selectionId: null,
+          session: {
+            id: sessionId,
+            title: null,
+            scope: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+          },
           messages: [
             {
               id: "stub-answer",
@@ -2188,7 +2364,11 @@ test("a passage picked out of an answer is quoted in the next question", async (
 
   // Scope to the panel: the highlight's passage is also in the page's text layer
   const chatPanel = page.locator("main > div").last();
-  await chatPanel.getByText(passage, { exact: true }).click({ timeout: 60000 });
+  await chatPanel
+    .getByRole("listitem")
+    .filter({ hasText: passage })
+    .getByRole("button", { name: /のチャットを開く$/ })
+    .click({ timeout: 60000 });
   const answerText = chatPanel.getByText(answer, { exact: true });
   await expect(answerText).toBeVisible();
 
@@ -2487,7 +2667,7 @@ async function openTestEpub(page: Page): Promise<string> {
     await page.request.delete(`/api/pdf/${bookId}/selections/${selection.id}`);
   }
   await page.request.put(`/api/pdf/${bookId}/reading-state`, {
-    data: { page: 1, selectionId: null, bookChat: false, outlineOpen: true, chatPanelOpen: true },
+    data: { page: 1, selectionId: null, sessionId: null, outlineOpen: true, chatPanelOpen: true },
   });
   await page.goto(`/books/${bookId}?page=1`);
   await expect(chapterHeading(page, 0)).toBeVisible();
@@ -2668,7 +2848,7 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
 
   const lastChapter = EPUB_CHAPTERS.length - 1;
   const words = "オブジェクトストレージ";
-  expect(EPUB_CHAPTERS[lastChapter].paragraphs.join("")).toContain(words);
+  expect(chapterParagraphs(EPUB_CHAPTERS[lastChapter]).join("")).toContain(words);
 
   await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
   const search = page.getByRole("region", { name: "本文の検索" });
@@ -2700,11 +2880,14 @@ async function epubScreen(page: Page): Promise<{ screen: number; count: number }
   return { screen, count };
 }
 
+/** The row under the screen that turns it and says where the reader is. */
+const epubStepper = (page: Page) => page.getByRole("group", { name: "ページ送り" });
+
 /** To the second chapter from the outline, which fills several screens. */
 async function openLongChapter(page: Page): Promise<number> {
   const outline = page.getByRole("navigation", { name: "目次" });
   await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
-  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[1].heading);
   await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
   const { count } = await epubScreen(page);
   expect(count).toBeGreaterThan(2);
@@ -2738,15 +2921,51 @@ test("an EPUB turns a screen at a time, and from the last screen of a chapter on
 
   // On from the chapter's last screen is the next chapter's first
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByText(`3 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[2].heading);
   await expect(chapterHeading(page, 2)).toBeInViewport();
   await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
 
   // And back from there is the end of the chapter before, not its start
   await page.keyboard.press("ArrowLeft");
-  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[1].heading);
   await expect(page.getByText(`${count} / ${count}`, { exact: true })).toBeVisible();
   await expect(closing).toBeInViewport();
+});
+
+test("an EPUB's contents take a section to its own screen of the chapter it shares, and the stepper says where that is", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  const chapter = EPUB_CHAPTERS[2];
+  const [, second] = chapter.sections!;
+  const outline = page.getByRole("navigation", { name: "目次" });
+  const entry = (name: string) => outline.getByRole("button", { name: new RegExp(name) });
+
+  // Beside each entry, how far into the book it starts — not the item of the
+  // spine its chapter is, which the chapter and both its sections share
+  await expect(entry(second.heading)).toHaveText(new RegExp(`^${second.heading}\\d+%$`));
+
+  await entry(second.heading).click();
+  // The section, screens into its chapter, rather than the chapter's top
+  await expect(page.locator(`#epub-${second.id}`)).toBeInViewport();
+  await expect(chapterHeading(page, 2)).not.toBeInViewport();
+  await expect(page.getByText(/^1 \/ \d+$/)).toHaveCount(0);
+
+  // The contents light the section, not its chapter or its sibling
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${second.heading}`),
+  );
+  // And the stepper says it by name, with how far into the book that is
+  await expect(epubStepper(page)).toContainText(second.heading);
+  await expect(epubStepper(page)).toContainText(/\d+%/);
+  await expect(epubStepper(page)).not.toContainText(`/ ${EPUB_CHAPTERS.length} 章`);
+
+  // Back to the chapter's top from its own entry
+  await entry(`^${chapter.heading}`).click();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${chapter.heading}`),
+  );
 });
 
 test("an EPUB stays on the words being read when the pane changes width", async ({ page }) => {
@@ -2773,4 +2992,120 @@ test("an EPUB stays on the words being read when the pane changes width", async 
   await expect.poll(async () => (await epubScreen(page)).count).not.toBe(count);
 
   await expect(chapterParagraph(page, reading)).toBeInViewport();
+});
+
+/**
+ * Switch the reader to scrolling through the pages, from the menu a PDF has it
+ * in. The choice is the reader's habit, kept in this browser context only.
+ */
+async function readByScrolling(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "設定" }).click();
+  await page.getByRole("radio", { name: "スクロール" }).click();
+  await page.keyboard.press("Escape");
+  const pane = page.locator('[data-reading-mode="scroll"]');
+  await expect(pane).toBeVisible();
+  return pane;
+}
+
+/**
+ * Scroll the column so the top of page `pageNumber` is a little way under the
+ * top of the view. The pages are stacked at one height (every page of the
+ * fixture is A4), so where one starts is a share of the column.
+ */
+async function scrollToPage(pane: Locator, pageNumber: number, pageCount: number) {
+  await pane.evaluate(
+    (el, [n, count]) => {
+      const stack = el.firstElementChild as HTMLElement;
+      const slot = stack.offsetHeight / count;
+      el.scrollTop = stack.offsetTop + slot * (n - 1) + 40;
+    },
+    [pageNumber, pageCount] as const,
+  );
+}
+
+test("reads a PDF by scrolling: the page follows the scroll into the address, and a reload comes back to it", async ({
+  page,
+}) => {
+  await openTestBook(page);
+  const pane = await readByScrolling(page);
+
+  // Every page down one column, but only those near the one being read drawn
+  await expect(drawnPage(page, 1).first()).toBeInViewport();
+  await expect(drawnPage(page, 2).first()).toBeAttached();
+  await expect.poll(() => page.locator("canvas.block").count()).toBeLessThan(PAGE_COUNT);
+
+  await scrollToPage(pane, 4, PAGE_COUNT);
+  await expect(page).toHaveURL(/[?&]page=4(&|$)/);
+  await expect(drawnPage(page, 4).first()).toBeInViewport();
+  // Far behind now, so no longer drawn
+  await expect(drawnPage(page, 1)).toHaveCount(0);
+
+  // The edges are only more of the page: nothing turns there
+  const box = (await pane.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 10, box.y + box.height / 2);
+  await expect(page).toHaveURL(/[?&]page=4(&|$)/);
+
+  // The keys that turn a page scroll to the next one
+  await page.keyboard.press("l");
+  await expect(page).toHaveURL(/[?&]page=5(&|$)/);
+  await expect(drawnPage(page, 5).first()).toBeInViewport();
+
+  // Never two pages side by side, even with the chat folded away
+  await page.getByRole("button", { name: "チャットを隠す" }).click();
+  await expect(drawnPage(page, 5).first()).toBeInViewport();
+  const lefts = await page
+    .locator("[data-page-container]")
+    .evaluateAll(
+      (els) => new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size,
+    );
+  expect(lefts).toBe(1);
+
+  await page.reload();
+  await expect(drawnPage(page, 5).first()).toBeInViewport({ timeout: 60000 });
+});
+
+test("an EPUB read by scrolling runs down its chapter and on into the next, and its contents scroll to a section", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  await page.getByRole("button", { name: "表示の設定" }).click();
+  // The choices are drawn as a segmented control: the label takes the click
+  await page
+    .locator("label")
+    .filter({ has: page.getByRole("radio", { name: "スクロール" }) })
+    .click();
+  await page.keyboard.press("Escape");
+  const paper = page.locator('article[data-reading-mode="scroll"]');
+  await expect(paper).toBeVisible();
+
+  const outline = page.getByRole("navigation", { name: "目次" });
+  await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
+  await expect(chapterHeading(page, 1)).toBeInViewport();
+  // No screens to count while scrolling
+  await expect(epubStepper(page)).not.toContainText("この章");
+
+  // Down the column to the chapter's end, and on into the next
+  const closing = chapterParagraph(page, EPUB_CHAPTERS[1].paragraphs.at(-1)!);
+  await expect(closing).not.toBeInViewport();
+  await paper.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect(closing).toBeInViewport();
+  await page.getByRole("button", { name: "次の章を読む", exact: true }).click();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+
+  // A section's entry scrolls to it, and the contents light it
+  const [first, second] = EPUB_CHAPTERS[2].sections!;
+  await outline.getByRole("button", { name: new RegExp(second.heading) }).click();
+  await expect(page.locator(`#epub-${second.id}`)).toBeInViewport();
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${second.heading}`),
+  );
+
+  // Scrolling back up to the first section is reading it again
+  await page.locator(`#epub-${first.id}`).evaluate((el) => el.scrollIntoView());
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${first.heading}`),
+  );
+  await expect(epubStepper(page)).toContainText(first.heading);
 });

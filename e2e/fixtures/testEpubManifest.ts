@@ -26,10 +26,24 @@ function filler(chapter: string, count: number): string[] {
 /** How many filler paragraphs the long chapters hold. */
 export const FILLER_PARAGRAPHS = 30;
 
+/**
+ * A section of a chapter: an `<h2>` with an id, which the table of contents
+ * points at as `ch3.xhtml#<id>`. Several of them in one file is how the books
+ * the reader was first given lay a chapter out — one item of the spine, many
+ * entries of the contents — and the reader has to tell them apart by anchor.
+ */
+export interface EpubFixtureSection {
+  id: string;
+  heading: string;
+  paragraphs: string[];
+}
+
 export interface EpubFixtureChapter {
   file: string;
   heading: string;
   paragraphs: string[];
+  /** After the chapter's own paragraphs, each listed under the chapter in the contents. */
+  sections?: EpubFixtureSection[];
 }
 
 export const EPUB_CHAPTERS: EpubFixtureChapter[] = [
@@ -53,14 +67,35 @@ export const EPUB_CHAPTERS: EpubFixtureChapter[] = [
   {
     file: "ch3.xhtml",
     heading: "第3章 保存する",
-    paragraphs: [
-      "D1 は SQLite をもとにしたデータベースで、Workers から直接問い合わせられます。",
-      // Between the two, so the passage chapter 1 links to is screens into the chapter
-      ...filler("第3章", FILLER_PARAGRAPHS),
-      "R2 は大きなファイルを置くためのオブジェクトストレージです。",
+    paragraphs: ["データの置き場所は、大きさと問い合わせ方で選びます。"],
+    // Two sections in the one file, the second screens into it: the contents
+    // have to reach it by its anchor, since its chapter alone opens at the top
+    sections: [
+      {
+        id: "s3-1",
+        heading: "3.1 データベースに問い合わせる",
+        paragraphs: [
+          "D1 は SQLite をもとにしたデータベースで、Workers から直接問い合わせられます。",
+          // Between the two, so the passage chapter 1 links to is screens into the chapter
+          ...filler("第3章", FILLER_PARAGRAPHS),
+        ],
+      },
+      {
+        id: "s3-2",
+        heading: "3.2 大きなファイルを置く",
+        paragraphs: ["R2 は大きなファイルを置くためのオブジェクトストレージです。"],
+      },
     ],
   },
 ];
 
-/** The passage chapter 1 links to in chapter 3, by its id there. */
+/** Every paragraph of a chapter, its sections' included, in reading order. */
+export function chapterParagraphs(chapter: EpubFixtureChapter): string[] {
+  return [
+    ...chapter.paragraphs,
+    ...(chapter.sections ?? []).flatMap((section) => section.paragraphs),
+  ];
+}
+
+/** The passage chapter 1 links to in chapter 3 — its last paragraph — by its id there. */
 export const LINKED_ANCHOR = "r2";

@@ -1,6 +1,6 @@
 import { EpubError, openEpub, type EpubBook } from "./epub";
 import { chapterPlainText, renderChapter } from "./epubContent";
-import { toStoredOutline } from "./pdfOutline";
+import { toStoredOutline, type OutlineEntry } from "./pdfOutline";
 import { THUMBNAIL_WIDTH, bytesToBase64, computeHash, type ExtractedPdfData } from "./pdfLoader";
 
 /**
@@ -33,6 +33,30 @@ export async function renderEpubCover(book: EpubBook): Promise<Blob | null> {
 }
 
 /**
+ * The table of contents as the server keeps it for an EPUB: its top-level
+ * entries, with those that open in the same item of the spine said as one.
+ *
+ * The server cuts a book into chapters by the page each starts on, and an
+ * EPUB's page is an item of its spine. A book whose contents list 7.1 to 7.5
+ * side by side, all inside the one file of chapter 7, would come back from it as
+ * a single chapter called 「7.1 …」 — and a reader picking that in the chat's
+ * scope menu would think they were asking about 7.1 alone. Named together, the
+ * span says what it holds.
+ */
+export function epubOutlineEntries(entries: OutlineEntry[]): OutlineEntry[] {
+  const merged: OutlineEntry[] = [];
+  for (const entry of entries) {
+    const last = merged.at(-1);
+    if (last && entry.pageNumber !== null && last.pageNumber === entry.pageNumber) {
+      merged[merged.length - 1] = { ...last, title: `${last.title}・${entry.title}` };
+    } else {
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+/**
  * Read an EPUB the reader chose into what the server stores: each chapter's
  * text, joined with a form feed exactly as a PDF's pages are, so chat excerpts,
  * citations and `/locate` treat a chapter as the page it stands in for.
@@ -58,8 +82,8 @@ export async function extractEpubData(file: File): Promise<ExtractedPdfData> {
     pageCount: book.chapters.length,
     fileContentBase64: bytesToBase64(bytes),
     thumbnail: await renderEpubCover(book),
-    outline: toStoredOutline(book.outline),
+    outline: toStoredOutline(epubOutlineEntries(book.outline)),
     // A chapter is markup, so there is always text to read without OCR
-    ocr: null,
+    needsOcr: false,
   };
 }

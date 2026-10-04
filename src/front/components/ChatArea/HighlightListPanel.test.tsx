@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vite-plus/test";
+import { describe, it, expect } from "vite-plus/test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { errAsync, okAsync, type ResultAsync } from "neverthrow";
@@ -40,8 +40,8 @@ interface PanelOverrides {
   onSelect?: (selection: ActiveSelection) => void;
   onDelete?: (selectionId: string) => ResultAsync<void, ApiError>;
   onUpdate?: (selectionId: string, change: UpdateSelectionRequest) => ResultAsync<void, ApiError>;
-  /** Opens the conversation about the book itself, which no highlight holds. */
-  onOpenBookChat?: () => void;
+  onOpenChat?: (selection: ActiveSelection) => void;
+  chatCounts?: ReadonlyMap<string, number>;
   /** The narrowed list, when the test is standing in for a search that ran. */
   shown?: HighlightListItem[];
   query?: string;
@@ -65,7 +65,8 @@ function panel(highlights: HighlightListItem[], overrides: PanelOverrides = {}) 
       onSelect={overrides.onSelect ?? (() => {})}
       onDelete={overrides.onDelete ?? ACCEPTS_EVERY_DELETION}
       onUpdate={overrides.onUpdate ?? (() => okAsync(undefined))}
-      onOpenBookChat={overrides.onOpenBookChat ?? (() => {})}
+      onOpenChat={overrides.onOpenChat ?? (() => {})}
+      chatCounts={overrides.chatCounts}
     />
   );
 }
@@ -101,43 +102,61 @@ describe("HighlightListPanel", () => {
     expect(passages).toStrictEqual([NEWER.selectedText, MIDDLE.selectedText, OLDER.selectedText]);
   });
 
-  it("hands the clicked highlight to onSelect so its chat can be opened", async () => {
+  it("hands the clicked highlight to onSelect, to turn to its page, and opens no chat", async () => {
     const selected: unknown[] = [];
-    renderPanel([OLDER, NEWER], { onSelect: (h) => selected.push(h) });
+    const opened: unknown[] = [];
+    renderPanel([OLDER, NEWER], {
+      onSelect: (h) => selected.push(h),
+      onOpenChat: (h) => opened.push(h),
+    });
 
     await userEvent.click(screen.getByText(OLDER.selectedText));
 
     expect(selected).toStrictEqual([
       { id: OLDER.id, selectedText: OLDER.selectedText, pageNumber: OLDER.pageNumber },
     ]);
+    expect(opened).toStrictEqual([]);
+  });
+
+  it("opens a highlight's conversation from the button beside it", async () => {
+    const selected: unknown[] = [];
+    const opened: unknown[] = [];
+    renderPanel([OLDER, NEWER], {
+      onSelect: (h) => selected.push(h),
+      onOpenChat: (h) => opened.push(h),
+    });
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: `「${OLDER.selectedText.slice(0, 20)}…」のチャットを開く`,
+      }),
+    );
+
+    expect(opened).toStrictEqual([
+      { id: OLDER.id, selectedText: OLDER.selectedText, pageNumber: OLDER.pageNumber },
+    ]);
+    expect(selected).toStrictEqual([]);
+  });
+
+  it("counts what was said about a highlight on its chat button, and nothing where nothing was", () => {
+    renderPanel([OLDER, NEWER], { chatCounts: new Map([[OLDER.id, 4]]) });
+
+    const chatButtonOf = (highlight: HighlightListItem) =>
+      within(screen.getByText(highlight.selectedText).closest("li") as HTMLElement).getByRole(
+        "button",
+        { name: /のチャットを開く$/ },
+      );
+    expect(chatButtonOf(OLDER)).toHaveTextContent("4");
+    expect(chatButtonOf(NEWER)).toHaveTextContent("");
   });
 
   it("tells the reader how to start when the book has no highlights yet", () => {
     renderPanel([]);
 
-    expect(screen.getByText("チャットを開始するには")).toBeInTheDocument();
-    expect(screen.getByText("本文のテキストを選択して質問してください")).toBeInTheDocument();
-  });
-
-  it("offers the book itself to ask about where there is no passage to pick", async () => {
-    const opened = vi.fn();
-    renderPanel([], { onOpenBookChat: opened });
-
-    await userEvent.click(screen.getByRole("button", { name: "本について質問する" }));
-
-    expect(opened).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps offering the book itself above a list that already has highlights", async () => {
-    const opened = vi.fn();
-    renderPanel([OLDER, NEWER], { onOpenBookChat: opened });
-
-    await userEvent.click(screen.getByRole("button", { name: "本について質問する" }));
-
-    expect(opened).toHaveBeenCalledTimes(1);
-    // The way in is added above the list rather than in place of it.
-    expect(screen.getByText(OLDER.selectedText)).toBeInTheDocument();
-    expect(screen.getByText("ハイライト 2件")).toBeInTheDocument();
+    expect(screen.getByText("ハイライトはまだありません")).toBeInTheDocument();
+    expect(
+      screen.getByText("本文のテキストを選択して、色を付けるか質問してください"),
+    ).toBeInTheDocument();
   });
 
   it("passes what the reader types to whoever runs the search", async () => {

@@ -13,6 +13,8 @@ import { PHONE_WIDTH, setViewportWidth } from "../../test/viewport";
 
 const A_PASSAGE = "エッジはサーバーレス実行基盤で、実行単位をまたいでメモリを共有できません。";
 const A_SECOND_PASSAGE = "Workers は V8 isolate の上で動きます。";
+/** The one session of the book's own the stub's chat list holds. */
+const BOOK_SESSION_ID = "sess-1";
 const B_PASSAGE = "Durable Objects は単一のインスタンスに処理を集約します。";
 
 /**
@@ -145,21 +147,50 @@ function readerFetchStub({
       }
       return Promise.resolve(new Response(JSON.stringify(locate), { status: 200 }));
     }
-    if (url.endsWith("/chats")) {
-      // The book's own conversation is reached without a highlight in the path,
-      // and is named as such in the answer.
-      if (!url.includes("/selections/")) {
-        const answering = () =>
-          new Response(JSON.stringify({ selectionId: null, messages: bookChatHistory }), {
-            status: 200,
-          });
+    if (url.endsWith("/messages") && url.includes("/sessions/")) {
+      // A session of the book's own, read back with the record it belongs to.
+      const answering = () =>
+        new Response(
+          JSON.stringify({
+            session: {
+              id: BOOK_SESSION_ID,
+              title: null,
+              scope: null,
+              createdAt: "2026-08-01T00:00:00.000Z",
+              updatedAt: "2026-08-01T00:00:00.000Z",
+            },
+            messages: bookChatHistory,
+          }),
+          { status: 200 },
+        );
 
-        return holdBookChat
-          ? new Promise<Response>((resolve) => {
-              answerBookChat = () => resolve(answering());
-            })
-          : Promise.resolve(answering());
-      }
+      return holdBookChat
+        ? new Promise<Response>((resolve) => {
+            answerBookChat = () => resolve(answering());
+          })
+        : Promise.resolve(answering());
+    }
+    if (url.endsWith("/chats") && !url.includes("/selections/")) {
+      // The chat list: the one session there is, where the book has been asked
+      // something.
+      const chats =
+        bookChatHistory.length === 0
+          ? []
+          : [
+              {
+                kind: "book",
+                id: BOOK_SESSION_ID,
+                title: null,
+                firstQuestion: "この本を要約して",
+                scope: null,
+                messageCount: bookChatHistory.length,
+                lastMessage: { role: "assistant", content: "要約です" },
+                updatedAt: "2026-08-01T00:00:00.000Z",
+              },
+            ];
+      return Promise.resolve(new Response(JSON.stringify({ chats }), { status: 200 }));
+    }
+    if (url.endsWith("/chats")) {
       const selectionId = url.split("/selections/")[1].split("/")[0];
       const refused = selectionId === refuseChatHistoryFor;
       // The whole envelope, not just `messages`: the reader checks it against
@@ -180,6 +211,12 @@ function readerFetchStub({
     /** Answers the book's own conversation where it was held back. */
     answerBookChat: () => answerBookChat?.(),
   };
+}
+
+/** Opens a highlight's conversation off the list, by the chat button beside it. */
+async function openChatOf(passage: string) {
+  const row = (await screen.findByText(passage)).closest("li") as HTMLElement;
+  await userEvent.click(within(row).getByRole("button", { name: /のチャットを開く$/ }));
 }
 
 /**
@@ -285,6 +322,30 @@ describe("AppPage", () => {
     expect(screen.queryByText("Cloudflare Workers")).not.toBeInTheDocument();
   });
 
+  it("says a book of pictures has no text yet while OCR has still to read it", async () => {
+    // Its pages draw, but nothing on them can be selected, searched or asked
+    // about yet — unexplained, that looks like a reader that has broken.
+    renderReader(
+      BOOK_A.id,
+      { [bookKey(BOOK_A.id)]: { ...BOOK_A, ocrPending: true } },
+      { holdTheBook: true },
+    );
+
+    expect(
+      screen.getByText(
+        "文字の読み取りが途中です。読み取りが終わるまで、文字の選択・本文検索・AIへの質問はできません",
+      ),
+    ).toBeInTheDocument();
+    // Nothing reads it in this tab, so the way to start it again is offered
+    expect(screen.getByRole("button", { name: "文字の読み取りを再開" })).toBeInTheDocument();
+  });
+
+  it("says nothing of OCR for a book with text of its own", async () => {
+    renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { holdTheBook: true });
+
+    expect(screen.queryByText(/文字の読み取り/)).not.toBeInTheDocument();
+  });
+
   it("leaves the chat of the book being read behind when another book is opened", async () => {
     renderReader(BOOK_A.id, {
       [bookKey(BOOK_A.id)]: BOOK_A,
@@ -292,7 +353,7 @@ describe("AppPage", () => {
     });
 
     // Opening a highlight puts its passage on screen, above the conversation
-    await userEvent.click(await screen.findByText(A_PASSAGE));
+    await openChatOf(A_PASSAGE);
     expect(screen.getByRole("button", { name: "一覧に戻る" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "別の本を開く" }));
@@ -308,7 +369,7 @@ describe("AppPage", () => {
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { refuseReadingStateSave: true });
 
     // Opening a highlight moves the reader's place, which is what gets saved
-    await userEvent.click(await screen.findByText(A_PASSAGE));
+    await openChatOf(A_PASSAGE);
 
     expect(
       await screen.findByText("読書位置を保存できませんでした: Unexpected server error"),
@@ -320,7 +381,7 @@ describe("AppPage", () => {
     // catch put an empty list on screen either way.
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { refuseChatHistoryFor: "a1" });
 
-    await userEvent.click(await screen.findByText(A_PASSAGE));
+    await openChatOf(A_PASSAGE);
 
     // The viewer reports the missing binary of the same book at the same time,
     // so this looks for the chat panel's own words rather than any alert.
@@ -333,13 +394,13 @@ describe("AppPage", () => {
     // Left behind, it would sit over a conversation it says nothing about.
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A }, { refuseChatHistoryFor: "a1" });
 
-    await userEvent.click(await screen.findByText(A_PASSAGE));
+    await openChatOf(A_PASSAGE);
     expect(
       await screen.findByText("チャット履歴を読み込めませんでした: Selection not found"),
     ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "一覧に戻る" }));
-    await userEvent.click(screen.getByText(A_SECOND_PASSAGE));
+    await openChatOf(A_SECOND_PASSAGE);
 
     // The second conversation is open, and the first one's failure is not on it
     expect(await screen.findByPlaceholderText("質問を入力...")).toBeInTheDocument();
@@ -348,22 +409,23 @@ describe("AppPage", () => {
     ).toBeNull();
   });
 
-  it("leaves the highlight's conversation behind when the reader asks about the book itself", async () => {
+  it("leaves the highlight's conversation behind when the reader opens a chat about the book", async () => {
     renderReader(
       BOOK_A.id,
       { [bookKey(BOOK_A.id)]: BOOK_A },
       { chatHistory: [AN_ANSWER], bookChatHistory: [BOOK_ANSWER] },
     );
 
-    await userEvent.click(screen.getByText(A_PASSAGE));
+    await openChatOf(A_PASSAGE);
     expect(await screen.findByText(AN_ANSWER.content)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "一覧に戻る" }));
-    await userEvent.click(screen.getByRole("button", { name: "本について質問する" }));
+    await userEvent.click(screen.getByRole("tab", { name: "チャット" }));
+    await userEvent.click(await screen.findByText("この本を要約して"));
 
-    // What the book itself had been asked, read back under the same panel: the
-    // two conversations are told apart by the id being null, and an answer the
-    // client refuses to read would leave the reader an error instead.
+    // What the book itself had been asked, read back under the same panel: a
+    // session is read with its record, and an answer the client refuses to
+    // read would leave the reader an error instead.
     expect(await screen.findByText(BOOK_ANSWER.content)).toBeInTheDocument();
     expect(screen.queryByText(/チャット履歴を読み込めませんでした/)).toBeNull();
     // And not the answers to a passage the reader has just stepped away from.
@@ -381,12 +443,16 @@ describe("AppPage", () => {
       { bookChatHistory: [BOOK_ANSWER], chatHistory: [AN_ANSWER], holdBookChat: true },
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "本について質問する" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "チャット" }));
+    await userEvent.click(await screen.findByText("この本を要約して"));
     // Asked for, and left hanging: this is the answer the reader walks away
     // from before it comes back.
-    await waitFor(() => expect(urls).toContain(`/api/pdf/${BOOK_A.id}/chats`));
+    await waitFor(() =>
+      expect(urls).toContain(`/api/pdf/${BOOK_A.id}/sessions/${BOOK_SESSION_ID}/messages`),
+    );
     await userEvent.click(screen.getByRole("button", { name: "一覧に戻る" }));
-    await userEvent.click(screen.getByText(A_PASSAGE));
+    await userEvent.click(screen.getByRole("tab", { name: "ハイライト" }));
+    await openChatOf(A_PASSAGE);
     expect(await screen.findByText(AN_ANSWER.content)).toBeInTheDocument();
 
     await act(async () => answerBookChat());
@@ -441,14 +507,26 @@ describe("AppPage", () => {
     expect(screen.getByText("URL: page=5 selection=a1")).toBeInTheDocument();
   });
 
-  it("goes to the passage of a highlight picked off the list", async () => {
+  it("goes to the passage of a highlight whose chat is opened off the list", async () => {
     // The other half of the restore above: choosing a highlight is the reader
     // asking to be taken to it, so here the page does move.
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
 
-    await userEvent.click(await screen.findByText(A_SECOND_PASSAGE));
+    await openChatOf(A_SECOND_PASSAGE);
 
     expect(screen.getByText("URL: page=30 selection=a2")).toBeInTheDocument();
+  });
+
+  it("turns to a highlight picked off the list without opening a chat on it", async () => {
+    // A highlight that was only coloured has nothing to read: picking it is
+    // going back to the passage, and the list stays where it was.
+    const { urls } = renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
+
+    await userEvent.click(await screen.findByText(A_SECOND_PASSAGE));
+
+    expect(screen.getByText("URL: page=30")).toBeInTheDocument();
+    expect(screen.getByText("ハイライト 2件")).toBeInTheDocument();
+    expect(urls.some((url) => url.includes("/selections/") && url.endsWith("/chats"))).toBe(false);
   });
 
   it("shows the highlight list when the URL names a chat the book no longer has", async () => {
@@ -459,7 +537,7 @@ describe("AppPage", () => {
     );
 
     expect(await screen.findByText(A_PASSAGE)).toBeInTheDocument();
-    expect(urls.some((url) => url.endsWith("/chats"))).toBe(false);
+    expect(urls.some((url) => url.includes("/selections/") && url.endsWith("/chats"))).toBe(false);
     // And the URL stops naming it, rather than restoring nothing every reload
     expect(screen.getByText("URL: page=1")).toBeInTheDocument();
   });
@@ -470,7 +548,7 @@ describe("AppPage", () => {
       readingState: {
         page: 1,
         selectionId: null,
-        bookChat: null,
+        sessionId: null,
         outlineOpen: null,
         chatPanelOpen: false,
       },
@@ -697,9 +775,10 @@ describe("AppPage on a screen too narrow for two panes", () => {
     renderReader(BOOK_A.id, { [bookKey(BOOK_A.id)]: BOOK_A });
 
     await userEvent.click(await screen.findByRole("button", { name: "チャット" }));
-    await userEvent.click(await screen.findByRole("button", { name: "本について質問する" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "チャット" }));
+    await userEvent.click(await screen.findByRole("button", { name: "新しいチャット" }));
 
-    // The same sheet, showing the book's own conversation: the entry is inside
+    // The same sheet, showing a new chat about the book: the entry is inside
     // it, so nothing here is a second thing drawn over the page.
     const sheet = screen.getByRole("region", { name: "チャット" });
     expect(within(sheet).getByRole("button", { name: "範囲: 本全体" })).toBeInTheDocument();

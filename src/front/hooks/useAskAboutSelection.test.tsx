@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { useAskAboutSelection, type SaveSelection } from "./useAskAboutSelection";
 import {
   activeSelectionAtom,
-  bookChatOpenAtom,
+  activeSessionAtom,
   chatMessagesAtom,
   chatPanelOpenAtom,
   chatSheetAtom,
@@ -139,7 +139,7 @@ describe("useAskAboutSelection", () => {
     expect(store.get(chatPanelOpenAtom)).toBe(true);
   });
 
-  it("leaves the book's own conversation behind for the passage's", async () => {
+  it("leaves a chat about the book behind for the passage's", async () => {
     // Asking about a passage is the third way into a conversation, after the
     // list and the URL, and the panel shows one at a time: the book's own
     // thread left standing would be the face the reader came back to when they
@@ -148,7 +148,7 @@ describe("useAskAboutSelection", () => {
     vi.stubGlobal("fetch", fetchFn);
     const { store, view } = renderAsk(
       () => okAsync(STORED),
-      (seed) => seed.set(bookChatOpenAtom, true),
+      (seed) => seed.set(activeSessionAtom, { id: "01JSESSION" }),
     );
 
     await act(async () => {
@@ -160,7 +160,7 @@ describe("useAskAboutSelection", () => {
       selectedText: STORED.selectedText,
       pageNumber: STORED.pageNumber,
     });
-    expect(store.get(bookChatOpenAtom)).toBe(false);
+    expect(store.get(activeSessionAtom)).toBeNull();
   });
 
   it("says the highlight could not be saved and asks nothing about it", async () => {

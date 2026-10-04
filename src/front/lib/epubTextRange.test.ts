@@ -3,8 +3,10 @@ import {
   rangeOfQuote,
   rangeOfTextOffsets,
   screenOfTextOffset,
+  textOffsetAtY,
   textOffsetOfScreen,
   textOffsetsOf,
+  yOfTextOffset,
 } from "./epubTextRange";
 
 /** A drawn chapter holding the given markup, attached so ranges can span it. */
@@ -132,5 +134,58 @@ describe("textOffsetOfScreen / screenOfTextOffset", () => {
 
     expect(textOffsetOfScreen(root, root, 400, 3)).toBeNull();
     expect(screenOfTextOffset(root, root, 400, 10)).toBeNull();
+  });
+});
+
+describe("textOffsetAtY / yOfTextOffset", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Lays the chapter out down one column, a line 30px tall per letter: a on
+   * the first line, b on the second, … — white space between blocks is not
+   * drawn at all.
+   */
+  function laidOutDownAColumn() {
+    vi.spyOn(Range.prototype, "getClientRects").mockImplementation(function (this: Range) {
+      const char = this.toString();
+      if (char.trim() === "") return [] as unknown as DOMRectList;
+      const line = char.charCodeAt(0) - "a".charCodeAt(0);
+      return [new DOMRect(20, line * 30, 8, 30)] as unknown as DOMRectList;
+    });
+  }
+
+  it("finds where the first line at the top of the view starts", () => {
+    laidOutDownAColumn();
+    const root = chapter("<p>aaa</p>\n<p>abb</p>\n<p>bcc</p>");
+
+    expect(textOffsetAtY(root, root, 0)).toBe(0);
+    // A line part scrolled off the top is still the one being read
+    expect(textOffsetAtY(root, root, 20)).toBe(0);
+    expect(textOffsetAtY(root, root, 30)).toBe(5);
+    expect(textOffsetAtY(root, root, 60)).toBe(9);
+    expect(textOffsetAtY(root, root, 90)).toBeNull();
+  });
+
+  // The white space before a heading is drawn nowhere: a place on it would
+  // count as before the heading, and its section as not yet reached
+  it("starts on the first character drawn, not the white space ahead of it", () => {
+    laidOutDownAColumn();
+    const root = chapter("<p>aaa</p>\n<h2>bbb</h2>");
+
+    expect(textOffsetAtY(root, root, 30)).toBe(4);
+  });
+
+  it("finds how far down a place in the chapter's text is drawn", () => {
+    laidOutDownAColumn();
+    const root = chapter("<p>aaa</p>\n<p>abb</p>\n<p>bcc</p>");
+
+    expect(yOfTextOffset(root, root, 0)).toBe(0);
+    expect(yOfTextOffset(root, root, 5)).toBe(30);
+    // The white space between two paragraphs is where the next one starts
+    expect(yOfTextOffset(root, root, 7)).toBe(30);
+    expect(yOfTextOffset(root, root, 10)).toBe(60);
+    expect(yOfTextOffset(root, root, 99)).toBeNull();
   });
 });

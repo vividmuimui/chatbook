@@ -65,6 +65,26 @@ describe("ChatScopeMenu", () => {
     expect(screen.getByText("1〜11ページ")).toBeInTheDocument();
   });
 
+  // The pages of an EPUB are the items of its spine: 「12〜34ページ」 there
+  // would be files, not pages a reader could find.
+  it("gives an EPUB's chapters by name alone, with no pages", async () => {
+    render(
+      <ChatScopeMenu
+        chapters={CHAPTERS}
+        pageCount={PAGE_COUNT}
+        scope={[]}
+        onChange={() => {}}
+        format="epub"
+      />,
+    );
+
+    await userEvent.click(trigger());
+
+    expect(screen.getByRole("checkbox", { name: "第2章 V8 とアイソレート" })).toBeInTheDocument();
+    expect(wholeBookRow()).toHaveTextContent(/^本全体$/);
+    expect(screen.queryByText(/ページ/)).toBeNull();
+  });
+
   it("hands back the chapter the reader checks", async () => {
     const picked: ScopeChapter[][] = [];
     render(menu(CHAPTERS, [], (scope) => picked.push(scope)));

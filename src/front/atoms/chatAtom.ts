@@ -1,6 +1,5 @@
 import { atom } from "jotai";
-import type { ChatMessage } from "../../shared/schemas/chat";
-import type { ScopeChapter } from "../lib/chatScope";
+import type { ChatMessage, PageRange } from "../../shared/schemas/chat";
 
 /** The highlighted passage the current conversation is about. */
 export interface ActiveSelection {
@@ -12,25 +11,34 @@ export interface ActiveSelection {
 export const activeSelectionAtom = atom<ActiveSelection | null>(null);
 
 /**
- * Whether the panel is showing the book's own conversation rather than a
- * highlight's.
+ * The chat about the book that is open, if one is: a session of the book's own
+ * rather than a highlight's conversation.
  *
- * A book has one of these, not one per passage: it is what the reader asks
- * about the work itself — a summary, what it argues, where a topic is treated —
- * when there is nothing on the page they want to point at. Which chapters of it
- * a question reaches is `chatScopeAtom`, and the conversation itself lives in
- * the same atoms the highlight's does.
+ * A book holds any number of these — the reader starts a new one for something
+ * unrelated rather than piling every question into one thread. `id` is null
+ * for a new chat nothing has been asked in yet: the server only makes the
+ * session when the first question is sent (`sessionStartedAtom`), so a chat
+ * opened and left empty leaves nothing behind. Its title and what was said are
+ * not here — the title is the chat list's (SWR), the thread is
+ * `chatMessagesAtom`.
  */
-export const bookChatOpenAtom = atom<boolean>(false);
+export interface OpenSession {
+  id: string | null;
+}
+
+export const activeSessionAtom = atom<OpenSession | null>(null);
 
 /**
- * The chapters the next question is aimed at. Empty is the whole book.
+ * The pages the next question about the book is aimed at, as the ranges the
+ * server cuts an excerpt by. Empty is the whole book.
  *
- * Held per question rather than per conversation: a reader who has just had the
- * book summarised then asks about one chapter in the same thread, so the scope
- * rides with each question instead of dividing the thread in two.
+ * Held per session: opening one puts back the pages its last question was
+ * aimed at (the server keeps them with the session), and a new chat starts on
+ * the whole book. Ranges rather than chapters, so a session can be reopened on
+ * its pages before the chapter list has arrived; the scope menu finds its
+ * chapters among them by their pages.
  */
-export const chatScopeAtom = atom<ScopeChapter[]>([]);
+export const chatScopeAtom = atom<PageRange[]>([]);
 
 /** Which of the panel's three faces is on screen. */
 export type ChatFace = "list" | "highlight" | "book";
@@ -38,14 +46,32 @@ export type ChatFace = "list" | "highlight" | "book";
 /**
  * The face the panel shows, derived so the three cannot disagree.
  *
- * `openChat` and `openBookChat` each clear the other, but the highlight wins
+ * `openChat` and `openSession` each clear the other, but the highlight wins
  * here as well: it is the narrower request, the one the reader made most
- * recently, and having it lose would show the book's thread under a passage
- * they had just picked out.
+ * recently, and having it lose would show a thread about the book under a
+ * passage they had just picked out.
  */
 export const chatFaceAtom = atom<ChatFace>((get) =>
-  get(activeSelectionAtom) !== null ? "highlight" : get(bookChatOpenAtom) ? "book" : "list",
+  get(activeSelectionAtom) !== null
+    ? "highlight"
+    : get(activeSessionAtom) !== null
+      ? "book"
+      : "list",
 );
+
+/** Which list the panel shows while no conversation is open. */
+export type ChatListTab = "chats" | "highlights";
+
+/**
+ * The list on screen: every conversation the book holds, or every highlight.
+ *
+ * Two ways in rather than one list inside the other — a highlight is a mark on
+ * the page whether or not anything was asked about it, and a chat about the
+ * whole book has no passage to hang in a list of passages. Starts on the
+ * highlights, which is what the panel always opened on; kept in the book's
+ * store only, so "← 一覧に戻る" comes back to the list the reader left.
+ */
+export const chatListTabAtom = atom<ChatListTab>("highlights");
 
 /**
  * Whether the panel on the right — the highlight list, or a chat — is showing.
@@ -137,4 +163,30 @@ export const selectionDeletedAtom = atom(null, (get, set, deletedId: string) => 
 
   set(abortChatStreamAtom);
   set(activeSelectionAtom, null);
+});
+
+/**
+ * Name the new chat the reader is in after the server has made its session.
+ *
+ * Answers whether it did: the reader may have gone back to the list, or into
+ * another chat, while the session was being made, and the question that made
+ * it then belongs to a chat no longer on screen — the caller does not send it.
+ */
+export const sessionStartedAtom = atom(null, (get, set, sessionId: string): boolean => {
+  const open = get(activeSessionAtom);
+  if (open === null || open.id !== null) return false;
+
+  set(activeSessionAtom, { id: sessionId });
+  return true;
+});
+
+/**
+ * Leave a chat about the book the server has just deleted, read off the store
+ * as the answer lands for the same reason as `selectionDeletedAtom`.
+ */
+export const sessionDeletedAtom = atom(null, (get, set, deletedId: string) => {
+  if (get(activeSessionAtom)?.id !== deletedId) return;
+
+  set(abortChatStreamAtom);
+  set(activeSessionAtom, null);
 });

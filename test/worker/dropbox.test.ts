@@ -273,6 +273,38 @@ describe("POST /api/pdf/open with a Dropbox file", () => {
     expect(shelf.books.find((b) => b.id === book.id)?.inDropbox).toBe(true);
   });
 
+  it("carries a title given to the file before it was a book onto the book", async () => {
+    const file = dropbox.add("/books/Scanned_0001.pdf", uniquePdfBytes("titled-import"));
+    await chooseFolder("/books");
+    await apiFetch("https://example.com/api/shelf/titles", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: [file.id], title: "詳解 Rust" }),
+    });
+
+    const response = await importFromDropbox(file.id);
+    const book = (await response.json()) as { id: string; title: string | null };
+    // In the answer too: the shelf seeds the reader's cache from it.
+    expect(book.title).toBe("詳解 Rust");
+
+    const shelf = (await (await apiFetch("https://example.com/api/pdfs")).json()) as {
+      books: { id: string; title: string | null }[];
+    };
+    expect(shelf.books.find((b) => b.id === book.id)?.title).toBe("詳解 Rust");
+    // Moved, not copied: the key is a book now, and its title is the book's.
+    const titles = (await (await apiFetch("https://example.com/api/shelf/titles")).json()) as {
+      titles: { key: string }[];
+    };
+    expect(titles.titles.map((t) => t.key)).not.toContain(file.id);
+
+    // Deleting the book puts the file back to waiting, under the same title.
+    await apiFetch(`https://example.com/api/pdf/${book.id}`, { method: "DELETE" });
+    const after = (await (await apiFetch("https://example.com/api/shelf/titles")).json()) as {
+      titles: { key: string; title: string }[];
+    };
+    expect(after.titles).toContainEqual({ key: file.id, title: "詳解 Rust" });
+  });
+
   it("refuses a file outside the folder", async () => {
     const outside = dropbox.add("/other/Outside.pdf", uniquePdfBytes("outside-import"));
     await chooseFolder("/books");

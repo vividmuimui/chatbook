@@ -1,30 +1,17 @@
 import { useSWRConfig } from "swr";
 import { ResultAsync } from "neverthrow";
-import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
+import type { ExtractedPdfData } from "../lib/pdfLoader";
 import { extractBookData } from "../lib/bookLoader";
 import { postWithProgress } from "../lib/fetcher";
 import { bookKey } from "./useBook";
-import { ocrKey } from "./useOcrText";
 import { rememberUploadedFile } from "../lib/uploadedFileHandoff";
 import { pdfMetadataSchema, type BookDetail } from "../../shared/schemas/book";
 
-/**
- * Whatever was thrown, as something with a `message` the reader can be shown.
- *
- * A `DOMException` keeps its name: an `AbortError` is how a cancelled OCR run
- * ends, and the shelf tells it from a failure by that name alone. (Not every
- * runtime makes a DOMException an Error.)
- */
-const asError = (cause: unknown) => {
-  if (cause instanceof Error) return cause;
-  if (cause instanceof DOMException) {
-    return Object.assign(new Error(cause.message), { name: cause.name });
-  }
-  return new Error(String(cause));
-};
+/** Whatever was thrown, as something with a `message` the reader can be shown. */
+const asError = (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause)));
 
 /** What opening a book can be handed besides the file. */
-export interface OpenBookOptions extends Pick<ExtractOptions, "signal" | "onOcrProgress"> {
+export interface OpenBookOptions {
   /**
    * The Dropbox file `file` was just downloaded from. The server then fetches
    * the bytes from Dropbox itself rather than having the reader send back what
@@ -33,15 +20,20 @@ export interface OpenBookOptions extends Pick<ExtractOptions, "signal" | "onOcrP
   dropboxId?: string;
 }
 
-/**
- * Turns a file the reader chose into a stored book, and hands back its id.
- *
- * `signal` and `onOcrProgress` reach the extraction: a scanned book is read by
- * OCR there, which takes long enough that the reader has to see it moving and
- * be able to stop it. Cancelling fails the result with an `AbortError` before
- * anything is sent, so nothing is stored.
- */
-export type OpenPdfBook = (file: File, options?: OpenBookOptions) => ResultAsync<string, Error>;
+/** A book the reader's file became. */
+export interface StoredBook {
+  id: string;
+  /**
+   * A book of pictures whose text OCR is still to read. It is stored without
+   * that text; whoever opened it starts the reading (`useBackgroundOcr`).
+   * False for a book of pictures added again after it was read — the server
+   * kept what was read.
+   */
+  ocrPending: boolean;
+}
+
+/** Turns a file the reader chose into a stored book. */
+export type OpenPdfBook = (file: File, options?: OpenBookOptions) => ResultAsync<StoredBook, Error>;
 
 /**
  * Reads a chosen PDF, stores it, and seeds the cache the reader opens it from.
@@ -51,18 +43,21 @@ export type OpenPdfBook = (file: File, options?: OpenBookOptions) => ResultAsync
  * whoever called this is an event handler, the end of the line for a rejected
  * promise — not even the route's errorElement would catch one — and the reader
  * would be left with a picker that appeared to do nothing.
+ *
+ * A book of pictures is stored as it is, with whatever text pdf.js could read
+ * (usually none): OCR takes minutes, and runs afterwards in the background.
  */
 export function useOpenPdfBook(
-  extract: (file: File, options: ExtractOptions) => Promise<ExtractedPdfData> = extractBookData,
+  extract: (file: File) => Promise<ExtractedPdfData> = extractBookData,
   onProgress: (ratio: number) => void = () => {},
   createRequest?: () => XMLHttpRequest,
 ): OpenPdfBook {
   const { mutate } = useSWRConfig();
 
-  return (file: File, { dropboxId, signal, onOcrProgress }: OpenBookOptions = {}) =>
+  return (file: File, { dropboxId }: OpenBookOptions = {}) =>
     // Reading the file is pdf.js' job and can fail on its own (a file that is
     // not really a PDF), so it is part of the same result as the upload.
-    ResultAsync.fromPromise(extract(file, { signal, onOcrProgress }), asError)
+    ResultAsync.fromPromise(extract(file), asError)
       .andThen((extracted) => {
         // Send as multipart/form-data (avoids base64 overhead)
         const formData = new FormData();
@@ -70,6 +65,8 @@ export function useOpenPdfBook(
         else formData.append("file", file);
         formData.append("fullText", extracted.fullText);
         formData.append("pageCount", String(extracted.pageCount));
+        // What lets the server keep a book with no text: its text is to come.
+        if (extracted.needsOcr) formData.append("ocrPending", "true");
         if (extracted.thumbnail) {
           formData.append("thumbnail", extracted.thumbnail, "cover.webp");
         }
@@ -77,15 +74,6 @@ export function useOpenPdfBook(
         // empty outline, and NULL is what sends chat to its page window.
         if (extracted.outline) {
           formData.append("outline", JSON.stringify(extracted.outline));
-        }
-        // A file rather than a field: a box per line on every page of a long
-        // book runs to a megabyte or so.
-        if (extracted.ocr) {
-          formData.append(
-            "ocr",
-            new Blob([JSON.stringify(extracted.ocr)], { type: "application/json" }),
-            "ocr.json",
-          );
         }
 
         // Sent with progress rather than through `resultFetcher`: a book is
@@ -101,10 +89,9 @@ export function useOpenPdfBook(
           result,
           hasThumbnail: extracted.thumbnail !== null,
           hasOutline: extracted.outline !== null,
-          ocr: extracted.ocr,
         }));
       })
-      .andThen(({ result, hasThumbnail, hasOutline, ocr }) => {
+      .andThen(({ result, hasThumbnail, hasOutline }) => {
         // The upload already answered with everything the reader needs to open
         // the book, so hand it to the cache the reader reads from. Without this
         // the reader would show an empty viewer while it asked for the very
@@ -114,6 +101,7 @@ export function useOpenPdfBook(
         // one. Opening a book that was annotated before therefore shows its
         // highlights a moment late, when the reader's own read of the book
         // lands on top of this entry.
+        const ocrPending = result.ocrPending ?? false;
         const book: BookDetail = {
           id: result.id,
           fileName: result.fileName,
@@ -126,8 +114,12 @@ export function useOpenPdfBook(
           // request, so the seed can say so without asking the server — and
           // must, or the reader's backfill would re-send it on arrival.
           hasOutline,
-          // Exact, like the outline: this upload is what stored the lines.
-          hasOcr: ocr !== null,
+          // Lines come with the OCR that is still to run, if there is any to
+          // run. A book of pictures added again after it was read has its
+          // lines already, which the reader's own read of the book — on
+          // mount, over this seed — says.
+          hasOcr: false,
+          ocrPending,
           selections: [],
           // The place travels with the upload's answer, so a book that was read
           // on another device opens where it was left rather than at page 1.
@@ -143,13 +135,8 @@ export function useOpenPdfBook(
         rememberUploadedFile(result.id, file);
 
         return ResultAsync.fromPromise(
-          Promise.all([
-            mutate(bookKey(result.id), book, { revalidate: false }),
-            // The lines too, for the same reason as the book: the viewer would
-            // otherwise fetch back what was read here moments ago.
-            ocr ? mutate(ocrKey(result.id), ocr, { revalidate: false }) : undefined,
-          ]),
+          mutate(bookKey(result.id), book, { revalidate: false }),
           asError,
-        ).map(() => result.id);
+        ).map(() => ({ id: result.id, ocrPending }));
       });
 }
