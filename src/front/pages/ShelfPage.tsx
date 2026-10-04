@@ -1,12 +1,13 @@
 import { useState, useCallback, useId, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import useSWR, { useSWRConfig } from "swr";
 import { ResultAsync, errAsync, okAsync } from "neverthrow";
 import { BookTitleDialog } from "../components/BookTitleDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DropboxFolderDialog, type SaveDropboxFolder } from "../components/DropboxFolderDialog";
 import { preferredFormatAtom, shelfLayoutAtom } from "../atoms/settingsAtom";
+import { ShelfSettingsMenu } from "../components/ShelfSettingsMenu";
 import { bookKey } from "../hooks/useBook";
 import { useOpenPdfBook } from "../hooks/useOpenPdfBook";
 import { bookTitle } from "../lib/bookTitle";
@@ -608,7 +609,7 @@ export function ShelfPage({
   // Whether the list of books put away is what the page shows, in place of the shelf.
   const [showingHidden, setShowingHidden] = useState(false);
   // Which file of a title its card opens, when there is a PDF and an EPUB of it.
-  const [preferredFormat, setPreferredFormat] = useAtom(preferredFormatAtom);
+  const preferredFormat = useAtomValue(preferredFormatAtom);
   // Until the list arrives nothing is taken to be put away: the shelf does not
   // wait for it, and one that could not be read leaves every book in view.
   const { shown, hidden: putAway } = useMemo(
@@ -841,17 +842,6 @@ export function ShelfPage({
       <header className="flex h-12 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4">
         <h1 className="text-lg font-bold text-gray-800">chatbook</h1>
         <div className="ml-auto flex min-w-0 items-center gap-2">
-          {/* Only where the deploy holds Dropbox credentials. A folder that
-              could not be read is still something to change from here. */}
-          {(dropboxError || (dropbox && dropbox.state !== "unavailable")) && (
-            <button
-              type="button"
-              onClick={() => setChoosingFolder(true)}
-              className="min-w-0 truncate rounded-md border border-gray-300 px-2.5 py-1 text-sm text-gray-700 cursor-pointer hover:bg-gray-50"
-            >
-              {dropbox?.state === "ready" ? `Dropbox: ${dropbox.folder}` : "Dropboxフォルダを設定"}
-            </button>
-          )}
           {(putAway.length > 0 || showingHidden) && (
             <button
               type="button"
@@ -870,6 +860,16 @@ export function ShelfPage({
           >
             コンパクト表示
           </button>
+          {/* Only where the deploy holds Dropbox credentials. A folder that
+              could not be read is still something to change from here. */}
+          <ShelfSettingsMenu
+            dropbox={
+              dropboxError || (dropbox && dropbox.state !== "unavailable")
+                ? { folder: dropbox?.state === "ready" ? dropbox.folder : null }
+                : null
+            }
+            onChooseFolder={() => setChoosingFolder(true)}
+          />
         </div>
       </header>
 
@@ -908,11 +908,7 @@ export function ShelfPage({
 
         {!books && !error && <p className="text-sm text-gray-500">読み込み中...</p>}
 
-        {/* Out of the header: on a phone it already holds three buttons. The
-            preferred format sits beside the search for the same reason, and
-            wraps under it where the two do not fit on one line. A select
-            rather than a pair of PDF / EPUB buttons, whose names the format
-            chips' (「… を PDF で開く」) would partly match. */}
+        {/* Out of the header: on a phone it already holds its buttons. */}
         {(shown.length > 0 || putAway.length > 0 || query !== "") && (
           <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2">
             <input
@@ -923,17 +919,6 @@ export function ShelfPage({
               onChange={(e) => setQuery(e.target.value)}
               className="w-full max-w-sm rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
             />
-            <label className="flex shrink-0 items-center gap-2 text-sm text-gray-600">
-              優先する形式
-              <select
-                value={preferredFormat}
-                onChange={(e) => setPreferredFormat(e.target.value === "epub" ? "epub" : "pdf")}
-                className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 cursor-pointer focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-              >
-                <option value="pdf">PDF</option>
-                <option value="epub">EPUB</option>
-              </select>
-            </label>
           </div>
         )}
 
