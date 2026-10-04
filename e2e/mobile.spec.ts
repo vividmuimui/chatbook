@@ -286,8 +286,11 @@ test("turns an EPUB a screen at a time at the edges and with a swipe", async ({ 
   await expect(page.getByText(`2 / ${chapters} 章`, { exact: true })).toBeVisible();
   const screenLabel = page.getByText(/^\d+ \/ \d+$/);
   await expect(screenLabel).toHaveText(/^1 \//);
-  const count = Number((await screenLabel.textContent())!.split("/")[1]);
-  expect(count).toBeGreaterThan(2);
+  // Waited for, not read once: the chapter counts as one screen until it has
+  // been laid out, and "1 / 1" would otherwise be taken for the whole of it.
+  const screenCount = async () => Number((await screenLabel.textContent())!.split("/")[1]);
+  await expect.poll(screenCount).toBeGreaterThan(2);
+  const count = await screenCount();
 
   const paper = (await page.locator("article").boundingBox())!;
   const middleY = paper.y + paper.height / 2;
