@@ -1,15 +1,13 @@
 name: CI
 
+# Pull requests run it on their own. main does not: there it runs as the first
+# job of deploy.yml, so a push is checked once and deployed only after it passed.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
   pull_request:
     paths-ignore:
       - "**.md"
       - "LICENSE"
+  workflow_call:
 
 jobs:
   ci:
@@ -19,6 +17,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:

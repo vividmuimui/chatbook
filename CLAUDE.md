@@ -165,6 +165,17 @@ Service Worker 無しでもインストールを出し、iOS は「ホーム画�
 pnpm run deploy   # vp build してから wrangler deploy
 ```
 
+**普段のデプロイは main への push**（`.github/workflows/deploy.yml`）。CI（`ci.yml` を
+`workflow_call` で呼ぶ。PR では単独で走り、main への push では deploy の最初のジョブとして
+1 回だけ走る）が通ってから、`production` 環境のジョブがマイグレーション → `wrangler deploy` の
+順に流す。**Cloudflare のトークン（`CLOUDFLARE_API_TOKEN`）は `production` 環境の secret に
+置き、マイグレーションとデプロイの 2 ステップの `env` にだけ渡す**——依存のインストールは
+パッケージのスクリプトを走らせるので、ジョブ全体の `env` に戻さないこと。
+`CLOUDFLARE_ACCOUNT_ID` は秘密ではないので環境の variable。トークンの権限と作り方は README の
+「main への push で自動デプロイする」。E2E は CI に載っていない（下記「テスト」）ので、
+push 前に必要なものは手で走らせる。**`LLM_API_KEY` / `AUTH_*` などアプリの秘密は GitHub に
+置かない**（`wrangler secret put` で Cloudflare 側に入れ、デプロイはそれを引き継ぐ）。
+
 `wrangler.jsonc` の `database_id` には作者の環境の D1（`chatbook-db`。R2 は
 `chatbook-pdfs`）の実 ID が入っている。**fork したら README の「デプロイ」の手順で
 自分の値に置き換える**（D1 の ID はアカウントの API トークンが無ければ使えないので

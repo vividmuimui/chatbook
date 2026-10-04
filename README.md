@@ -116,6 +116,51 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<worker 名>.<アカウント>.
 `pnpm exec vp build` →
 `pnpm exec wrangler d1 migrations apply chatbook-db --remote` を実行してください）。
 
+### main への push で自動デプロイする（GitHub Actions）
+
+`.github/workflows/deploy.yml` が、main への push ごとに CI（単体テスト・Worker のテスト・
+`vp check`・`vp build`）を走らせ、**通ったときだけ** D1 のマイグレーションを当ててから
+`wrangler deploy` します（マイグレーションが先なのは上の手順 3 と同じ理由）。Markdown だけの
+変更ではデプロイしません。手で走らせたいときは Actions の画面から `workflow_dispatch` で。
+
+認証情報は次の形で持ちます。Cloudflare の API はいまのところ GitHub の OIDC（短命トークン）に
+対応していないため、**長命の API トークンを権限・置き場所・渡す範囲で絞る**のが現実的な最善です。
+
+1. **Cloudflare で専用の API トークンを作る**（My Profile → API Tokens → Create Token →
+   Custom token）。権限は最小限に:
+   - Account / **Workers Scripts** / Edit
+   - Account / **D1** / Edit
+   - Account Resources: 自分のアカウントだけ
+   - TTL（有効期限）を付け、期限前に作り直す。`wrangler login` の OAuth トークンや
+     Global API Key は使わない
+
+   デプロイが R2 のバインディングで権限エラーになる場合だけ、Account / Workers R2 Storage / Read
+   を足してください。
+
+2. **GitHub に `production` 環境を作る**（Settings → Environments → New environment）。
+   - Deployment branches and tags: **Selected branches → `main` だけ**
+   - 必要なら Required reviewers を付けると、デプロイ前に承認を挟めます
+3. **環境に値を入れる**（リポジトリ全体の Secrets ではなく、`production` 環境の方に）:
+   - Environment secrets: `CLOUDFLARE_API_TOKEN`（手順 1 のトークン）
+   - Environment variables: `CLOUDFLARE_ACCOUNT_ID`（秘密ではないので variable）
+
+   ```bash
+   gh secret set CLOUDFLARE_API_TOKEN --env production    # 値は対話で貼る（履歴に残さない）
+   gh variable set CLOUDFLARE_ACCOUNT_ID --env production --body <アカウント ID>
+   ```
+
+   以前リポジトリの Secrets に `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` を入れていた
+   場合は、移したあとで消してください（`gh secret delete <名前>`）。
+
+workflow 側の取り決め:
+
+- トークンを環境変数で渡すのは**マイグレーションとデプロイの 2 ステップだけ**。依存の
+  インストールは各パッケージのスクリプトを実行するので、そこには渡さない
+- `permissions: contents: read`、`actions/checkout` は `persist-credentials: false`、
+  使う Action はすべてコミット SHA で固定
+- `LLM_API_KEY` や `AUTH_*` などアプリの秘密は GitHub に置かず、これまでどおり
+  `wrangler secret put` で Cloudflare 側に入れる（デプロイは既存の secret を引き継ぐ）
+
 ## Dropbox と連携する
 
 Dropbox のフォルダを本棚につなげられます（任意。設定しなければ本は R2 だけに置かれます）。
