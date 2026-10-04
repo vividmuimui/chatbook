@@ -161,6 +161,16 @@ atom に常駐させているわけではない。
 Service Worker 無しでもインストールを出し、iOS は「ホーム画面に追加」で足りる。
 マニフェストは静的アセットなので `requireSession` の外（`/api/*` ではない）から取れる。
 
+**本番は Cloudflare Access の後ろにある**（`*.cloudflareaccess.com` のログイン）。ブラウザは
+マニフェストを**既定では Cookie を付けずに**取りに行くので、Access はそれをログイン画面へ
+リダイレクトし、別オリジンへのリダイレクトとして CORS で落ちる——DevTools の
+「マニフェストが検出されませんでした」、インストールの UI が PC でもスマホでも出ない。だから
+**`<link rel="manifest">` には `crossorigin="use-credentials"` を付ける**（外すとローカルと E2E
+では何も起きず、本番でだけ壊れる。`src/front/indexHtml.test.ts` が見張る唯一の場所）。
+アイコンは Access のログインを済ませた同じブラウザが取るので、今のところ別扱いは要らない。
+それでもアイコンが欠けるなら、Access 側で `/manifest.webmanifest` と `/icon-*.png` /
+`/apple-touch-icon.png` を Bypass するアプリケーションを足す。
+
 ### デプロイ
 
 ```bash
