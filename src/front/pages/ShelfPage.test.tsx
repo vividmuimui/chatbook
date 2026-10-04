@@ -89,6 +89,11 @@ function recordingDeleter() {
   };
 }
 
+/** Opens the shelf's settings, where the folder and the preferred format are chosen. */
+async function openShelfSettings() {
+  await userEvent.click(await screen.findByRole("button", { name: "設定" }));
+}
+
 const TWO_BOOKS = async () => [book(), book({ id: "book-2", fileName: "Rust 入門.pdf" })];
 
 const STORED_ID = "01JBOOK";
@@ -739,6 +744,7 @@ describe("ShelfPage with Dropbox", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rust 入門 を開く" })).toBeInTheDocument();
     // Still the way to fix it.
+    await openShelfSettings();
     expect(screen.getByRole("button", { name: "Dropboxフォルダを設定" })).toBeInTheDocument();
   });
 
@@ -746,6 +752,7 @@ describe("ShelfPage with Dropbox", () => {
     renderShelf({ loadBooks: TWO_BOOKS });
 
     await screen.findByRole("button", { name: "Rust 入門 を開く" });
+    await openShelfSettings();
     expect(screen.queryByRole("button", { name: /Dropbox/ })).not.toBeInTheDocument();
   });
 
@@ -762,13 +769,15 @@ describe("ShelfPage with Dropbox", () => {
       },
     });
 
+    await openShelfSettings();
     await userEvent.click(await screen.findByRole("button", { name: "Dropboxフォルダを設定" }));
     await userEvent.type(screen.getByRole("textbox"), "/Books");
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
 
     expect(saved).toStrictEqual(["/Books"]);
-    expect(await screen.findByRole("button", { name: "Dropbox: /Books" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await openShelfSettings();
+    expect(await screen.findByText("/Books")).toBeInTheDocument();
     expect(
       await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" }),
     ).toBeInTheDocument();
@@ -781,6 +790,7 @@ describe("ShelfPage with Dropbox", () => {
       saveDropboxFolder: () => errAsync(new ApiError("No folder", "DROPBOX_FOLDER_NOT_FOUND", 400)),
     });
 
+    await openShelfSettings();
     await userEvent.click(await screen.findByRole("button", { name: "Dropboxフォルダを設定" }));
     await userEvent.type(screen.getByRole("textbox"), "/Typo");
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
@@ -851,9 +861,24 @@ describe("ShelfPage: one entry per title", () => {
   describe("the preferred format", () => {
     afterEach(() => localStorage.clear());
 
+    it("keeps the setting in the shelf's settings menu rather than on the shelf", async () => {
+      renderShelf({ loadBooks: PDF_AND_EPUB });
+
+      await screen.findByRole("button", { name: "Rust 入門 を開く" });
+      expect(screen.queryByRole("combobox", { name: "優先する形式" })).toBeNull();
+
+      await openShelfSettings();
+      expect(screen.getByRole("combobox", { name: "優先する形式" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "設定" })).toHaveAttribute("aria-expanded", "true");
+
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("combobox", { name: "優先する形式" })).toBeNull();
+    });
+
     it("opens the EPUB from the card once the reader prefers EPUB, and remembers it", async () => {
       renderShelf({ loadBooks: PDF_AND_EPUB });
 
+      await openShelfSettings();
       const preference = await screen.findByRole("combobox", { name: "優先する形式" });
       expect(preference).toHaveValue("pdf");
       await userEvent.selectOptions(preference, "epub");
@@ -867,6 +892,7 @@ describe("ShelfPage: one entry per title", () => {
       localStorage.setItem("chatbook:preferred-format", JSON.stringify("epub"));
       renderShelf({ loadBooks: PDF_AND_EPUB });
 
+      await openShelfSettings();
       expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("epub");
       await userEvent.click(screen.getByRole("button", { name: "Rust 入門 を開く" }));
       expect(await screen.findByText("リーダー: epub-1")).toBeInTheDocument();
@@ -876,6 +902,7 @@ describe("ShelfPage: one entry per title", () => {
       localStorage.setItem("chatbook:preferred-format", JSON.stringify("mobi"));
       renderShelf({ loadBooks: PDF_AND_EPUB });
 
+      await openShelfSettings();
       expect(await screen.findByRole("combobox", { name: "優先する形式" })).toHaveValue("pdf");
     });
   });

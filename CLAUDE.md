@@ -68,16 +68,16 @@ commit 済みの `worker-configuration.d.ts` は `.dev.vars.example` の並び�
 `// oxlint-disable-next-line no-restricted-imports -- <理由>` を付けて理由を明記する運用にしている。
 新しく足すときも同じように理由を書くこと。
 
-現在 17 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
+現在 18 ファイルに理由コメントがあり、内訳は次の 5 つしかない。新しく足す `useEffect` も
 このどれかに当てはまるはずで、当てはまらないなら書き方を疑うこと:
 
-| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                                            |
-| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（ペインと章の `ResizeObserver`、章の画像の `load`、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
-| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                                                   |
-| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込み。画面をめくるのは DOM への書き込みではなく `translateX` の描画）                                                                                                                                                                                                                                                      |
-| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                                            |
+| 用途                                                    | ファイル                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| pdf.js という命令的ライブラリの呼び出しと後始末         | `useEpubDocument.ts`（EPUB のバイナリ取得と展開、画像の blob URL の解放）、`PdfPage.tsx`（`RenderTask` / `TextLayer`）、`usePdfDocument.ts`（バイナリ取得とドキュメント構築）、`usePdfOutline.ts`（`pdfOutline.ts` の `readOutlineEntries` の呼び出しと後始末）、`usePageBaseSize.ts`（`getViewport({scale: 1})` でページの素の寸法）                                                                                                                                     |
+| `document` / `window` / `ResizeObserver` の購読         | `useKeyboardShortcuts.ts`、`SettingsMenu.tsx`・`ShelfSettingsMenu.tsx`・`ChatScopeMenu.tsx`・`EpubTypographyMenu.tsx`（Escape と外側クリックで閉じる）、`SelectionPopover.tsx`、`PdfViewer.tsx`、`EpubViewer.tsx`（ペインと章の `ResizeObserver`、章の画像の `load`、描かれた章からのハイライト・引用箇所の計測）、`useSettledSelection.ts`（`document` の `selectionchange` と `window` の pointer 系）、`HtmlDiagram.tsx`（`document` の `keydown` で Escape を閉じる） |
+| 非 passive なジェスチャの購読（ブラウザの既定を止める） | `PdfViewer.tsx`（ctrlKey wheel のピンチ、touch と Safari の gesture イベント）                                                                                                                                                                                                                                                                                                                                                                                            |
+| DOM への命令的な書き込み（スクロール位置）              | `ChatMessageList.tsx`（最下部へ追随）、`PdfViewer.tsx`（ページ遷移時のリセット）、`EpubViewer.tsx`（無害化した章の差し込み。画面をめくるのは DOM への書き込みではなく `translateX` の描画）                                                                                                                                                                                                                                                                               |
+| URL とサーバという React の外の状態への同期             | `useReadingLocation.ts`、`useReadingStateSync.ts`（読書位置の保存と離脱時の書き残し）                                                                                                                                                                                                                                                                                                                                                                                     |
 
 **画面幅の購読には `useEffect` を使わない**。`useIsNarrow`（`src/front/hooks/useIsNarrow.ts`）が
 `useSyncExternalStore` で `matchMedia` を購読する。購読するのは幅そのものではなく
@@ -245,14 +245,14 @@ PDF に AI で目次を作る」。費用を払って作った）のどちらか
 フォルダが選ばれているときだけ働く（`routes/dropbox.ts` の `dropboxFolderOf` が null を
 返せば従来どおり R2 だけ）。取得手順は README の「Dropbox と連携する」。
 
-| 何を                                          | どこが                                                                   |
-| --------------------------------------------- | ------------------------------------------------------------------------ |
-| Dropbox API（トークン更新・一覧・取得・書込） | `src/server/services/dropboxService.ts`                                  |
-| フォルダの保存・未読み込みの一覧・バイト列    | `src/server/routes/dropbox.ts`（`/api/dropbox/settings` `files` `file`） |
-| 取り込みとアップロード時の書き込み            | `src/server/routes/pdf.ts` の `POST /pdf/open`                           |
-| R2 の写しが無いときの作り直し                 | `src/server/routes/pdf.ts` の `GET /pdf/:pdfId/file`                     |
-| front と server が交わす形                    | `src/shared/schemas/dropbox.ts`                                          |
-| 本棚のカード・取得の進捗・フォルダの設定      | `ShelfPage.tsx` / `lib/dropboxDownload.ts` / `DropboxFolderDialog.tsx`   |
+| 何を                                          | どこが                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Dropbox API（トークン更新・一覧・取得・書込） | `src/server/services/dropboxService.ts`                                                          |
+| フォルダの保存・未読み込みの一覧・バイト列    | `src/server/routes/dropbox.ts`（`/api/dropbox/settings` `files` `file`）                         |
+| 取り込みとアップロード時の書き込み            | `src/server/routes/pdf.ts` の `POST /pdf/open`                                                   |
+| R2 の写しが無いときの作り直し                 | `src/server/routes/pdf.ts` の `GET /pdf/:pdfId/file`                                             |
+| front と server が交わす形                    | `src/shared/schemas/dropbox.ts`                                                                  |
+| 本棚のカード・取得の進捗・フォルダの設定      | `ShelfPage.tsx` / `lib/dropboxDownload.ts` / `ShelfSettingsMenu.tsx` → `DropboxFolderDialog.tsx` |
 
 - **本と Dropbox ファイルは `pdfs.dropbox_id`（Dropbox の `id:...`）で結ぶ**。パスではなく id
   なのは、Dropbox 側で改名・移動されても同じ本のままにするため。本の同一性は従来どおり
@@ -1276,6 +1276,17 @@ chat completions を止める。保存・`/chapters` への反映・409・502 �
 **E2E にドロップのテストは無い**（Playwright からファイルのドラッグを合成できない）。
 ドロップの経路を守っているのは jsdom だけ。
 
+#### 本棚の設定は ⚙ にまとめる
+
+**一度決めたら触らないもの——優先する形式と Dropbox の参照フォルダ——は本棚ヘッダーの ⚙
+（`ShelfSettingsMenu.tsx`。アクセシブルネーム「設定」、リーダーの `SettingsMenu` と同じ形）に
+置く**。ヘッダーに直接並べるのは、本棚を眺めながら切り替えるもの（「非表示の本」「コンパクト表示」）
+だけ。Dropbox の欄は Dropbox の資格情報があるデプロイにだけ出し、読めなかったフォルダでも
+「Dropboxフォルダを設定」から直せる（押すとメニューを閉じて `DropboxFolderDialog` を開く）。
+**新しい本棚の設定もここに足す**——狭い画面のヘッダーはもうボタンで埋まっている。
+守っているのは `ShelfPage.test.tsx` の「keeps the setting in the shelf's settings menu…」と、
+Dropbox のフォルダの設定・保存の 4 本（どれも ⚙ を開いてから操作する）。
+
 #### 本棚は題名ごとに 1 項目、不要な本は非表示にできる
 
 **同じ題名のファイルは 1 つの項目にまとまる**（PDF と EPUB、取り込み済みの本と Dropbox の
@@ -1288,8 +1299,8 @@ Dropbox が濃点を分解形で返すことがあるため（読者が題名を
 あるときだけ形式ごとのチップがそれぞれを開く。**1 つだけの項目も形式を言う**——題名の下の説明の先頭に押せないバッジ
 （`FormatBadge`）を置く。チップが無いと、それが PDF か EPUB かを読者が知る手立てが無いため。**削除は項目の取り込み済みの本をすべて**消す（確認文が「PDF・EPUB」と言う）。
 
-**優先する形式は読者が選ぶ**（検索欄の隣の「優先する形式」の `<select>`。PDF / EPUB、
-既定は PDF）。本をまたぐ読者の好みなので `settingsAtom.ts` の `preferredFormatAtom`
+**優先する形式は読者が選ぶ**（本棚の ⚙「設定」メニュー——`ShelfSettingsMenu.tsx`——の
+「優先する形式」の `<select>`。PDF / EPUB、既定は PDF）。本をまたぐ読者の好みなので `settingsAtom.ts` の `preferredFormatAtom`
 （`chatbook:preferred-format`。`validatedStorage` で、形式でない値は PDF に落ちる）が
 localStorage に持ち、`groupShelf` の第 3 引数に渡る。並びは `shelfGroups.ts` の `memberOrder`
 が決め、**優先する形式は「取り込み済み」に勝つ**——EPUB を選んだ読者が PDF だけ取り込んで
