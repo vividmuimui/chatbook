@@ -52,6 +52,15 @@ export const hiddenBooks = sqliteTable("hidden_books", {
   hiddenAt: text("hidden_at").notNull(),
 });
 
+/**
+ * Titles the reader gave Dropbox files that are not books yet, by Dropbox id.
+ * A book's own title is `pdfs.title`; a file's moves there when it is brought in.
+ */
+export const bookTitles = sqliteTable("book_titles", {
+  key: text("key").primaryKey(),
+  title: text("title").notNull(),
+});
+
 export const selections = sqliteTable("selections", {
   id: text("id").primaryKey(),
   pdfId: text("pdf_id")

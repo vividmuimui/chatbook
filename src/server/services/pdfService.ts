@@ -2,7 +2,7 @@ import { ulid } from "ulid";
 import { drizzle } from "drizzle-orm/d1";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { ResultAsync, err, ok } from "neverthrow";
-import { pdfs, selections } from "../db/schema";
+import { bookTitles, pdfs, selections } from "../db/schema";
 import {
   bookFormatSchema,
   pageDirectionSchema,
@@ -245,6 +245,13 @@ async function storePdf(
       .where(and(eq(pdfs.dropboxId, dropboxId), ne(pdfs.fileHash, fileHash)));
   }
 
+  // A title the reader gave the Dropbox file before it was a book becomes the
+  // book's: the file leaves the folder's list of files waiting, and its title
+  // goes with it rather than staying behind under a key that is now a book.
+  // A title the book already has wins — it is the one the reader has been
+  // seeing on the shelf.
+  const adoptedTitle = dropboxId ? await takeDropboxTitle(db, dropboxId) : null;
+
   const existing = await d1Db.select().from(pdfs).where(eq(pdfs.fileHash, fileHash)).get();
   if (existing) {
     // Re-upload the binary if the object is missing (e.g. bucket was cleared).
@@ -269,6 +276,7 @@ async function storePdf(
         // Only ever set here, never cleared: re-uploading a book from disk
         // does not make the Dropbox file stop being it.
         ...(dropboxId ? { dropboxId } : {}),
+        ...(existing.title === null && adoptedTitle !== null ? { title: adoptedTitle } : {}),
       })
       .where(eq(pdfs.id, existing.id));
 
@@ -279,7 +287,7 @@ async function storePdf(
       pageCount,
       fullText,
       readingState: readingStateOf(existing),
-      title: existing.title,
+      title: existing.title ?? adoptedTitle,
       pageDirection: readPageDirection(existing.pageDirection),
     };
   }
@@ -299,6 +307,7 @@ async function storePdf(
     format,
     outline: outlineJson,
     dropboxId: dropboxId ?? null,
+    title: adoptedTitle,
     createdAt: now,
     updatedAt: now,
   });
@@ -310,9 +319,22 @@ async function storePdf(
     pageCount,
     fullText,
     readingState: null,
-    title: null,
+    title: adoptedTitle,
     pageDirection: "ltr",
   };
+}
+
+/**
+ * The title the reader gave a Dropbox file while it was not a book, taken out
+ * of `book_titles` — it is about to be the book's own. Null when it had none.
+ */
+async function takeDropboxTitle(db: D1Database, dropboxId: string): Promise<string | null> {
+  const taken = await drizzle(db)
+    .delete(bookTitles)
+    .where(eq(bookTitles.key, dropboxId))
+    .returning({ title: bookTitles.title })
+    .get();
+  return taken?.title ?? null;
 }
 
 /**
@@ -456,6 +478,14 @@ async function removePdf(db: D1Database, bucket: R2Bucket, pdfId: string): Promi
   if (!pdf) return false;
 
   await d1Db.delete(pdfs).where(eq(pdfs.id, pdfId));
+  // Its Dropbox file goes back to waiting in the folder, under the title the
+  // reader gave the book rather than the file's name again.
+  if (pdf.dropboxId !== null && pdf.title !== null) {
+    await d1Db
+      .insert(bookTitles)
+      .values({ key: pdf.dropboxId, title: pdf.title })
+      .onConflictDoUpdate({ target: bookTitles.key, set: { title: pdf.title } });
+  }
   // The key the book was stored under, which carries its format's extension
   await bucket.delete([pdf.filePath, thumbnailObjectKey(pdf.fileHash), ocrObjectKey(pdf.fileHash)]);
 

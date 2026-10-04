@@ -422,7 +422,8 @@ union + `satisfies` で固定する。
 | Dropbox の本の取得・取り込み                 | `ShelfPage` の `actionError`                          | 本棚上部の赤い枠                                                                     |
 | Dropbox フォルダの一覧                       | `ShelfPage` の Dropbox 側 SWR の `error`              | 本棚上部の赤い枠（本棚の失敗とは別の段）                                             |
 | Dropbox フォルダの保存                       | `DropboxFolderDialog` の `error`                      | ダイアログの中（開いたまま）                                                         |
-| 本の題名の変更                               | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
+| 本の題名の変更（未読み込みのファイルも）     | `BookTitleDialog` の `error`                          | ダイアログの中（開いたまま。打った題名も残る）                                       |
+| 未読み込みのファイルの題名の一覧             | `ShelfPage` の題名側 SWR の `error`                   | 本棚上部の赤い枠（ファイル名のまま描く）                                             |
 | 本の読み込み                                 | `useBook` の `error` → `bookError` prop               | ビューア中央とチャットパネル                                                         |
 | PDF バイナリの取得・pdf.js の構築            | `usePdfDocument` の `error`                           | ビューア中央                                                                         |
 | ページの描画                                 | `PdfPage` の `onError` → `PdfViewer` の `renderError` | ビューア上部（ページを移ると消える）                                                 |
@@ -1339,10 +1340,27 @@ PDF が Dropbox にある題名は、設定ができる前（EPUB が開いた�
   題名を変えた本を同じファイルからもう一度足したとき、リーダーにファイル名の題名が出ないように。
   **`storePdf` の上書きは `title` を列挙しない**ので、再アップロードで題名は消えない
 - **口は本棚の項目の「✎」**（`aria-label` は「〈題名〉 の題名を変更」。「非表示」「削除」
-  「開く」と部分一致で当たらない名前）。取り込み済みの本がある項目にだけ出す（Dropbox の
-  未読み込みファイルの名前はファイルシステムのもの）。ダイアログは
-  `src/front/components/BookTitleDialog.tsx`。**項目のすべての本に同じ題名を付ける**——
-  1 つだけ変えると項目が 2 つに割れる（次項）。順に送り、最初の拒否で止める
+  「開く」と部分一致で当たらない名前）。**どの項目にも出す**——Dropbox の未読み込み
+  ファイルだけの項目にも（下記）。ダイアログは
+  `src/front/components/BookTitleDialog.tsx`。**項目のすべてのファイルに同じ題名を付ける**——
+  1 つだけ変えると項目が 2 つに割れる（次項）。取り込み済みの本を 1 冊ずつ送り、次に
+  未読み込みのファイルをまとめて送る。最初の拒否で止める
+- **未読み込みの Dropbox ファイルの題名は `book_titles`**（`migrations/0014_dropbox_titles.sql`。
+  `key` = Dropbox の id `id:...`、`title`。`hidden_books` と同じく外部キーは無い——`pdfs` に
+  行が無いため）。受け口は `GET` / `PUT /api/shelf/titles`（`routes/shelf.ts`、
+  `bookTitlesService.ts`。PUT は `{ keys, title }`、`title` の扱いは `PATCH` と同じ（空・空白・
+  `null` で消す）で、**直後の全件を返す**）。**`keys` は `id:` で始まるものしか受けない**——
+  本の題名は `pdfs.title` が持ち、本の id をここに書くと誰も読まない行になる。
+  ファイルの名前（Dropbox 上のファイル名）には触れない。本棚は別の SWR で読み
+  （読めなければ赤帯に出し、ファイル名のまま描く）、`groupShelf` の第 4 引数
+  （`fileTitles`）に渡す——**同名でまとめる判定と項目の題名は、未読み込みのファイルの題名も
+  使う**（変えた題名でまとめ、元の名前のままのファイルはついていく。本の題名と同じ規則）
+- **題名は取り込みで本へ移る**。`storePdf` は `dropboxId` があれば `book_titles` のその行を
+  消して読み、本に題名が無ければそれを `pdfs.title` にする（本に既にあれば本の題名が勝つ）。
+  読むときに 2 か所を見ないのは、題名の正を 1 冊につき 1 か所にしておくため。
+  取り込みの応答の `title` にも載るので、リーダーは付けた題名で開く。**逆に、本を削除すると
+  題名はファイルへ戻る**（`removePdf` が `dropbox_id` と `title` のある本の題名を `book_titles` へ
+  書く）——消した本は未読み込みとして本棚に戻るので、名前もそのまま戻す
 - **同名でまとめる判定は変えた題名で行う**。読者に見えている名前はそれで、読者が同じ題名を
   付けた 2 冊は、ファイル名がどうであれ読者にとって 1 冊。**ただし、変える前の名前のままの
   ファイルは変えた本の項目についていく**（`groupShelf` の `renamedFrom`）——Dropbox の
@@ -1355,13 +1373,19 @@ PDF が Dropbox にある題名は、設定ができる前（EPUB が開いた�
   出し、ダイアログは打った題名のまま開いている（下記の失敗の表）
 - **マイグレーションは先に当てる**。`readPdf` / `storePdf` は `pdfs` の全列を読むので、未適用の
   D1 では本を開く経路と本の追加が 500 になり、本棚の一覧も `title` を select するので 500 になる。
-  nullable な列の追加なので旧コードには無害
+  nullable な列の追加なので旧コードには無害。`0014_dropbox_titles.sql` もテーブルを足すだけで
+  旧コードには無害だが、未適用の D1 では新しいコードの本の追加と削除（`book_titles` に触れる）と
+  `/api/shelf/titles` が 500 になる
 
-守っているのは `shelfGroups.test.ts`（優先する形式の並び・変えた題名でのまとめ方）、
+守っているのは `shelfGroups.test.ts`（優先する形式の並び・変えた題名でのまとめ方・
+未読み込みのファイルの題名）、
 `bookTitle.test.ts`、`ShelfPage.test.tsx` の「the preferred format」と
-「renaming a book」、`AppPage.test.tsx`「heads the reader with the title…」、
+「renaming a book」（未読み込みのファイル・取り込み済みと混ざった項目・拒否を含む）、
+`AppPage.test.tsx`「heads the reader with the title…」、
 `useOpenPdfBook.test.tsx`「keeps the title…」、`test/worker/pdf.test.ts` の
-`PATCH /api/pdf/:pdfId`、desktop の E2E「a title given on the shelf is what the shelf and
+`PATCH /api/pdf/:pdfId`、`test/worker/shelf.test.ts` の `/api/shelf/titles`、
+`test/worker/dropbox.test.ts`「carries a title given to the file before it was a book…」
+（取り込みで移り、削除で戻る）、desktop の E2E「a title given on the shelf is what the shelf and
 the reader say after a reload」（fixture ではなく専用の本を使う——fixture の題名は他の
 テストが名指しているので、失敗して題名が残ると全件を巻き込む）。
 

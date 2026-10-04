@@ -34,7 +34,13 @@ import {
   type BookSummary,
   type RenameBookRequest,
 } from "../../shared/schemas/book";
-import { hiddenBooksSchema, type HiddenBooks } from "../../shared/schemas/shelf";
+import {
+  dropboxTitlesSchema,
+  hiddenBooksSchema,
+  type DropboxTitles,
+  type HiddenBooks,
+  type SetDropboxTitlesRequest,
+} from "../../shared/schemas/shelf";
 import {
   dropboxFolderListingSchema,
   dropboxSettingsSchema,
@@ -94,6 +100,27 @@ const requestHidden: SetHidden = (keys, hidden) =>
     body: JSON.stringify({ keys, hidden }),
   });
 
+/** Cache key of the titles the reader gave Dropbox files not brought in yet. */
+const TITLES_KEY = "/api/shelf/titles";
+
+const fetchDropboxTitles = () => fetcher(TITLES_KEY, dropboxTitlesSchema);
+
+/**
+ * Gives Dropbox files that are not books yet a title, or (null) takes it away;
+ * answers with every such title.
+ */
+export type SetDropboxTitles = (
+  keys: string[],
+  title: string | null,
+) => ResultAsync<DropboxTitles, ApiError>;
+
+const requestDropboxTitles: SetDropboxTitles = (keys, title) =>
+  resultFetcher(TITLES_KEY, dropboxTitlesSchema, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys, title } satisfies SetDropboxTitlesRequest),
+  });
+
 interface ShelfPageProps {
   loadBooks?: () => Promise<BookSummary[]>;
   deleteBook?: DeleteBook;
@@ -107,6 +134,8 @@ interface ShelfPageProps {
   loadHidden?: () => Promise<HiddenBooks>;
   setHidden?: SetHidden;
   renameBook?: RenameBook;
+  loadDropboxTitles?: () => Promise<DropboxTitles>;
+  setDropboxTitles?: SetDropboxTitles;
 }
 
 /**
@@ -257,10 +286,10 @@ interface EntryActions {
 }
 
 /**
- * The buttons of an entry that are not "open". Hiding is always there;
- * renaming and deleting only where the entry holds a book, since a file
- * waiting in Dropbox is not ours to rename or delete — its name is the file
- * system's.
+ * The buttons of an entry that are not "open". Hiding and renaming are always
+ * there — a file waiting in Dropbox keeps the title the reader gives it apart
+ * from its name, which is the file system's and is left alone. Deleting only
+ * where the entry holds a book: the Dropbox file is not ours to delete.
  */
 function EntryButtons({
   group,
@@ -282,18 +311,16 @@ function EntryButtons({
   const books = booksOf(group);
   return (
     <div className={className}>
-      {books.length > 0 && (
-        // Named apart from 「非表示」「削除」「開く」, which the tests and the
-        // E2E reach for by partial name.
-        <button
-          type="button"
-          aria-label={`${group.title} の題名を変更`}
-          onClick={() => onRename(group)}
-          className={`${buttonClassName} ${hideClassName}`}
-        >
-          <span aria-hidden="true">✎</span>
-        </button>
-      )}
+      {/* Named apart from 「非表示」「削除」「開く」, which the tests and the
+          E2E reach for by partial name. */}
+      <button
+        type="button"
+        aria-label={`${group.title} の題名を変更`}
+        onClick={() => onRename(group)}
+        className={`${buttonClassName} ${hideClassName}`}
+      >
+        <span aria-hidden="true">✎</span>
+      </button>
       <button
         type="button"
         aria-label={`${group.title} を非表示`}
@@ -594,6 +621,8 @@ export function ShelfPage({
   loadHidden = fetchHidden,
   setHidden = requestHidden,
   renameBook = requestRename,
+  loadDropboxTitles = fetchDropboxTitles,
+  setDropboxTitles = requestDropboxTitles,
 }: ShelfPageProps = {}) {
   const navigate = useNavigate();
   const { mutate: mutateKey } = useSWRConfig();
@@ -606,6 +635,17 @@ export function ShelfPage({
   const dropboxFiles = dropbox?.state === "ready" ? dropbox.files : [];
   const [choosingFolder, setChoosingFolder] = useState(false);
   const { data: hidden, error: hiddenError, mutate: mutateHidden } = useSWR(HIDDEN_KEY, loadHidden);
+  // Read apart from the shelf, like the hidden books: until they arrive (or
+  // when they cannot be read) the Dropbox files go by their file names.
+  const {
+    data: dropboxTitles,
+    error: titlesError,
+    mutate: mutateTitles,
+  } = useSWR(TITLES_KEY, loadDropboxTitles);
+  const fileTitles = useMemo(
+    () => new Map((dropboxTitles?.titles ?? []).map((t) => [t.key, t.title])),
+    [dropboxTitles],
+  );
   // Whether the list of books put away is what the page shows, in place of the shelf.
   const [showingHidden, setShowingHidden] = useState(false);
   // Which file of a title its card opens, when there is a PDF and an EPUB of it.
@@ -615,10 +655,10 @@ export function ShelfPage({
   const { shown, hidden: putAway } = useMemo(
     () =>
       splitHidden(
-        groupShelf(books ?? [], dropboxFiles, preferredFormat),
+        groupShelf(books ?? [], dropboxFiles, preferredFormat, fileTitles),
         new Set(hidden?.keys ?? []),
       ),
-    [books, dropboxFiles, hidden, preferredFormat],
+    [books, dropboxFiles, hidden, preferredFormat, fileTitles],
   );
   // What the reader typed to find a book. Narrowed on every keystroke, input
   // method composition included: it is a filter over what is already here, so
@@ -656,7 +696,10 @@ export function ShelfPage({
   const error =
     actionError ??
     (loadError ? `本棚の読み込みに失敗しました: ${(loadError as Error).message}` : null) ??
-    (hiddenError ? `非表示の本の一覧を読めませんでした: ${(hiddenError as Error).message}` : null);
+    (hiddenError
+      ? `非表示の本の一覧を読めませんでした: ${(hiddenError as Error).message}`
+      : null) ??
+    (titlesError ? `Dropboxの本の題名を読めませんでした: ${(titlesError as Error).message}` : null);
 
   const openBook = useCallback((id: string) => navigate(`/books/${id}`), [navigate]);
 
@@ -768,8 +811,15 @@ export function ShelfPage({
     // confirm what this list can work out for itself.
     if (gone.size > 0) {
       await mutate((current) => current?.filter((b) => !gone.has(b.id)), { revalidate: false });
-      // Their Dropbox files are still in the folder, and go back to waiting there.
-      if (doomed.some((b) => gone.has(b.id) && b.inDropbox)) void mutateDropbox();
+      // Their Dropbox files are still in the folder, and go back to waiting
+      // there — under the titles the books had, which the server handed back
+      // to the files.
+      if (doomed.some((b) => gone.has(b.id) && b.inDropbox)) {
+        void mutateDropbox();
+        if (doomed.some((b) => gone.has(b.id) && b.inDropbox && b.title !== null)) {
+          void mutateTitles();
+        }
+      }
     }
     if (failure) setActionError(failure);
   };
@@ -791,14 +841,16 @@ export function ShelfPage({
   };
 
   /**
-   * Gives every book of an entry the same title — the entry is one book to the
+   * Gives every file of an entry the same title — the entry is one book to the
    * reader, and renaming only one of its files would split it in two
-   * (`groupShelf` gathers renamed books by their title). Stops at the first
-   * book the server refuses, and hands that refusal back for the dialog to show.
+   * (`groupShelf` gathers renamed files by their title). The books are renamed
+   * one by one (`PATCH /api/pdf/:pdfId`), then the Dropbox files not brought in
+   * yet all at once (`PUT /api/shelf/titles`). Stops at the first refusal, and
+   * hands it back for the dialog to show.
    *
-   * What the server took is written into both caches the title is read from —
-   * the shelf, and the book the reader opens — rather than read again: the
-   * answers already say what each title now is.
+   * What the server took is written into the caches the title is read from —
+   * the shelf, the book the reader opens, and the Dropbox files' titles —
+   * rather than read again: the answers already say what each title now is.
    */
   const renameGroup = (group: ShelfGroup, title: string | null): ResultAsync<void, ApiError> =>
     ResultAsync.fromSafePromise(
@@ -808,6 +860,12 @@ export function ShelfPage({
           const result = await renameBook(book.id, title);
           if (result.isErr()) return { renamed, failure: result.error };
           renamed.push(result.value);
+        }
+        const fileKeys = group.members.flatMap((m) => (m.kind === "dropbox" ? [m.key] : []));
+        if (fileKeys.length > 0) {
+          const result = await setDropboxTitles(fileKeys, title);
+          if (result.isErr()) return { renamed, failure: result.error };
+          void mutateTitles(result.value, { revalidate: false });
         }
         return { renamed, failure: null };
       })(),

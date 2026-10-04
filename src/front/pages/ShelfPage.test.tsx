@@ -3,8 +3,14 @@ import { render, screen, fireEvent, act, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { ResultAsync, errAsync, okAsync } from "neverthrow";
-import { ShelfPage, type DeleteBook, type RenameBook, type SetHidden } from "./ShelfPage";
-import type { HiddenBooks } from "../../shared/schemas/shelf";
+import {
+  ShelfPage,
+  type DeleteBook,
+  type RenameBook,
+  type SetDropboxTitles,
+  type SetHidden,
+} from "./ShelfPage";
+import type { DropboxTitles, HiddenBooks } from "../../shared/schemas/shelf";
 import { ApiError } from "../lib/fetcher";
 import type { ExtractOptions, ExtractedPdfData } from "../lib/pdfLoader";
 import type { BookDetail, BookSummary } from "../../shared/schemas/book";
@@ -42,6 +48,8 @@ function renderShelf(props: {
   loadHidden?: () => Promise<HiddenBooks>;
   setHidden?: SetHidden;
   renameBook?: RenameBook;
+  loadDropboxTitles?: () => Promise<DropboxTitles>;
+  setDropboxTitles?: SetDropboxTitles;
   /** Entries already in the cache, standing in for what the server answered before. */
   seed?: Record<string, unknown>;
 }) {
@@ -50,6 +58,7 @@ function renderShelf(props: {
   const withDropbox = {
     loadDropboxFolder: async (): Promise<DropboxFolderListing> => ({ state: "unavailable" }),
     loadHidden: async (): Promise<HiddenBooks> => ({ keys: [] }),
+    loadDropboxTitles: async (): Promise<DropboxTitles> => ({ titles: [] }),
     ...props,
   };
   return render(
@@ -1276,10 +1285,90 @@ describe("ShelfPage: renaming a book", () => {
     expect(calls).toStrictEqual([]);
   });
 
-  it("offers no renaming for a file still waiting in Dropbox", async () => {
-    renderShelf({ loadBooks: async () => [], loadDropboxFolder: FOLDER_WITH_ONE_BOOK });
+  /** Records what Dropbox files it was asked to title, answering with every title. */
+  function recordingFileTitler(start: DropboxTitles["titles"] = []) {
+    const calls: { keys: string[]; title: string | null }[] = [];
+    let stored = new Map(start.map((t) => [t.key, t.title]));
+    const setDropboxTitles: SetDropboxTitles = (keys, title) => {
+      calls.push({ keys, title });
+      stored = new Map(stored);
+      for (const key of keys) {
+        if (title?.trim()) stored.set(key, title.trim());
+        else stored.delete(key);
+      }
+      return okAsync({ titles: [...stored].map(([key, t]) => ({ key, title: t })) });
+    };
+    return { calls, setDropboxTitles };
+  }
 
-    await screen.findByRole("button", { name: "Zig 入門 を Dropbox から開く" });
-    expect(screen.queryByRole("button", { name: /の題名を変更/ })).not.toBeInTheDocument();
+  it("titles a file still waiting in Dropbox, which leaves the file's own name alone", async () => {
+    const { calls, setDropboxTitles } = recordingFileTitler();
+    const { calls: bookCalls, renameBook } = recordingRenamer();
+    renderShelf({
+      loadBooks: async () => [],
+      loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+      renameBook,
+      setDropboxTitles,
+    });
+
+    await renameTo("Zig 入門", "プログラミング Zig");
+
+    expect(calls).toStrictEqual([{ keys: ["id:zig"], title: "プログラミング Zig" }]);
+    expect(bookCalls).toStrictEqual([]);
+    expect(
+      await screen.findByRole("button", { name: "プログラミング Zig を Dropbox から開く" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a Dropbox file by the title the server keeps for it", async () => {
+    renderShelf({
+      loadBooks: async () => [],
+      loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+      loadDropboxTitles: async () => ({ titles: [{ key: "id:zig", title: "付けた題名" }] }),
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "付けた題名 を Dropbox から開く" }),
+    ).toBeInTheDocument();
+  });
+
+  it("titles the book and the Dropbox file of an entry together, so it stays one entry", async () => {
+    const { calls, setDropboxTitles } = recordingFileTitler();
+    const { calls: bookCalls, renameBook } = recordingRenamer();
+    renderShelf({
+      loadBooks: async () => [book({ id: "pdf-1", fileName: "Zig 入門.pdf" })],
+      loadDropboxFolder: async () => ({
+        state: "ready",
+        folder: "/Books",
+        files: [{ ...DROPBOX_BOOK, dropboxId: "id:zig-epub", name: "Zig 入門.epub" }],
+      }),
+      renameBook,
+      setDropboxTitles,
+    });
+
+    await renameTo("Zig 入門", "プログラミング Zig");
+
+    expect(bookCalls).toStrictEqual([{ id: "pdf-1", title: "プログラミング Zig" }]);
+    expect(calls).toStrictEqual([{ keys: ["id:zig-epub"], title: "プログラミング Zig" }]);
+    await screen.findByRole("button", { name: "プログラミング Zig を開く" });
+    expect(screen.getAllByText("プログラミング Zig", { selector: "p" })).toHaveLength(1);
+    expect(
+      screen.getByRole("button", {
+        name: "プログラミング Zig を EPUB で開く（Dropbox・未読み込み）",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and says why when the Dropbox file's title is refused", async () => {
+    renderShelf({
+      loadBooks: async () => [],
+      loadDropboxFolder: FOLDER_WITH_ONE_BOOK,
+      setDropboxTitles: () => errAsync(new ApiError("Server exploded", "INTERNAL_ERROR", 500)),
+    });
+
+    await renameTo("Zig 入門", "プログラミング Zig");
+
+    const dialog = await screen.findByRole("dialog", { name: "題名の変更" });
+    expect(dialog).toHaveTextContent("題名を変更できませんでした: Server exploded");
   });
 });
