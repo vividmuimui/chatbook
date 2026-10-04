@@ -2,6 +2,7 @@ import { atom } from "jotai";
 import { currentPageAtom } from "./pdfAtom";
 import { turnEpub, type EpubPlace } from "../lib/epubPaging";
 import type { PageTurn } from "../lib/touchNavigation";
+import type { EpubProgress } from "../lib/epubProgress";
 
 /**
  * The screen of the chapter the reader is on, and how many the chapter fills.
@@ -23,6 +24,17 @@ export interface EpubScreen extends EpubPlace {
 }
 
 export const epubScreenAtom = atom<EpubScreen>({ page: 0, screen: 0, count: 1 });
+
+/**
+ * Where the reader is in the book, said the way a reader says it — how far into
+ * its text, and under which heading of the contents (`epubProgress.ts`) — for
+ * the stepper to show under the page or in the toolbar.
+ *
+ * Written by `EpubViewer`, the one place that has both the book's text and the
+ * place in it being read; null until it has. Never stored: like the screen, it
+ * is worked out again from the chapter and the place in it.
+ */
+export const epubProgressAtom = atom<EpubProgress | null>(null);
 
 /** The screen to show of the chapter the reader is on, as `epubScreenAtom` reads for it. */
 export function shownScreen(

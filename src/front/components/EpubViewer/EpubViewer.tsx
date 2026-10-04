@@ -4,7 +4,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { citedPassageAtom, currentPageAtom, outlineOpenAtom } from "../../atoms/pdfAtom";
 import { activeSelectionAtom, type ActiveSelection } from "../../atoms/chatAtom";
 import { bookSearchOpenAtom } from "../../atoms/bookSearchAtom";
-import { epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
+import { epubProgressAtom, epubScreenAtom, shownScreen, turnEpubAtom } from "../../atoms/epubAtom";
 import { epubTypographyAtom, useWebSearchAtom } from "../../atoms/settingsAtom";
 import { epubTypographyStyle } from "../../lib/epubTypography";
 import type { BookDetail, PageDirection } from "../../../shared/schemas/book";
@@ -35,6 +35,7 @@ import {
   textOffsetsOf,
 } from "../../lib/epubTextRange";
 import { pagedLayout, screenCount, screenOfX } from "../../lib/epubPaging";
+import { anchorOffset, entryPercent, epubProgress, mapEpubBook } from "../../lib/epubProgress";
 import { resolveSwipe, resolveTapZone, type PageTurn } from "../../lib/touchNavigation";
 import type { ViewerAction } from "../../lib/keybindings";
 
@@ -146,6 +147,7 @@ export function EpubViewer({
   const [outlineOpen, setOutlineOpen] = useAtom(outlineOpenAtom);
   const [epubScreen, setEpubScreen] = useAtom(epubScreenAtom);
   const turnScreen = useSetAtom(turnEpubAtom);
+  const setEpubProgress = useSetAtom(epubProgressAtom);
   const citedPassage = useAtomValue(citedPassageAtom);
   const setCitedPassage = useSetAtom(citedPassageAtom);
   const setBookSearchOpen = useSetAtom(bookSearchOpenAtom);
@@ -195,6 +197,16 @@ export function EpubViewer({
         ? renderChapter(chapter.source, chapter.path, { imageUrl: epub.imageUrl })
         : null,
     [epub, chapter],
+  );
+
+  /**
+   * What the reader's place is measured against: how much text each chapter
+   * holds, and where in its chapter each entry of the contents starts. Read once
+   * per book — every chapter is rebuilt for it, off the page.
+   */
+  const bookMap = useMemo(
+    () => (epub ? mapEpubBook(epub.book.chapters, epub.book.outline) : null),
+    [epub],
   );
 
   const pageByPath = useMemo(
@@ -251,6 +263,12 @@ export function EpubViewer({
    * words rather than at the same screen number, which by then holds others.
    */
   const readingOffsetRef = useRef(0);
+  /**
+   * The same place, for what is drawn from it: how far into the book the reader
+   * is, and which entry of the contents is lit. The ref is what the layout
+   * reads back while it is being worked out; this follows it.
+   */
+  const [readingOffset, setReadingOffset] = useState(0);
   /** A passage the next screen is being shown for, to be held to instead of its screen's start. */
   const passageOffsetRef = useRef<number | null>(null);
   const placedRef = useRef<Placed | null>(null);
@@ -282,6 +300,10 @@ export function EpubViewer({
       const anchor = pendingAnchorRef.current;
       pendingAnchorRef.current = null;
       const element = anchor ? document.getElementById(`${EPUB_ID_PREFIX}${anchor}`) : null;
+      // Held to where the anchor is rather than to the first words of its
+      // screen: a section that starts part way down a screen is the one the
+      // reader asked for, and the one the contents should light up.
+      if (anchor && element) passageOffsetRef.current = anchorOffset(chapterElement, anchor);
       target = element
         ? screenOfX(
             element.getBoundingClientRect().left - page.getBoundingClientRect().left,
@@ -308,6 +330,7 @@ export function EpubViewer({
         0;
     }
     passageOffsetRef.current = null;
+    setReadingOffset(readingOffsetRef.current);
 
     placedRef.current = {
       chapter: chapterElement,
@@ -335,6 +358,16 @@ export function EpubViewer({
     currentPage,
     setEpubScreen,
   ]);
+
+  // What the stepper says of the place: worked out here, where the book's text
+  // and the place in it both are, and handed to it wherever it is drawn.
+  const progress = useMemo(
+    () => (bookMap ? epubProgress(bookMap, currentPage, readingOffset) : null),
+    [bookMap, currentPage, readingOffset],
+  );
+  useLayoutEffect(() => {
+    setEpubProgress(progress);
+  }, [progress, setEpubProgress]);
 
   /**
    * Turn to the screen a passage of this chapter is drawn on, and hold to the
@@ -482,12 +515,38 @@ export function EpubViewer({
   );
   useKeyboardShortcuts(handleShortcut, direction);
 
+  /**
+   * To a chapter, and to the place in it an anchor names: where an entry of the
+   * contents or a link in the book leads. A chapter can hold several sections,
+   * so the chapter alone is not where a section's entry points.
+   */
+  const goToPlace = useCallback(
+    (page: number, anchor: string | null) => {
+      if (page !== currentPage) {
+        pendingAnchorRef.current = anchor;
+        openChapter(page);
+        return;
+      }
+      const element = anchor ? document.getElementById(`${EPUB_ID_PREFIX}${anchor}`) : null;
+      const pageRect = pageRef.current?.getBoundingClientRect();
+      if (anchor && element && pageRect && chapterElement) {
+        showPassage(
+          [{ x: element.getBoundingClientRect().left - pageRect.left }],
+          anchorOffset(chapterElement, anchor),
+        );
+        return;
+      }
+      openChapter(page);
+    },
+    [chapterElement, currentPage, openChapter, showPassage],
+  );
+
   const handleOutlineJump = useCallback(
-    (pageNumber: number) => {
-      openChapter(pageNumber);
+    (pageNumber: number, anchor?: string) => {
+      goToPlace(pageNumber, anchor ?? null);
       if (isNarrow) setOutlineOpen(false);
     },
-    [isNarrow, openChapter, setOutlineOpen],
+    [goToPlace, isNarrow, setOutlineOpen],
   );
 
   /** Follows a link into the book: to the chapter it names, and the place in it. */
@@ -503,19 +562,9 @@ export function EpubViewer({
       const anchor = hash < 0 ? null : target.slice(hash + 1);
       const page = pageByPath.get(path);
       if (page === undefined) return;
-
-      if (page === currentPage) {
-        const element = anchor ? document.getElementById(`${EPUB_ID_PREFIX}${anchor}`) : null;
-        const pageRect = pageRef.current?.getBoundingClientRect();
-        if (element && pageRect) {
-          showPassage([{ x: element.getBoundingClientRect().left - pageRect.left }], null);
-        }
-        return;
-      }
-      pendingAnchorRef.current = anchor;
-      setCurrentPage(page);
+      goToPlace(page, anchor);
     },
-    [currentPage, pageByPath, setCurrentPage, showPassage],
+    [goToPlace, pageByPath],
   );
 
   /**
@@ -677,10 +726,14 @@ export function EpubViewer({
 
   const outlinePanel = (
     <PdfOutline
-      outline={epub?.book.outline ?? null}
+      outline={bookMap?.outline ?? null}
       error={null}
       currentPage={currentPage}
+      currentOffset={readingOffset}
       onJump={handleOutlineJump}
+      // How far into the book, rather than the page: an EPUB's page is an item
+      // of its spine, which several sections can share and no reader counts by.
+      entryLabel={(entry) => (bookMap ? `${entryPercent(bookMap, entry)}%` : null)}
     />
   );
 
@@ -817,7 +870,11 @@ export function EpubViewer({
             {/* Under the screen, where the next one is wanted. One column holds
                 the same controls at the bottom of the window. */}
             {!isNarrow && (
-              <div className="flex shrink-0 items-center justify-center pt-2">
+              <div
+                role="group"
+                aria-label="ページ送り"
+                className="flex shrink-0 items-center justify-center pt-2"
+              >
                 <EpubPageStepper pageCount={pageCount} direction={direction} />
               </div>
             )}

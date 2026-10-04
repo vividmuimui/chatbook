@@ -1,6 +1,7 @@
 // oxlint-disable-next-line no-restricted-imports -- document への keydown / mousedown 購読 (Escape と外側クリックで閉じる) に必要
 import { useState, useRef, useEffect } from "react";
 import { chapterLabel, pageRangeLabel, scopeLabel, type ScopeChapter } from "../../lib/chatScope";
+import type { BookFormat } from "../../../shared/schemas/book";
 
 interface ChatScopeMenuProps {
   /** The chapters the book offers; empty for a book whose outline is not known. */
@@ -12,6 +13,11 @@ interface ChatScopeMenuProps {
   /** The chapters the next question is aimed at. Empty is the whole book. */
   scope: ScopeChapter[];
   onChange: (scope: ScopeChapter[]) => void;
+  /**
+   * What the book is. An EPUB's pages are the items of its spine — how the
+   * file is cut, not how the book is — so its rows give no pages at all.
+   */
+  format?: BookFormat;
 }
 
 /**
@@ -31,6 +37,7 @@ export function ChatScopeMenu({
   pageCount,
   scope,
   onChange,
+  format = "pdf",
 }: ChatScopeMenuProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -52,6 +59,15 @@ export function ChatScopeMenu({
       document.removeEventListener("mousedown", handleClick);
     };
   }, [open]);
+
+  // A PDF's chapters run to pages the reader can check against the book. An
+  // EPUB's would be numbered by the items of its spine — 「11ページ」 for what
+  // is the eleventh file — and one item can be a whole chapter of sections, so
+  // a number there invites a reader to take it for a page they could turn to.
+  const rangeLabel = (range: { startPage: number; endPage: number }) =>
+    format === "epub" ? null : (
+      <span className="shrink-0 text-xs text-gray-500">{pageRangeLabel(range)}</span>
+    );
 
   // A chapter is named by the page it starts on, which no two spans share.
   const isPicked = (chapter: ScopeChapter) =>
@@ -100,9 +116,7 @@ export function ChatScopeMenu({
             }`}
           >
             <span className="min-w-0 flex-1 truncate">本全体</span>
-            <span className="shrink-0 text-xs text-gray-500">
-              {pageRangeLabel({ startPage: 1, endPage: pageCount })}
-            </span>
+            {rangeLabel({ startPage: 1, endPage: pageCount })}
           </button>
 
           {chaptersError ? (
@@ -127,7 +141,7 @@ export function ChatScopeMenu({
                   className="h-3.5 w-3.5 shrink-0"
                 />
                 <span className="min-w-0 flex-1 truncate">{chapterLabel(chapter)}</span>
-                <span className="shrink-0 text-xs text-gray-500">{pageRangeLabel(chapter)}</span>
+                {rangeLabel(chapter)}
               </label>
             ))
           )}

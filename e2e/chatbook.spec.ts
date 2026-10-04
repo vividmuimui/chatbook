@@ -15,6 +15,7 @@ import {
   EPUB_CHAPTERS,
   EPUB_FILE_NAME,
   EPUB_TITLE,
+  chapterParagraphs,
   LINKED_ANCHOR,
 } from "./fixtures/testEpubManifest.ts";
 import {
@@ -2668,7 +2669,7 @@ test("searching an EPUB's text opens the chapter a result is in and marks the wo
 
   const lastChapter = EPUB_CHAPTERS.length - 1;
   const words = "オブジェクトストレージ";
-  expect(EPUB_CHAPTERS[lastChapter].paragraphs.join("")).toContain(words);
+  expect(chapterParagraphs(EPUB_CHAPTERS[lastChapter]).join("")).toContain(words);
 
   await page.getByRole("banner").getByRole("button", { name: "本文検索" }).click();
   const search = page.getByRole("region", { name: "本文の検索" });
@@ -2700,11 +2701,14 @@ async function epubScreen(page: Page): Promise<{ screen: number; count: number }
   return { screen, count };
 }
 
+/** The row under the screen that turns it and says where the reader is. */
+const epubStepper = (page: Page) => page.getByRole("group", { name: "ページ送り" });
+
 /** To the second chapter from the outline, which fills several screens. */
 async function openLongChapter(page: Page): Promise<number> {
   const outline = page.getByRole("navigation", { name: "目次" });
   await outline.getByRole("button", { name: new RegExp(EPUB_CHAPTERS[1].heading) }).click();
-  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[1].heading);
   await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
   const { count } = await epubScreen(page);
   expect(count).toBeGreaterThan(2);
@@ -2738,15 +2742,51 @@ test("an EPUB turns a screen at a time, and from the last screen of a chapter on
 
   // On from the chapter's last screen is the next chapter's first
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByText(`3 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[2].heading);
   await expect(chapterHeading(page, 2)).toBeInViewport();
   await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
 
   // And back from there is the end of the chapter before, not its start
   await page.keyboard.press("ArrowLeft");
-  await expect(page.getByText(`2 / ${EPUB_CHAPTERS.length} 章`, { exact: true })).toBeVisible();
+  await expect(epubStepper(page)).toContainText(EPUB_CHAPTERS[1].heading);
   await expect(page.getByText(`${count} / ${count}`, { exact: true })).toBeVisible();
   await expect(closing).toBeInViewport();
+});
+
+test("an EPUB's contents take a section to its own screen of the chapter it shares, and the stepper says where that is", async ({
+  page,
+}) => {
+  await openTestEpub(page);
+  const chapter = EPUB_CHAPTERS[2];
+  const [, second] = chapter.sections!;
+  const outline = page.getByRole("navigation", { name: "目次" });
+  const entry = (name: string) => outline.getByRole("button", { name: new RegExp(name) });
+
+  // Beside each entry, how far into the book it starts — not the item of the
+  // spine its chapter is, which the chapter and both its sections share
+  await expect(entry(second.heading)).toHaveText(new RegExp(`^${second.heading}\\d+%$`));
+
+  await entry(second.heading).click();
+  // The section, screens into its chapter, rather than the chapter's top
+  await expect(page.locator(`#epub-${second.id}`)).toBeInViewport();
+  await expect(chapterHeading(page, 2)).not.toBeInViewport();
+  await expect(page.getByText(/^1 \/ \d+$/)).toHaveCount(0);
+
+  // The contents light the section, not its chapter or its sibling
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${second.heading}`),
+  );
+  // And the stepper says it by name, with how far into the book that is
+  await expect(epubStepper(page)).toContainText(second.heading);
+  await expect(epubStepper(page)).toContainText(/\d+%/);
+  await expect(epubStepper(page)).not.toContainText(`/ ${EPUB_CHAPTERS.length} 章`);
+
+  // Back to the chapter's top from its own entry
+  await entry(`^${chapter.heading}`).click();
+  await expect(chapterHeading(page, 2)).toBeInViewport();
+  await expect(outline.locator('[aria-current="location"]')).toHaveText(
+    new RegExp(`^${chapter.heading}`),
+  );
 });
 
 test("an EPUB stays on the words being read when the pane changes width", async ({ page }) => {

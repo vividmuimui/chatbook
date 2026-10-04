@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vite-plus/test";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Provider, createStore } from "jotai";
 import { EpubPageStepper } from "./EpubPageStepper";
 import { currentPageAtom } from "../../atoms/pdfAtom";
-import { epubScreenAtom } from "../../atoms/epubAtom";
+import { epubProgressAtom, epubScreenAtom } from "../../atoms/epubAtom";
 
 const CHAPTERS = 3;
 
@@ -21,11 +21,23 @@ function renderStepper(page: number, screenIndex: number, count: number) {
 }
 
 describe("EpubPageStepper", () => {
-  it("names the chapter the reader is in, and the screen of it", () => {
-    renderStepper(2, 2, 12);
+  it("names the heading the reader is under, how far into the book, and the screen of the chapter", () => {
+    const store = renderStepper(2, 2, 12);
+    act(() => store.set(epubProgressAtom, { percent: 42, section: "7.3 認証の回避" }));
 
-    expect(screen.getByText("2 / 3 章", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("7.3 認証の回避", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("42%", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("3 / 12", { exact: true })).toBeInTheDocument();
+    // Never the item of the spine the chapter is: that is how the file is cut
+    expect(screen.queryByText(/\/ 3 章/)).toBeNull();
+  });
+
+  it("says how far and which screen alone for a book without contents", () => {
+    const store = renderStepper(2, 0, 4);
+    act(() => store.set(epubProgressAtom, { percent: 30, section: null }));
+
+    expect(screen.getByText("30%", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("1 / 4", { exact: true })).toBeInTheDocument();
   });
 
   it("turns a screen on, and on into the next chapter from the last screen", async () => {
@@ -36,7 +48,7 @@ describe("EpubPageStepper", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "次のページ" }));
     expect(store.get(currentPageAtom)).toBe(3);
-    expect(screen.getByText("3 / 3 章", { exact: true })).toBeInTheDocument();
+    expect(store.get(epubScreenAtom)).toMatchObject({ page: 3, screen: 0 });
   });
 
   it("turns back into the end of the chapter before from the first screen", async () => {

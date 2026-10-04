@@ -123,6 +123,41 @@ describe("EpubViewer", () => {
     expect(store.get(currentPageAtom)).toBe(2);
   });
 
+  // One item of the spine holding a whole chapter, its sections told apart only
+  // by the anchors the contents point at — as the books this was reported on do.
+  it("takes a section's entry to the section rather than to its chapter, and lights that entry", async () => {
+    const sectioned = buildEpub({
+      chapters: [
+        { file: "ch1.xhtml", body: "<h1>第1章</h1><p>はじめ。</p>" },
+        {
+          file: "ch2.xhtml",
+          body: '<h1>第2章</h1><p>前置き。</p><h2 id="s1">2.1 一つ目</h2><p>一。</p><h2 id="s2">2.2 二つ目</h2><p>二。</p>',
+        },
+      ],
+      nav: `<ol><li><a href="ch1.xhtml">第1章</a></li><li><a href="ch2.xhtml">第2章</a><ol>
+        <li><a href="ch2.xhtml#s1">2.1 一つ目</a></li><li><a href="ch2.xhtml#s2">2.2 二つ目</a></li>
+      </ol></li></ol>`,
+    });
+    vi.stubGlobal("fetch", () => Promise.resolve(new Response(sectioned as BodyInit)));
+    const store = createStore();
+    store.set(outlineOpenAtom, true);
+    renderViewer({ store });
+
+    const nav = await screen.findByRole("navigation", { name: "目次" });
+    // How far into the book each entry is, not the item of the spine it is in:
+    // all three would say 2
+    const entry = (name: RegExp) => within(nav).getByRole("button", { name });
+    expect(entry(/2\.1 一つ目/)).toHaveTextContent(/\d+%$/);
+    expect(entry(/2\.2 二つ目/)).not.toHaveTextContent(/2$/);
+
+    await userEvent.click(entry(/2\.2 二つ目/));
+    expect(await screen.findByRole("heading", { name: "2.2 二つ目" })).toBeInTheDocument();
+    expect(store.get(currentPageAtom)).toBe(2);
+    // jsdom lays nothing out, so which screen the section is on — and so the
+    // entry lit for it — is the E2E's to see (「an EPUB's contents take a
+    // section to its own screen…」)
+  });
+
   it("follows a link into another chapter of the book", async () => {
     vi.stubGlobal("fetch", serving());
     const store = renderViewer();
@@ -143,7 +178,10 @@ describe("EpubViewer", () => {
     await userEvent.keyboard("{ArrowRight}");
     expect(await screen.findByRole("heading", { name: "第2章" })).toBeInTheDocument();
     expect(store.get(currentPageAtom)).toBe(2);
-    expect(screen.getByText("2 / 2 章", { exact: true })).toBeInTheDocument();
+    // Said as the heading the reader is under and how far into the book
+    const stepper = screen.getByRole("group", { name: "ページ送り" });
+    expect(stepper).toHaveTextContent("第2章");
+    expect(stepper).toHaveTextContent(/\d+%/);
 
     await userEvent.keyboard("{ArrowLeft}");
     expect(await screen.findByRole("heading", { name: "第1章" })).toBeInTheDocument();

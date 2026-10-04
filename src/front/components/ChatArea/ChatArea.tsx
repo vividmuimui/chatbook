@@ -220,6 +220,7 @@ export function ChatArea({
             pageCount={book.pageCount}
             scope={scope}
             onChange={setScope}
+            format={book.format}
           />
         )}
       </div>

@@ -12,7 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { strToU8, zipSync, type Zippable } from "fflate";
-import { EPUB_CHAPTERS, EPUB_FILE_NAME, LINKED_ANCHOR } from "./testEpubManifest.ts";
+import {
+  EPUB_CHAPTERS,
+  EPUB_FILE_NAME,
+  LINKED_ANCHOR,
+  chapterParagraphs,
+} from "./testEpubManifest.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MTIME = new Date(Date.UTC(2026, 0, 1));
@@ -27,25 +32,39 @@ ${body}
 </html>`;
 
 const chapters = EPUB_CHAPTERS.map((chapter, i) => {
-  const paragraphs = chapter.paragraphs.map((text, j) => {
+  const isLast = i === EPUB_CHAPTERS.length - 1;
+  const lastParagraph = chapterParagraphs(chapter).length - 1;
+  let index = 0;
+  const paragraph = (text: string) => {
     // The last paragraph of the last chapter is what chapter 1 links to
-    const id = i === EPUB_CHAPTERS.length - 1 && j === chapter.paragraphs.length - 1;
+    const id = isLast && index++ === lastParagraph;
     return `<p${id ? ` id="${LINKED_ANCHOR}"` : ""}>${text}</p>`;
-  });
-  const link =
-    i === 0
-      ? `<p><a href="${EPUB_CHAPTERS[EPUB_CHAPTERS.length - 1].file}#${LINKED_ANCHOR}">R2 について</a></p>`
-      : "";
-  return {
-    file: chapter.file,
-    xhtml: page(chapter.heading, `<h1>${chapter.heading}</h1>\n${paragraphs.join("\n")}\n${link}`),
   };
+  const body = [
+    `<h1>${chapter.heading}</h1>`,
+    ...chapter.paragraphs.map(paragraph),
+    ...(chapter.sections ?? []).flatMap((section) => [
+      `<h2 id="${section.id}">${section.heading}</h2>`,
+      ...section.paragraphs.map(paragraph),
+    ]),
+  ];
+  if (i === 0) {
+    body.push(
+      `<p><a href="${EPUB_CHAPTERS[EPUB_CHAPTERS.length - 1].file}#${LINKED_ANCHOR}">R2 について</a></p>`,
+    );
+  }
+  return { file: chapter.file, xhtml: page(chapter.heading, body.join("\n")) };
 });
 
 const nav = page(
   "目次",
   `<nav epub:type="toc"><h1>目次</h1><ol>
-${EPUB_CHAPTERS.map((chapter) => `<li><a href="${chapter.file}">${chapter.heading}</a></li>`).join("\n")}
+${EPUB_CHAPTERS.map((chapter) => {
+  const sections = (chapter.sections ?? [])
+    .map((section) => `<li><a href="${chapter.file}#${section.id}">${section.heading}</a></li>`)
+    .join("");
+  return `<li><a href="${chapter.file}">${chapter.heading}</a>${sections ? `<ol>${sections}</ol>` : ""}</li>`;
+}).join("\n")}
 </ol></nav>`,
 );
 

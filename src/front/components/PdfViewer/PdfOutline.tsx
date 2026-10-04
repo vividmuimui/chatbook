@@ -1,12 +1,26 @@
 import type { OutlineEntry } from "../../hooks/usePdfOutline";
 import type { OutlineGeneration } from "../../hooks/useReaderOutline";
+import { findActiveEntry } from "../../lib/pdfOutline";
 
 interface PdfOutlineProps {
   outline: OutlineEntry[] | null;
   /** Why the bookmarks could not be read, if they could not. */
   error: string | null;
   currentPage: number;
-  onJump: (pageNumber: number) => void;
+  /**
+   * Where in the current page the reader is, as a place in its text. An EPUB's
+   * page is a whole chapter and its entries are told apart by where in it they
+   * start (`OutlineEntry.offset`); a PDF leaves this out.
+   */
+  currentOffset?: number;
+  /** The entry's page, and the place in it an EPUB's entry names (`OutlineEntry.anchor`). */
+  onJump: (pageNumber: number, anchor?: string) => void;
+  /**
+   * What is written beside an entry. The page it starts on unless the book says
+   * otherwise: an EPUB's page is a chapter of the file, which tells a reader
+   * nothing, so it writes how far into the book the entry is instead.
+   */
+  entryLabel?: (entry: OutlineEntry & { pageNumber: number }) => string | null;
   /**
    * Having the model make a table of contents, offered under "none" where the
    * book has none. Left out, nothing is offered.
@@ -14,45 +28,24 @@ interface PdfOutlineProps {
   generation?: OutlineGeneration;
 }
 
-/**
- * The entry a reader is currently inside: the last one that starts at or
- * before the current page.
- *
- * The entry itself rather than its title: a book that calls two sections
- * 「はじめに」 — one under every chapter is how technical books are written —
- * would otherwise mark them both as the place being read.
- */
-function findActiveEntry(entries: OutlineEntry[], currentPage: number): OutlineEntry | null {
-  let active: OutlineEntry | null = null;
-  /** Where an entry starts, with "nothing chosen yet" ordering below page one. */
-  const startsAt = (entry: OutlineEntry | null) => entry?.pageNumber ?? -1;
-
-  for (const entry of entries) {
-    if (entry.pageNumber !== null && entry.pageNumber <= currentPage) {
-      // Ties go to the later entry, which is the one the reader has reached.
-      if (entry.pageNumber >= startsAt(active)) active = entry;
-    }
-
-    const withinChildren = findActiveEntry(entry.children, currentPage);
-    if (withinChildren && startsAt(withinChildren) >= startsAt(active)) {
-      active = withinChildren;
-    }
-  }
-  return active;
-}
+const pageLabel = (entry: { pageNumber: number }) => String(entry.pageNumber);
 
 function OutlineItem({
   entry,
   depth,
   activeEntry,
   onJump,
+  entryLabel,
 }: {
   entry: OutlineEntry;
   depth: number;
   activeEntry: OutlineEntry | null;
-  onJump: (pageNumber: number) => void;
+  onJump: (pageNumber: number, anchor?: string) => void;
+  entryLabel: (entry: OutlineEntry & { pageNumber: number }) => string | null;
 }) {
   const isActive = entry === activeEntry;
+  const label =
+    entry.pageNumber !== null ? entryLabel({ ...entry, pageNumber: entry.pageNumber }) : null;
 
   return (
     <li>
@@ -62,7 +55,7 @@ function OutlineItem({
         // screen shows how far into the book the reader is.
         aria-current={isActive ? "location" : undefined}
         disabled={entry.pageNumber === null}
-        onClick={() => entry.pageNumber !== null && onJump(entry.pageNumber)}
+        onClick={() => entry.pageNumber !== null && onJump(entry.pageNumber, entry.anchor)}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
         className={`flex w-full items-baseline gap-2 py-1.5 pr-2 text-left text-xs transition-colors disabled:cursor-default disabled:opacity-40 ${
           isActive
@@ -71,9 +64,7 @@ function OutlineItem({
         }`}
       >
         <span className="min-w-0 flex-1 break-words">{entry.title}</span>
-        {entry.pageNumber !== null && (
-          <span className="shrink-0 text-[10px] text-gray-400">{entry.pageNumber}</span>
-        )}
+        {label !== null && <span className="shrink-0 text-[10px] text-gray-400">{label}</span>}
       </button>
       {entry.children.length > 0 && (
         <ul>
@@ -84,6 +75,7 @@ function OutlineItem({
               depth={depth + 1}
               activeEntry={activeEntry}
               onJump={onJump}
+              entryLabel={entryLabel}
             />
           ))}
         </ul>
@@ -92,8 +84,16 @@ function OutlineItem({
   );
 }
 
-export function PdfOutline({ outline, error, currentPage, onJump, generation }: PdfOutlineProps) {
-  const activeEntry = outline ? findActiveEntry(outline, currentPage) : null;
+export function PdfOutline({
+  outline,
+  error,
+  currentPage,
+  currentOffset,
+  onJump,
+  entryLabel = pageLabel,
+  generation,
+}: PdfOutlineProps) {
+  const activeEntry = outline ? findActiveEntry(outline, currentPage, currentOffset) : null;
 
   return (
     <nav
@@ -148,6 +148,7 @@ export function PdfOutline({ outline, error, currentPage, onJump, generation }: 
               depth={0}
               activeEntry={activeEntry}
               onJump={onJump}
+              entryLabel={entryLabel}
             />
           ))}
         </ul>
